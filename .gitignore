@@ -1,0 +1,33 @@
+# 依赖
+node_modules/
+
+# 构建产物
+out/
+dist/
+
+# 日志
+logs/
+*.log
+
+# 环境变量本地文件（Vite 约定，可能含敏感配置）
+.env.local
+.env.*.local
+
+# 编辑器与系统文件
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+$RECYCLE.BIN/
+
+# npm 配置文件
+.npmrc
+
+# 其他
+.trae/
+docs/
+tmp/
+test/
+build/
+electron-builder.yml

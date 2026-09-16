@@ -1,0 +1,108 @@
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const path = require('node:path');
+
+/**
+ * 主进程入口：负责窗口创建、应用生命周期管理与全局安全设置。
+ */
+
+const isDev = process.argv.includes('--dev') || !app.isPackaged;
+
+/** @type {BrowserWindow | null} */
+let mainWindow = null;
+
+/** 单实例锁：避免重复启动多个应用实例（Windows 桌面应用常规实践） */
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
+    show: false, // 防止启动时白屏闪烁，ready-to-show 后再显示
+    title: 'Vivictus',
+    icon: path.join(__dirname, '..', 'build', 'icon.ico'),
+    autoHideMenuBar: true,
+    backgroundColor: '#1e1f22',
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      // 安全最佳实践：关闭 Node 集成，开启上下文隔离与沙箱
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      // 显式禁用危险特性
+      webviewTag: false,
+      experimentalFeatures: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    if (isDev) {
+      mainWindow?.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
+
+  // 阻止窗口标题被页面覆盖
+  mainWindow.on('page-title-updated', (event) => event.preventDefault());
+
+  // 外部链接一律通过系统默认浏览器打开，避免渲染进程导航到任意站点
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.error('[main] 页面加载失败:', errorCode, errorDescription);
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// 第二实例启动时，聚焦已有窗口
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+// IPC 示例：渲染进程通过 window.vivictus.ping(...) 调用
+ipcMain.handle('app:ping', (_event, message) => {
+  return `pong: ${String(message ?? '')}`;
+});
+
+app.whenReady().then(() => {
+  createWindow();
+
+  app.on('activate', () => {
+    // macOS 上点击 Dock 图标且无窗口时重新创建窗口
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+// Windows/Linux：关闭所有窗口即退出应用
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// 全局未捕获异常兜底，避免静默崩溃
+process.on('uncaughtException', (error) => {
+  console.error('[main] 未捕获异常:', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] 未处理的 Promise 拒绝:', reason);
+});

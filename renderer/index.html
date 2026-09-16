@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vivictus</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <h1 class="title">Vivictus</h1>
+      <p class="subtitle">Electron 桌面应用已就绪</p>
+    </header>
+
+    <section class="card">
+      <h2>运行环境</h2>
+      <ul id="env-list" class="env-list">
+        <li>加载中...</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>IPC 测试</h2>
+      <div class="row">
+        <input id="ping-input" type="text" placeholder="输入任意内容…" />
+        <button id="ping-btn" type="button">Ping</button>
+      </div>
+      <p id="ping-result" class="result">等待调用…</p>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
