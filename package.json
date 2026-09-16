@@ -1,7 +1,7 @@
 {
   "name": "virtworker",
   "productName": "Vivictus",
-  "version": "1.0.0",
+  "version": "0.1.0-Alpha",
   "description": "Vivictus - Windows desktop application built with Electron",
   "author": "Vivictus Team",
   "license": "MIT",
