@@ -462,24 +462,151 @@ input, select, textarea {
   padding: 0 8px 0 12px;
   color: var(--text-2);
   font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
 
 .select-label { white-space: nowrap; color: var(--text-3); }
 
-.select select,
-.select-inline select,
-.modal-select {
-  appearance: none;
-  border: none;
-  background: transparent url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238f959e' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right center;
-  padding-right: 18px;
-  cursor: pointer;
-  color: var(--text);
-}
+.select:hover { border-color: #c9cdd4; }
 
-.select-inline { border: none; }
+.select-inline { border: none; cursor: default; }
 
 .select-inline .select-label { color: var(--text-2); }
+
+/* 原生 select 被自定义组件替换后隐藏（保留在 DOM 中以同步表单值） */
+.dropdown-native { display: none !important; }
+
+/* ==================== 自定义下拉菜单组件 ==================== */
+
+.dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.dropdown-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-chevron {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform .18s ease, color .15s ease;
+}
+
+.dropdown.open .dropdown-chevron {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+/* 下拉面板 */
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(31, 35, 41, .13), 0 2px 8px rgba(31, 35, 41, .06);
+  padding: 4px;
+  z-index: 90;
+  max-height: 264px;
+  overflow-y: auto;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px) scale(.98);
+  transform-origin: top left;
+  transition: opacity .16s ease, transform .16s ease, visibility .16s;
+}
+
+.dropdown.open .dropdown-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+/* 靠右侧的菜单向右对齐展开，避免溢出视口 */
+.dropdown-menu.align-right {
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+}
+
+.dropdown-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  transition: background .12s ease, color .12s ease;
+}
+
+.dropdown-option:hover,
+.dropdown-option.focused {
+  background: var(--panel-gray);
+}
+
+.dropdown-option .check {
+  flex-shrink: 0;
+  visibility: hidden;
+  color: var(--accent);
+}
+
+.dropdown-option.selected {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--accent-light);
+}
+
+.dropdown-option.selected .check { visibility: visible; }
+
+/* 弹窗等独立场景：下拉占据整行并自带边框容器 */
+.dropdown-block {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 12px;
+  transition: border-color .15s ease;
+}
+
+.dropdown-block:hover { border-color: #c9cdd4; }
+
+.dropdown-block.open,
+.dropdown-block:focus-within { border-color: var(--accent); }
 
 /* 筛选栏 */
 .filter-bar {
@@ -1099,8 +1226,7 @@ input, select, textarea {
 }
 
 .form-item input[type="text"],
-.form-item textarea,
-.modal-select {
+.form-item textarea {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1109,14 +1235,7 @@ input, select, textarea {
 }
 
 .form-item input[type="text"]:focus,
-.form-item textarea:focus,
-.modal-select:focus { border-color: var(--accent); }
-
-.modal-select {
-  appearance: none;
-  background: #fff url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238f959e' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 12px center;
-  cursor: pointer;
-}
+.form-item textarea:focus { border-color: var(--accent); }
 
 .radio-row { display: flex; gap: 20px; }
 

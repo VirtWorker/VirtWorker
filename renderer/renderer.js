@@ -215,6 +215,12 @@ $('#worker-modal-cancel').addEventListener('click', closeWorkerModal);
 workerModal.addEventListener('click', (e) => {
   if (e.target === workerModal) closeWorkerModal();
 });
+document.addEventListener('keydown', (e) => {
+  // Esc 关闭弹窗：若焦点在下拉菜单内则交由下拉组件优先处理
+  if (e.key === 'Escape' && !workerModal.classList.contains('hidden') && !openDropdown) {
+    closeWorkerModal();
+  }
+});
 $$('.empty-action').forEach((btn) => btn.addEventListener('click', openWorkerModal));
 
 $('#worker-form').addEventListener('submit', (e) => {
@@ -336,8 +342,152 @@ $$('.cap-card').forEach((card) => {
   });
 });
 
+// ==================== 自定义下拉菜单组件 ====================
+
+let openDropdown = null;
+
+const CHEVRON_SVG =
+  '<svg class="dropdown-chevron" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+const CHECK_SVG =
+  '<svg class="check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+function closeOpenDropdown() {
+  if (openDropdown) {
+    openDropdown.classList.remove('open');
+    openDropdown.querySelector('.dropdown-trigger')?.setAttribute('aria-expanded', 'false');
+    openDropdown = null;
+  }
+}
+
+/**
+ * 将原生 <select> 增强为统一风格的自定义下拉组件。
+ * 原生 select 保留在 DOM 中（隐藏）以同步表单值，保证 form.xxx.value 等用法不受影响。
+ */
+function enhanceSelect(select) {
+  if (select.classList.contains('dropdown-native')) return;
+  select.classList.add('dropdown-native');
+
+  const isBlock = select.classList.contains('modal-select');
+  const wrap = document.createElement('span');
+  wrap.className = 'dropdown' + (isBlock ? ' dropdown-block' : '');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'dropdown-trigger';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML = `<span class="dropdown-value"></span>${CHEVRON_SVG}`;
+
+  const menu = document.createElement('span');
+  menu.className = 'dropdown-menu';
+  menu.setAttribute('role', 'listbox');
+
+  const valueEl = trigger.querySelector('.dropdown-value');
+
+  function renderValue() {
+    const opt = select.options[select.selectedIndex];
+    valueEl.textContent = opt ? opt.textContent : '';
+    menu.querySelectorAll('.dropdown-option').forEach((item, i) => {
+      item.classList.toggle('selected', i === select.selectedIndex);
+      item.setAttribute('aria-selected', i === select.selectedIndex ? 'true' : 'false');
+    });
+  }
+
+  function buildMenu() {
+    menu.innerHTML = '';
+    Array.from(select.options).forEach((opt, i) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'dropdown-option';
+      item.setAttribute('role', 'option');
+      item.tabIndex = -1;
+      item.innerHTML = `<span>${escapeHtml(opt.textContent)}</span>${CHECK_SVG}`;
+      item.addEventListener('click', () => {
+        select.selectedIndex = i;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        renderValue();
+        closeOpenDropdown();
+        trigger.focus();
+      });
+      menu.appendChild(item);
+    });
+    renderValue();
+  }
+
+  function open() {
+    if (openDropdown === wrap) { closeOpenDropdown(); return; }
+    closeOpenDropdown();
+    // 若面板展开后超出视口右缘，则改为右对齐
+    menu.classList.remove('align-right');
+    const rect = wrap.getBoundingClientRect();
+    if (rect.left + menu.offsetWidth > window.innerWidth - 12) {
+      menu.classList.add('align-right');
+    }
+    wrap.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
+    openDropdown = wrap;
+    const focused = menu.querySelector('.dropdown-option.selected');
+    (focused || menu.querySelector('.dropdown-option'))?.focus({ preventScroll: true });
+  }
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    open();
+  });
+
+  // 点击容器标签文字区域（label）同样可展开下拉
+  const container = select.closest('label');
+  if (container) {
+    container.addEventListener('click', (e) => {
+      if (e.target.closest('.dropdown-menu') || e.target.closest('.dropdown-trigger')) return;
+      e.preventDefault();
+      open();
+    });
+  }
+
+  // 键盘交互：上下移动焦点，Enter 选中，Esc 关闭
+  menu.addEventListener('keydown', (e) => {
+    const items = Array.from(menu.querySelectorAll('.dropdown-option'));
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      items[Math.min(idx + 1, items.length - 1)]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      items[Math.max(idx - 1, 0)]?.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      document.activeElement?.click();
+    } else if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeOpenDropdown();
+      trigger.focus();
+    }
+  });
+
+  select.addEventListener('change', renderValue);
+
+  buildMenu(); // 初始化选项与当前值显示
+
+  select.parentElement.insertBefore(wrap, select);
+  wrap.append(trigger, menu, select); // 隐藏的原 select 一并移入组件内
+}
+
+function enhanceSelects() {
+  document.querySelectorAll('select').forEach(enhanceSelect);
+
+  // 点击组件外部时收起展开的下拉
+  document.addEventListener('click', (e) => {
+    if (openDropdown && !openDropdown.contains(e.target)) closeOpenDropdown();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeOpenDropdown();
+  });
+}
+
 // ==================== 初始化 ====================
 
+enhanceSelects();
 renderCategories();
 renderSkills();
 renderManagePage();
