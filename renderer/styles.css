@@ -452,6 +452,7 @@ input, select, textarea {
 
 /* 下拉选择 */
 .select, .select-inline {
+  position: relative; /* 作为下拉面板的定位基准，保证面板在触发器正下方展开 */
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -480,7 +481,7 @@ input, select, textarea {
 /* ==================== 自定义下拉菜单组件 ==================== */
 
 .dropdown {
-  position: relative;
+  position: static; /* 定位基准交给外层触发器容器（.select / .dropdown-block） */
   display: inline-flex;
   align-items: center;
   flex: 1;
@@ -593,6 +594,7 @@ input, select, textarea {
 
 /* 弹窗等独立场景：下拉占据整行并自带边框容器 */
 .dropdown-block {
+  position: relative; /* 独立使用时自身即定位基准 */
   display: flex;
   width: 100%;
   height: 36px;

@@ -417,9 +417,10 @@ function enhanceSelect(select) {
   function open() {
     if (openDropdown === wrap) { closeOpenDropdown(); return; }
     closeOpenDropdown();
-    // 若面板展开后超出视口右缘，则改为右对齐
+    // 若面板展开后超出视口右缘，则改为右对齐（基于外层定位容器计算）
     menu.classList.remove('align-right');
-    const rect = wrap.getBoundingClientRect();
+    const anchor = menu.offsetParent || wrap;
+    const rect = anchor.getBoundingClientRect();
     if (rect.left + menu.offsetWidth > window.innerWidth - 12) {
       menu.classList.add('align-right');
     }
