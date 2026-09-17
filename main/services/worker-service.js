@@ -32,9 +32,13 @@ function normalizeStatus(value) {
   return null;
 }
 
-/** 附加展示字段（环境中文名），保持存储数据与展示解耦 */
+/** 附加展示字段（环境中文名、已挂载能力数），保持存储数据与展示解耦 */
 function decorateWorker(worker) {
-  return { ...worker, envLabel: ENV_LABEL[worker.env] || ENV_LABEL.cloud };
+  return {
+    ...worker,
+    envLabel: ENV_LABEL[worker.env] || ENV_LABEL.cloud,
+    capabilityCount: (worker.capabilityIds || []).length
+  };
 }
 
 function allWorkers() {
@@ -122,6 +126,14 @@ function updateWorker(id, patch = {}) {
   if (patch.status !== undefined) {
     const status = normalizeStatus(patch.status);
     if (status) next.status = status;
+  }
+  if (patch.capabilityIds !== undefined) {
+    const ids = Array.isArray(patch.capabilityIds) ? patch.capabilityIds.map(String) : [];
+    const unique = [...new Set(ids)];
+    unique.forEach((capabilityId) => {
+      if (!db.find('capabilities', capabilityId)) throw fail.notFound('所选能力中包含已卸载的项，请刷新后重试');
+    });
+    next.capabilityIds = unique;
   }
   next.updatedAt = nowIso();
 

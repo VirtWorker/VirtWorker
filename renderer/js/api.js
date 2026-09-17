@@ -67,6 +67,30 @@ VW.api = (() => {
       runtime: () => call(bridge?.automation?.runtime)
     },
 
+    capability: {
+      list: (query) => call(bridge?.capability?.list, query),
+      stats: () => call(bridge?.capability?.stats),
+      skillMarket: (query) => call(bridge?.capability?.skillMarket, query),
+      installSkill: (skillId) => call(bridge?.capability?.installSkill, skillId),
+      remove: (id) => call(bridge?.capability?.remove, id),
+      connectorCatalog: () => call(bridge?.capability?.connectorCatalog),
+      authorize: (key, secret) => call(bridge?.capability?.authorize, key, secret),
+      revoke: (id) => call(bridge?.capability?.revoke, id),
+      pickDirectory: () => call(bridge?.capability?.pickDirectory),
+      createKnowledge: (payload) => call(bridge?.capability?.createKnowledge, payload),
+      reindex: (id) => call(bridge?.capability?.reindex, id),
+      search: (id, keyword) => call(bridge?.capability?.search, id, keyword),
+      mount: (id, capabilityIds) => call(bridge?.capability?.mount, id, capabilityIds)
+    },
+
+    flow: {
+      list: (query) => call(bridge?.flow?.list, query),
+      create: (payload) => call(bridge?.flow?.create, payload),
+      update: (id, patch) => call(bridge?.flow?.update, id, patch),
+      remove: (id) => call(bridge?.flow?.remove, id),
+      detail: (id) => call(bridge?.flow?.detail, id)
+    },
+
     /** 订阅主进程事件，返回取消订阅函数 */
     onEvent: (handler) => (bridge?.onEvent ? bridge.onEvent(handler) : () => {})
   };

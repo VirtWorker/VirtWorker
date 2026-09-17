@@ -69,6 +69,32 @@ contextBridge.exposeInMainWorld('virtworker', {
     runtime: () => invoke('automation:runtime')
   },
 
+  /** 能力与资源：技能 / 连接器 / 知识库 / 挂载 */
+  capability: {
+    list: (query) => invoke('capability:list', query),
+    stats: () => invoke('capability:stats'),
+    skillMarket: (query) => invoke('capability:skill-market', query),
+    installSkill: (skillId) => invoke('capability:install-skill', { skillId }),
+    remove: (id) => invoke('capability:remove', { id }),
+    connectorCatalog: () => invoke('capability:connector-catalog'),
+    authorize: (key, secret) => invoke('capability:authorize', { key, secret }),
+    revoke: (id) => invoke('capability:revoke', { id }),
+    pickDirectory: () => invoke('capability:pick-directory'),
+    createKnowledge: (payload) => invoke('capability:create-knowledge', payload),
+    reindex: (id) => invoke('capability:reindex', { id }),
+    search: (id, keyword) => invoke('capability:search', { id, keyword }),
+    mount: (id, capabilityIds) => invoke('worker:mount', { id, capabilityIds })
+  },
+
+  /** WorkerFlow 编排 */
+  flow: {
+    list: (query) => invoke('flow:list', query),
+    create: (payload) => invoke('flow:create', payload),
+    update: (id, patch) => invoke('flow:update', { id, patch }),
+    remove: (id) => invoke('flow:remove', { id }),
+    detail: (id) => invoke('flow:detail', { id })
+  },
+
   /** 订阅主进程事件；返回取消订阅函数 */
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

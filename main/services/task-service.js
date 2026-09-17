@@ -102,6 +102,12 @@ function resolveAssignee(assigneeId) {
     return { type: 'group', id: group.id, name: group.name, env: lead?.env ?? 'cloud' };
   }
 
+  if (id.startsWith('fl_')) {
+    const flow = db.find('flows', id);
+    if (!flow) throw fail.notFound('所选 WorkerFlow 不存在');
+    return { type: 'flow', id: flow.id, name: flow.name, env: 'cloud' };
+  }
+
   const worker = db.find('workers', id);
   if (!worker) throw fail.notFound('所选 Worker 不存在');
   return { type: 'worker', id: worker.id, name: worker.name, env: worker.env };
@@ -310,13 +316,14 @@ function startStep(id, stepNo) {
   publish(next, 'task:updated');
 }
 
-function completeStep(id, stepNo, log) {
+function completeStep(id, stepNo, log, citations) {
   const next = mutate(id, (t) => {
     const step = t.steps.find((item) => item.step === stepNo);
     if (step) {
       step.status = 'done';
       step.finishedAt = nowIso();
       step.log = log || '';
+      step.citations = Array.isArray(citations) ? citations : [];
     }
     const done = t.steps.filter((item) => item.status === 'done').length;
     t.progress = t.steps.length ? Math.round((done / t.steps.length) * 100) : 0;

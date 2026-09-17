@@ -48,5 +48,14 @@ VW.util = (() => {
     return `<span class="status-badge ${meta.cls}">${meta.label}</span>`;
   }
 
-  return { escapeHtml, debounce, formatTime, statusMeta, statusBadge, PRIORITY_LABEL, ACTION_LABEL };
+  const ASSIGNEE_TYPE_LABEL = { worker: 'Worker', group: 'Group', flow: 'WorkerFlow' };
+
+  /** 执行者展示文案：非单个 Worker 时带类型前缀，避免误认 */
+  function assigneeLabel(assignee) {
+    if (!assignee) return '-';
+    const prefix = assignee.type && assignee.type !== 'worker' ? `${ASSIGNEE_TYPE_LABEL[assignee.type] || assignee.type} · ` : '';
+    return `${prefix}${assignee.name || ''}`;
+  }
+
+  return { escapeHtml, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, PRIORITY_LABEL, ACTION_LABEL };
 })();

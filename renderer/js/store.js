@@ -21,6 +21,10 @@ VW.store = (() => {
     automationStats: { total: 0, enabled: 0, workerCount: 0, flowCount: 0 },
     /** 本地触发端点状态（API 触发） */
     apiServer: { running: false, port: null, error: null },
+    /** WorkerFlow 列表（可作为任务/自动任务的执行者） */
+    flows: [],
+    /** 能力与资源统计（入口卡片计数） */
+    capabilityStats: { skill: 0, connector: 0, authorizedConnector: 0, knowledge: 0, chunkTotal: 0, total: 0, nodeTotal: 0, usable: 0 },
     settings: { taskView: 'list', period: 'month', mockRandomAction: true, notify: true },
     filters: {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
@@ -73,11 +77,12 @@ VW.store = (() => {
     notify([section]);
   }
 
-  /** 执行者下拉选项：Worker 与 Group 共用（任务派发、自动任务执行者） */
+  /** 执行者下拉选项：Worker / Group / WorkerFlow（任务派发、自动任务执行者共用） */
   function assigneeOptions() {
     const workers = state.workers.map((worker) => ({ value: worker.id, label: `Worker · ${worker.name}` }));
     const groups = state.groups.map((group) => ({ value: group.id, label: `Group · ${group.name}` }));
-    return [...workers, ...groups];
+    const flows = (state.flows || []).map((flow) => ({ value: flow.id, label: `WorkerFlow · ${flow.name}` }));
+    return [...workers, ...groups, ...flows];
   }
 
   return { state, on, set, merge, assigneeOptions };

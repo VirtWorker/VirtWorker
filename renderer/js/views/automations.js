@@ -7,7 +7,7 @@ window.VW = window.VW || {};
 VW.views = VW.views || {};
 
 VW.views.automations = (() => {
-  const { escapeHtml, formatTime, statusBadge } = VW.util;
+  const { escapeHtml, formatTime, statusBadge, assigneeLabel } = VW.util;
   const store = VW.store;
 
   /** 当前编辑中的自动任务 id；为空表示新建 */
@@ -87,7 +87,7 @@ VW.views.automations = (() => {
         </div>
         <div class="automation-body">
           ${automation.desc ? `<div class="automation-line">${escapeHtml(automation.desc)}</div>` : ''}
-          <div class="automation-line">执行者：${escapeHtml(automation.executor.name)}</div>
+          <div class="automation-line">执行者：${escapeHtml(assigneeLabel(automation.executor))}</div>
           <div class="automation-line">任务目标：${escapeHtml(automation.input.goal)}</div>
           ${
             showEndpoint

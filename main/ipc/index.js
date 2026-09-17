@@ -4,12 +4,14 @@
  * - 统一把事件总线上的事件以 app:event 转发给所有窗口
  */
 
-const { ipcMain, BrowserWindow, clipboard } = require('electron');
+const { ipcMain, BrowserWindow, clipboard, dialog } = require('electron');
 const bus = require('../runtime/event-bus');
 const db = require('../store/db');
 const workerService = require('../services/worker-service');
 const taskService = require('../services/task-service');
 const automationService = require('../services/automation-service');
+const capabilityService = require('../services/capability-service');
+const flowService = require('../services/flow-service');
 const httpServer = require('../runtime/http-server');
 
 const API_VERSION = 1;
@@ -79,6 +81,8 @@ function register() {
       stats: taskService.stats(settings.period),
       automations: automationService.list().items,
       automationStats: automationService.stats(),
+      capabilityStats: { ...capabilityService.stats(), ...flowService.stats() },
+      flows: flowService.list().items,
       settings,
       runtime: { apiServer: httpServer.getStatus() }
     };
@@ -92,6 +96,8 @@ function register() {
   handle('worker:create', (payload) => workerService.createWorker(payload));
   handle('worker:update', ({ id, patch } = {}) => workerService.updateWorker(id, patch));
   handle('worker:remove', ({ id } = {}) => workerService.removeWorker(id));
+  /** 能力挂载：等价于更新 Worker 的 capabilityIds */
+  handle('worker:mount', ({ id, capabilityIds } = {}) => workerService.updateWorker(id, { capabilityIds }));
 
   handle('group:list', () => workerService.listGroups());
   handle('group:create', (payload) => workerService.createGroup(payload));
@@ -116,6 +122,35 @@ function register() {
   handle('automation:remove', ({ id } = {}) => automationService.remove(id));
   handle('automation:detail', ({ id } = {}) => automationService.detail(id));
   handle('automation:runtime', () => ({ apiServer: httpServer.getStatus() }));
+
+  // 能力与资源
+  handle('capability:list', (query) => capabilityService.list(query));
+  handle('capability:stats', () => ({ ...capabilityService.stats(), ...flowService.stats() }));
+  handle('capability:skill-market', (query) => capabilityService.skillMarket(query));
+  handle('capability:install-skill', ({ skillId } = {}) => capabilityService.installSkill(skillId));
+  handle('capability:remove', ({ id } = {}) => capabilityService.uninstall(id));
+  handle('capability:connector-catalog', () => capabilityService.connectorCatalog());
+  handle('capability:authorize', ({ key, secret } = {}) => capabilityService.authorizeConnector(key, { secret }));
+  handle('capability:revoke', ({ id } = {}) => capabilityService.revokeConnector(id));
+  handle('capability:create-knowledge', (payload) => capabilityService.createKnowledge(payload));
+  handle('capability:reindex', ({ id } = {}) => capabilityService.reindexKnowledge(id));
+  handle('capability:search', ({ id, keyword, limit } = {}) => capabilityService.searchKnowledge(id, keyword, limit));
+  handle('capability:pick-directory', async () => {
+    // 目录选择必须由主进程发起；测试环境（无窗口）直接返回空，由调用方改用入参传入
+    const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    const result = await dialog.showOpenDialog(parent, {
+      title: '选择要导入的目录',
+      properties: ['openDirectory']
+    });
+    return { dir: result.canceled ? '' : result.filePaths[0] || '' };
+  });
+
+  // WorkerFlow
+  handle('flow:list', (query) => flowService.list(query));
+  handle('flow:create', (payload) => flowService.create(payload));
+  handle('flow:update', ({ id, patch } = {}) => flowService.update(id, patch));
+  handle('flow:remove', ({ id } = {}) => flowService.remove(id));
+  handle('flow:detail', ({ id } = {}) => flowService.detail(id));
 
   // 通用能力：由主进程写系统剪贴板（复制端点/Token）
   handle('app:copy-text', ({ text } = {}) => {

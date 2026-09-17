@@ -126,11 +126,14 @@ VW.views.workers = (() => {
           </span>
           <div class="worker-card-actions">
             <button class="mini-btn" data-act="start">开始任务</button>
-            <button class="mini-btn" data-soon="Worker 设置">设置</button>
+            <button class="mini-btn" data-act="mount">能力挂载${worker.capabilityCount ? ` (${worker.capabilityCount})` : ''}</button>
           </div>
         </div>`;
       card.querySelector('[data-act="start"]').addEventListener('click', () =>
         VW.views.dashboard.openCreateTask(worker.id)
+      );
+      card.querySelector('[data-act="mount"]').addEventListener('click', () =>
+        VW.views.capabilities.openMount(worker.id)
       );
       grid.appendChild(card);
     });

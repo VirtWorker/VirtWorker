@@ -1919,6 +1919,250 @@ input, select, textarea {
 .form-item input[type="time"]:focus,
 .form-item input[type="datetime-local"]:focus { border-color: var(--accent); }
 
+/* ==================== 能力与资源 ==================== */
+
+/* 入口卡片：当前小节的选中态 + 计数 */
+.cap-card.active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  box-shadow: 0 4px 14px rgba(16, 165, 74, .1);
+}
+
+.cap-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.cap-card.active .cap-count { color: var(--accent); }
+
+.cap-section { margin-top: 4px; }
+
+.cap-section .section-head { margin-top: 12px; }
+
+.skill-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+/* 连接器 */
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.connector-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.connector-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 4px 16px rgba(16, 165, 74, .07);
+}
+
+.connector-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+.connector-name { font-size: 14px; font-weight: 600; }
+
+.connector-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+
+.connector-mask { font-size: 12px; color: var(--text-3); }
+
+.connector-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* 知识库 */
+.knowledge-list,
+.flow-list { display: flex; flex-direction: column; gap: 14px; }
+
+.knowledge-card,
+.flow-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.knowledge-card:hover,
+.flow-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 4px 16px rgba(16, 165, 74, .07);
+}
+
+.knowledge-head,
+.flow-head { display: flex; align-items: center; gap: 10px; }
+
+.knowledge-name,
+.flow-name { font-size: 14.5px; font-weight: 600; flex: 1; min-width: 0; }
+
+.knowledge-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.knowledge-dir {
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--bg-soft);
+  border-radius: 6px;
+  padding: 5px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-search {
+  background: var(--bg-soft);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.knowledge-hits { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; }
+
+.knowledge-hit {
+  background: #fff;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+
+.hit-file { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+
+.hit-snippet { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+
+.knowledge-foot,
+.flow-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* WorkerFlow 步骤列表 */
+.flow-steps { display: flex; flex-direction: column; gap: 6px; }
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.flow-step-index {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.flow-step-title { font-weight: 600; flex-shrink: 0; }
+
+.flow-step-worker { color: var(--text-2); flex-shrink: 0; }
+
+.flow-step-worker.missing { color: #d64545; }
+
+.flow-step-instruction {
+  color: var(--text-3);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 流程步骤编辑 */
+.flow-nodes { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+
+.flow-node {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flow-node-head { display: flex; align-items: center; gap: 8px; }
+
+.flow-node-index {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--panel-gray);
+  color: var(--text-2);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.flow-node-head input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 7px 11px; }
+
+.flow-node-body { display: flex; gap: 8px; }
+
+.flow-node-body .dropdown-block { flex: 0 0 200px; }
+
+.flow-node-body input { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 7px 11px; }
+
+.flow-node-head input:focus,
+.flow-node-body input:focus { border-color: var(--accent); }
+
+/* 挂载弹窗 */
+.mount-group { padding: 10px 0; border-bottom: 1px solid var(--border-light); }
+
+.mount-group:last-child { border-bottom: none; }
+
+/* 输入框 + 右侧按钮 */
+.input-with-action { display: flex; gap: 8px; }
+
+.input-with-action input { flex: 1; min-width: 0; }
+
+/* 任务结果中的能力与知识引用 */
+.capability-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.citation-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+
 /* ==================== 响应式适配 ==================== */
 
 /* 大屏：加宽内容上限，充分利用空间 */

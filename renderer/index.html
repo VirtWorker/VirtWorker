@@ -440,31 +440,35 @@
         </header>
 
         <div class="cap-cards">
-          <button class="cap-card">
+          <button class="cap-card active" data-section="skill">
             <span class="cap-icon pink">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
             </span>
             <span class="cap-meta"><span class="cap-title">Skills</span><span class="cap-desc">探索与安装 Skill</span></span>
+            <span class="cap-count" id="cap-count-skill">0</span>
           </button>
-          <button class="cap-card">
+          <button class="cap-card" data-section="connector">
             <span class="cap-icon blue">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
             </span>
             <span class="cap-meta"><span class="cap-title">连接器</span><span class="cap-desc">连接外部工具与服务</span></span>
+            <span class="cap-count" id="cap-count-connector">0</span>
           </button>
-          <button class="cap-card">
+          <button class="cap-card" data-section="knowledge">
             <span class="cap-icon gray">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             </span>
             <span class="cap-meta"><span class="cap-title">知识库</span><span class="cap-desc">沉淀与共享知识</span></span>
+            <span class="cap-count" id="cap-count-knowledge">0</span>
           </button>
-          <button class="cap-card">
+          <button class="cap-card" data-section="flow">
             <span class="cap-icon teal">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V13a3 3 0 0 0 3 3h6.5"/><path d="M18 15.5V11a3 3 0 0 0-3-3h-6.5" opacity="0"/></svg>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V13a3 3 0 0 0 3 3h6.5"/></svg>
             </span>
             <span class="cap-meta"><span class="cap-title">WorkerFlow</span><span class="cap-desc">编排可复用工作流</span></span>
+            <span class="cap-count" id="cap-count-flow">0</span>
           </button>
-          <button class="cap-card">
+          <button class="cap-card" data-soon="公开项目">
             <span class="cap-icon amber">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             </span>
@@ -472,28 +476,72 @@
           </button>
         </div>
 
-        <div class="tabs underline" id="cap-tabs">
-          <button class="tab active" data-tab="market">技能市场</button>
-          <button class="tab" data-tab="mine">我的技能</button>
+        <!-- ========== Skills ========== -->
+        <div class="cap-section" data-section="skill">
+          <div class="tabs underline" id="cap-tabs">
+            <button class="tab active" data-tab="market">技能市场</button>
+            <button class="tab" data-tab="mine">我的技能</button>
+          </div>
+
+          <div class="cap-layout">
+            <aside class="cap-side">
+              <label class="search-box">
+                <input type="text" id="cap-skill-search" placeholder="搜索 Skills..." />
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+              </label>
+              <div class="cap-cats" id="cap-cats"></div>
+            </aside>
+            <div class="cap-main">
+              <div class="cap-main-head">
+                <span class="cap-main-title"><b id="cap-current-cat">全部分类</b>&nbsp;&nbsp;<span id="cap-skill-count" class="cap-skill-count">0 个 Skill</span></span>
+              </div>
+              <div class="skill-grid" id="skill-grid"></div>
+              <div class="empty-block plain hidden" id="skill-empty">
+                <h4 class="empty-title">暂无技能</h4>
+                <p class="empty-desc">安装 Skill 后将展示在这里。</p>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="cap-layout">
-          <aside class="cap-side">
-            <label class="search-box">
-              <input type="text" placeholder="搜索 Skills..." />
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
-            </label>
-            <div class="cap-cats" id="cap-cats"></div>
-          </aside>
-          <div class="cap-main">
-            <div class="cap-main-head">
-              <span class="cap-main-title"><b id="cap-current-cat">全部分类</b>&nbsp;&nbsp;<span id="cap-skill-count" class="cap-skill-count">0 个 Skill</span></span>
-            </div>
-            <div class="skill-grid" id="skill-grid"></div>
-            <div class="empty-block plain hidden" id="skill-empty">
-              <h4 class="empty-title">暂无技能</h4>
-              <p class="empty-desc">安装 Skill 后将展示在这里。</p>
-            </div>
+        <!-- ========== 连接器 ========== -->
+        <div class="cap-section hidden" data-section="connector">
+          <div class="section-head">
+            <h2 class="section-title">连接器</h2>
+            <span class="filter-count" id="connector-summary">0 个已授权</span>
+          </div>
+          <div class="connector-grid" id="connector-grid"></div>
+        </div>
+
+        <!-- ========== 知识库 ========== -->
+        <div class="cap-section hidden" data-section="knowledge">
+          <div class="section-head">
+            <h2 class="section-title">知识库</h2>
+            <button class="btn btn-primary" id="new-knowledge-btn">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              导入目录
+            </button>
+          </div>
+          <div class="knowledge-list" id="knowledge-list"></div>
+          <div class="empty-block plain hidden" id="knowledge-empty">
+            <h4 class="empty-title">还没有知识库</h4>
+            <p class="empty-desc">导入本地目录后，挂载该知识库的 Worker 在任务执行时会按需检索其中的内容。</p>
+          </div>
+        </div>
+
+        <!-- ========== WorkerFlow ========== -->
+        <div class="cap-section hidden" data-section="flow">
+          <div class="section-head">
+            <h2 class="section-title">WorkerFlow</h2>
+            <button class="btn btn-primary" id="new-flow-btn">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              新建流程
+            </button>
+          </div>
+          <div class="flow-list" id="flow-list"></div>
+          <div class="empty-block plain hidden" id="flow-empty">
+            <h4 class="empty-title">还没有流程</h4>
+            <p class="empty-desc">把多个 Worker 串成一条流水线，任务与自动任务都可以直接引用该流程作为执行者。</p>
           </div>
         </div>
       </section>
@@ -767,6 +815,123 @@
       <div class="task-detail" id="automation-history-body"></div>
       <div class="modal-footer">
         <button type="button" class="btn btn-primary" id="automation-history-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 连接器授权弹窗 ==================== -->
+  <div class="modal-mask hidden" id="connector-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="connector-modal-title">授权连接器</h3>
+        <button class="icon-btn" id="connector-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="connector-form">
+        <p class="form-hint" id="connector-hint"></p>
+        <div class="form-item">
+          <label class="form-label required">访问凭据</label>
+          <input type="password" name="secret" id="connector-secret" placeholder="粘贴 Token / Webhook 地址" autocomplete="off" required />
+        </div>
+        <p class="form-hint">凭据由主进程加密保存，界面只显示掩码，卸载或撤销后立即失效。</p>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="connector-modal-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存授权</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== 新建知识库弹窗 ==================== -->
+  <div class="modal-mask hidden" id="knowledge-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>导入知识库</h3>
+        <button class="icon-btn" id="knowledge-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="knowledge-form">
+        <div class="form-item">
+          <label class="form-label required">名称</label>
+          <input type="text" name="name" placeholder="例如：产品知识库" required maxlength="30" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">描述</label>
+          <input type="text" name="desc" placeholder="选填" maxlength="100" />
+        </div>
+        <div class="form-item">
+          <label class="form-label required">目录</label>
+          <div class="input-with-action">
+            <input type="text" name="dir" id="knowledge-dir" placeholder="选择一个本地目录" readonly required />
+            <button type="button" class="btn btn-outline" id="pick-directory-btn">选择目录</button>
+          </div>
+          <p class="form-hint">仅索引文本类文件（.md/.txt/.json/.csv/代码等），自动跳过 node_modules、.git、dist 等目录；建议单库不超过数百个文件。</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="knowledge-modal-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">导入并索引</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== WorkerFlow 编排弹窗 ==================== -->
+  <div class="modal-mask hidden" id="flow-modal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="flow-modal-title">新建流程</h3>
+        <button class="icon-btn" id="flow-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="flow-form">
+        <div class="form-row">
+          <div class="form-item">
+            <label class="form-label required">流程名称</label>
+            <input type="text" name="name" placeholder="例如：竞品调研流水线" required maxlength="30" />
+          </div>
+          <div class="form-item">
+            <label class="form-label">描述</label>
+            <input type="text" name="desc" placeholder="选填" maxlength="100" />
+          </div>
+        </div>
+
+        <div class="form-item">
+          <label class="form-label required">流程步骤（按顺序执行）</label>
+          <div class="flow-nodes" id="flow-nodes"></div>
+          <button type="button" class="mini-btn" id="add-flow-node">+ 添加步骤</button>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="flow-modal-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存流程</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== Worker 能力挂载弹窗 ==================== -->
+  <div class="modal-mask hidden" id="mount-modal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="mount-modal-title">能力挂载</h3>
+        <button class="icon-btn" id="mount-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="task-detail">
+        <div class="form-item">
+          <label class="form-label">Worker</label>
+          <select id="mount-worker" class="modal-select"></select>
+        </div>
+        <p class="form-hint">勾选后，该 Worker 在执行任务时会引用这些能力（知识库会被检索、Skill 与连接器会被注入执行上下文）。</p>
+        <div id="mount-groups"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" id="mount-modal-cancel">取消</button>
+        <button type="button" class="btn btn-primary" id="mount-modal-save">保存</button>
       </div>
     </div>
   </div>

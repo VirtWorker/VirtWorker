@@ -8,7 +8,7 @@ window.VW = window.VW || {};
 VW.views = VW.views || {};
 
 VW.views.dashboard = (() => {
-  const { escapeHtml, debounce, formatTime, statusBadge, statusMeta, PRIORITY_LABEL, ACTION_LABEL } = VW.util;
+  const { escapeHtml, debounce, formatTime, statusBadge, statusMeta, assigneeLabel, PRIORITY_LABEL, ACTION_LABEL } = VW.util;
   const store = VW.store;
 
   /** 详情弹窗当前展示的任务（含待操作请求），提交操作时读取 */
@@ -90,7 +90,9 @@ VW.views.dashboard = (() => {
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
         </div>
-        <div class="queue-meta">${escapeHtml(task.assignee.name)} · ${ACTION_LABEL[request.type] || '操作'} · ${formatTime(task.createdAt)}</div>
+        <div class="queue-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${ACTION_LABEL[request.type] || '操作'} · ${formatTime(
+          task.createdAt
+        )}</div>
         ${actionBlockHtml(request)}
         <div class="queue-foot">
           <button class="mini-btn" data-act="detail">查看详情</button>
@@ -145,7 +147,7 @@ VW.views.dashboard = (() => {
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
         </div>
-        <div class="queue-meta">${escapeHtml(task.assignee.name)} · 完成于 ${formatTime(task.finishedAt)}</div>
+        <div class="queue-meta">${escapeHtml(assigneeLabel(task.assignee))} · 完成于 ${formatTime(task.finishedAt)}</div>
         <div class="request-block">
           <div class="result-summary">${escapeHtml(result.summary || '任务已完成')}</div>
           ${result.text ? `<div class="request-detail">${escapeHtml(result.text)}</div>` : ''}
@@ -206,9 +208,9 @@ VW.views.dashboard = (() => {
         <div class="task-row" data-id="${task.id}">
           <div class="task-row-main">
             <div class="task-row-title">${escapeHtml(task.title)}</div>
-            <div class="task-row-meta">${escapeHtml(task.assignee.name)} · ${escapeHtml(task.trigger.label)} · ${formatTime(
-              task.createdAt
-            )}</div>
+            <div class="task-row-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
+              task.trigger.label
+            )} · ${formatTime(task.createdAt)}</div>
           </div>
           <div class="task-row-progress">${progressHtml(task)}</div>
           <div class="task-row-status">${statusBadge(task.status)}</div>
@@ -238,7 +240,7 @@ VW.views.dashboard = (() => {
                       (task) => `
               <div class="board-card" data-id="${task.id}">
                 <div class="board-card-title">${escapeHtml(task.title)}</div>
-                <div class="board-card-meta">${escapeHtml(task.assignee.name)} · ${statusMeta(task.status).label}</div>
+                <div class="board-card-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${statusMeta(task.status).label}</div>
                 ${progressHtml(task)}
               </div>`
                     )
@@ -306,6 +308,33 @@ VW.views.dashboard = (() => {
     }
   }
 
+  /** 执行结果中体现实际用到的能力与知识引用 */
+  function capabilityBlockHtml(capabilities) {
+    if (!capabilities) return '';
+    const rows = [];
+    if (capabilities.skills?.length) rows.push(`Skill：${capabilities.skills.join('、')}`);
+    if (capabilities.connectors?.length) rows.push(`连接器：${capabilities.connectors.join('、')}`);
+    if (capabilities.knowledge?.length) rows.push(`知识库：${capabilities.knowledge.join('、')}`);
+    const citations = capabilities.citations || [];
+    if (!rows.length && !citations.length) return '';
+    return `
+      <div class="capability-block">
+        ${rows.map((row) => `<div class="automation-line">${escapeHtml(row)}</div>`).join('')}
+        ${
+          citations.length
+            ? `<div class="citation-list">${citations
+                .map(
+                  (hit) => `<div class="knowledge-hit">
+                    <div class="hit-file">${escapeHtml(hit.file)} · ${escapeHtml(hit.library)}</div>
+                    <div class="hit-snippet">${escapeHtml(hit.snippet)}</div>
+                  </div>`
+                )
+                .join('')}</div>`
+            : ''
+        }
+      </div>`;
+  }
+
   // ==================== 任务详情 ====================
 
   async function openDetail(id) {
@@ -352,7 +381,7 @@ VW.views.dashboard = (() => {
     body.innerHTML = `
       <div class="detail-meta">
         ${statusBadge(task.status)}
-        <span>${escapeHtml(task.assignee.name)}</span>
+        <span>${escapeHtml(assigneeLabel(task.assignee))}</span>
         <span>${escapeHtml(task.trigger.label)}</span>
         <span>优先级 ${PRIORITY_LABEL[task.priority] || task.priority}</span>
         <span>创建于 ${formatTime(task.createdAt)}</span>
@@ -379,6 +408,7 @@ VW.views.dashboard = (() => {
                <div class="chip-row">${(task.result.artifacts || [])
                  .map((artifact) => `<span class="chip">${escapeHtml(artifact)}</span>`)
                  .join('')}</div>
+               ${capabilityBlockHtml(task.result.capabilities)}
              </div>`
           : ''
       }

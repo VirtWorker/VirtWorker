@@ -10,7 +10,7 @@ const path = require('node:path');
 const schema = require('./schema');
 const { fail } = require('../util/errors');
 
-const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations'];
+const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations', 'capabilities', 'chunks', 'flows'];
 
 let baseDir = '';
 const cache = new Map();
@@ -123,6 +123,18 @@ function remove(name, id) {
   return { id };
 }
 
+/** 批量删除（如重建知识库索引），只写一次磁盘 */
+function removeWhere(name, predicate) {
+  const items = cache.get(name) || [];
+  const kept = items.filter((item) => !predicate(item));
+  const removed = items.length - kept.length;
+  if (removed) {
+    cache.set(name, kept);
+    persist(name, kept);
+  }
+  return { removed };
+}
+
 function getSettings() {
   return clone(settings);
 }
@@ -133,4 +145,4 @@ function setSettings(patch) {
   return clone(settings);
 }
 
-module.exports = { init, all, find, insert, update, remove, getSettings, setSettings, COLLECTIONS };
+module.exports = { init, all, find, insert, update, remove, removeWhere, getSettings, setSettings, COLLECTIONS };

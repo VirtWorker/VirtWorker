@@ -155,6 +155,11 @@
         return;
       }
 
+      if (type.startsWith('capability:') || type.startsWith('flow:')) {
+        VW.views.capabilities.refresh();
+        return;
+      }
+
       if (type.startsWith('worker:') || type.startsWith('group:')) {
         VW.views.workers.refreshAll();
       }
@@ -184,6 +189,8 @@
         automations: data.automations,
         automationStats: data.automationStats,
         apiServer: data.runtime.apiServer,
+        capabilityStats: data.capabilityStats,
+        flows: data.flows,
         settings: data.settings
       });
       store.state.filters.statsPeriod = data.settings.period || 'month';

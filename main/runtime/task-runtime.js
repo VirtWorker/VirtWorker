@@ -8,6 +8,7 @@ const db = require('../store/db');
 const bus = require('./event-bus');
 const taskService = require('../services/task-service');
 const workerService = require('../services/worker-service');
+const flowService = require('../services/flow-service');
 const executor = require('./executor-mock');
 
 /** taskId → { timer, actionUsed }：仅保存执行过程中的瞬时上下文，不持久化 */
@@ -32,20 +33,49 @@ function recover() {
   });
 }
 
+/**
+ * 解析任务的执行方式：
+ * - flow：按 WorkerFlow 节点逐步委派（节点 Worker 必须都存在）
+ * - worker：单 Worker / Group（Group 归一到组长）
+ * - offline：执行者当前不在线，保持排队
+ */
+function resolveExecution(task) {
+  if (task.assignee.type === 'flow') {
+    const plan = flowService.buildPlan(task.assignee.id);
+    const missing = plan.nodes.filter((node) => !node.worker);
+    if (missing.length) {
+      return { kind: 'invalid', reason: `流程节点绑定的 Worker 已删除：${missing.map((node) => node.title).join('、')}` };
+    }
+    return { kind: 'flow', plan };
+  }
+  const worker = workerService.resolveExecutorWorker(task.assignee);
+  if (!worker || worker.status === 'offline') return { kind: 'offline', name: task.assignee.name };
+  return { kind: 'worker', worker };
+}
+
 function dispatch(taskId) {
   if (contexts.has(taskId)) return; // 防止重复派发导致并行执行
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.queued) return;
 
-  const worker = workerService.resolveExecutorWorker(task.assignee);
-  if (!worker || worker.status === 'offline') {
+  const execution = resolveExecution(task);
+  if (execution.kind === 'offline') {
     // 保持排队状态并记录时间线，任务不丢失
-    taskService.recordEvent(taskId, `执行者「${task.assignee.name}」当前不在线，任务等待中`);
+    taskService.recordEvent(taskId, `执行者「${execution.name}」当前不在线，任务等待中`);
+    return;
+  }
+  if (execution.kind === 'invalid') {
+    taskService.failTask(taskId, { code: 'VALIDATION_FAILED', message: execution.reason });
     return;
   }
 
   contexts.set(taskId, { timer: null, actionUsed: false });
-  taskService.markRunning(taskId, executor.buildSteps(task, worker), `已派发给「${worker.name}」`);
+  const isFlow = execution.kind === 'flow';
+  const steps = isFlow ? executor.buildFlowSteps(task, execution.plan) : executor.buildSteps(task, execution.worker);
+  const message = isFlow
+    ? `已按 WorkerFlow「${execution.plan.flow.name}」启动，共 ${steps.length} 个节点`
+    : `已派发给「${execution.worker.name}」`;
+  taskService.markRunning(taskId, steps, message);
   pump(taskId);
 }
 
@@ -75,7 +105,8 @@ function pump(taskId) {
       return;
     }
 
-    taskService.completeStep(taskId, step.step, executor.stepLog(fresh, step));
+    const outcome = executor.runStep(fresh, step);
+    taskService.completeStep(taskId, step.step, outcome.log, outcome.citations);
     pump(taskId);
   }, executor.stepDelay());
 }
@@ -92,7 +123,7 @@ function finish(taskId) {
 
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.running) return;
-  const worker = workerService.resolveExecutorWorker(task.assignee);
+  const worker = task.assignee.type === 'flow' ? null : workerService.resolveExecutorWorker(task.assignee);
   taskService.succeed(taskId, executor.buildResult(task, worker));
 }
 
