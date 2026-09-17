@@ -166,7 +166,7 @@ input, select, textarea {
 
 /* 侧边栏 Worker 面板 */
 .sidebar-worker-panel {
-  margin-top: auto;
+  margin-top: 8px;
   padding: 0 12px 8px;
   border-top: 1px solid var(--border-light);
 }
@@ -244,6 +244,8 @@ input, select, textarea {
 
 /* 侧边栏底部用户区 */
 .sidebar-footer {
+  margin-top: auto;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -290,7 +292,8 @@ input, select, textarea {
   display: none;
 }
 
-.sidebar.collapsed .sidebar-worker-panel { border-top: none; }
+/* 折叠态仍将操作按钮固定在底部 */
+.sidebar.collapsed .sidebar-worker-panel { margin-top: auto; border-top: none; }
 
 .sidebar.collapsed .worker-quick-actions { justify-content: center; }
 .sidebar.collapsed .worker-quick-actions .btn-block { display: none; }
