@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('virtworker', {
   /** 应用启动数据一次性拉取 */
   bootstrap: () => invoke('app:bootstrap'),
 
+  /** 复制文本到系统剪贴板（由主进程执行，避免渲染层权限限制） */
+  copyText: (text) => invoke('app:copy-text', { text }),
+
   settings: {
     get: () => invoke('settings:get'),
     update: (patch) => invoke('settings:update', patch)
@@ -52,6 +55,18 @@ contextBridge.exposeInMainWorld('virtworker', {
     cancel: (id, reason) => invoke('task:cancel', { id, reason }),
     ack: (id) => invoke('task:ack', { id }),
     answer: (payload) => invoke('task:answer', payload)
+  },
+
+  /** 自主工作：自动任务 */
+  automation: {
+    list: (query) => invoke('automation:list', query),
+    stats: () => invoke('automation:stats'),
+    create: (payload) => invoke('automation:create', payload),
+    update: (id, patch) => invoke('automation:update', { id, patch }),
+    toggle: (id, enabled) => invoke('automation:toggle', { id, enabled }),
+    remove: (id) => invoke('automation:remove', { id }),
+    detail: (id) => invoke('automation:detail', { id }),
+    runtime: () => invoke('automation:runtime')
   },
 
   /** 订阅主进程事件；返回取消订阅函数 */

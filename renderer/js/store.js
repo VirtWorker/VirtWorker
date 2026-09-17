@@ -16,11 +16,17 @@ VW.store = (() => {
     /** 周期内的任务队列（需要操作 / 查收结果），不受「全部任务」筛选栏影响 */
     queue: { action: [], result: [] },
     stats: { total: 0, running: 0, needAction: 0, finished: 0, workingWorkers: 0 },
+    /** 自动任务（自主工作页） */
+    automations: [],
+    automationStats: { total: 0, enabled: 0, workerCount: 0, flowCount: 0 },
+    /** 本地触发端点状态（API 触发） */
+    apiServer: { running: false, port: null, error: null },
     settings: { taskView: 'list', period: 'month', mockRandomAction: true, notify: true },
     filters: {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
       statsPeriod: 'month',
-      worker: { keyword: '', status: '在线', role: '', env: '', sort: '' }
+      worker: { keyword: '', status: '在线', role: '', env: '', sort: '' },
+      automation: { executorId: '', triggerType: '', status: '', sort: '最近创建' }
     },
     ui: {
       page: 'dashboard',
@@ -67,5 +73,12 @@ VW.store = (() => {
     notify([section]);
   }
 
-  return { state, on, set, merge };
+  /** 执行者下拉选项：Worker 与 Group 共用（任务派发、自动任务执行者） */
+  function assigneeOptions() {
+    const workers = state.workers.map((worker) => ({ value: worker.id, label: `Worker · ${worker.name}` }));
+    const groups = state.groups.map((group) => ({ value: group.id, label: `Group · ${group.name}` }));
+    return [...workers, ...groups];
+  }
+
+  return { state, on, set, merge, assigneeOptions };
 })();

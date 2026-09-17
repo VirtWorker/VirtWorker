@@ -150,6 +150,11 @@
         return;
       }
 
+      if (type.startsWith('automation:')) {
+        VW.views.automations.refresh();
+        return;
+      }
+
       if (type.startsWith('worker:') || type.startsWith('group:')) {
         VW.views.workers.refreshAll();
       }
@@ -176,6 +181,9 @@
         groups: data.groups,
         tasks: data.tasks,
         stats: data.stats,
+        automations: data.automations,
+        automationStats: data.automationStats,
+        apiServer: data.runtime.apiServer,
         settings: data.settings
       });
       store.state.filters.statsPeriod = data.settings.period || 'month';
@@ -201,6 +209,7 @@
     VW.views.capabilities.init();
     VW.views.workers.init();
     VW.views.dashboard.init();
+    VW.views.automations.init();
 
     store.on(['workers', 'groups', 'ui'], renderSidebar);
     store.on('stats', renderNavBadge);

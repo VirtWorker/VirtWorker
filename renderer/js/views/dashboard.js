@@ -395,9 +395,7 @@ VW.views.dashboard = (() => {
   // ==================== 新建任务 ====================
 
   function assigneeOptions() {
-    const workers = store.state.workers.map((worker) => ({ value: worker.id, label: `Worker · ${worker.name}` }));
-    const groups = store.state.groups.map((group) => ({ value: group.id, label: `Group · ${group.name}` }));
-    return [...workers, ...groups];
+    return store.assigneeOptions();
   }
 
   function fillAssigneeSelect(selectedId) {

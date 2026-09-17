@@ -3,6 +3,8 @@ const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
 const runtime = require('./runtime/task-runtime');
+const scheduler = require('./runtime/scheduler');
+const httpServer = require('./runtime/http-server');
 
 /**
  * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
@@ -19,7 +21,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 /**
- * 装配领域层：持久化 → IPC 通道 → 任务运行时。
+ * 装配领域层：持久化 → IPC 通道 → 任务运行时 → 自动任务调度与本地触发端点。
  * 初始化失败不阻塞窗口创建，页面会以空数据降级启动。
  */
 function bootstrapServices() {
@@ -27,6 +29,8 @@ function bootstrapServices() {
     db.init(path.join(app.getPath('userData'), 'data'));
     ipc.register();
     runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
+    scheduler.start(); // 启动补跑错过的定时任务并排程
+    httpServer.start(); // API 触发的本地端点（仅回环地址）
   } catch (error) {
     console.error('[main] 领域服务初始化失败:', error);
   }
@@ -124,4 +128,10 @@ process.on('uncaughtException', (error) => {
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[main] 未处理的 Promise 拒绝:', reason);
+});
+
+// 退出前释放调度定时器与本地端点
+app.on('before-quit', () => {
+  scheduler.stop();
+  httpServer.stop();
 });

@@ -4,15 +4,24 @@
  * - 统一把事件总线上的事件以 app:event 转发给所有窗口
  */
 
-const { ipcMain, BrowserWindow } = require('electron');
+const { ipcMain, BrowserWindow, clipboard } = require('electron');
 const bus = require('../runtime/event-bus');
 const db = require('../store/db');
 const workerService = require('../services/worker-service');
 const taskService = require('../services/task-service');
+const automationService = require('../services/automation-service');
+const httpServer = require('../runtime/http-server');
 
 const API_VERSION = 1;
 
-const DEFAULT_SETTINGS = { taskView: 'list', period: 'month', mockRandomAction: true, notify: true };
+const DEFAULT_SETTINGS = {
+  taskView: 'list',
+  period: 'month',
+  mockRandomAction: true,
+  notify: true,
+  catchUpMissed: true,
+  apiPort: httpServer.DEFAULT_PORT
+};
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
 const TASK_VIEWS = ['list', 'board'];
 const PERIODS = ['week', 'month', 'quarter'];
@@ -28,6 +37,12 @@ function sanitizeSettings(patch = {}) {
     if (patch[key] === undefined) return;
     if (key === 'taskView' && !TASK_VIEWS.includes(patch[key])) return;
     if (key === 'period' && !PERIODS.includes(patch[key])) return;
+    if (key === 'apiPort') {
+      const port = Number(patch[key]);
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) return;
+      safe[key] = port;
+      return;
+    }
     safe[key] = typeof DEFAULT_SETTINGS[key] === 'boolean' ? Boolean(patch[key]) : patch[key];
   });
   return safe;
@@ -62,7 +77,10 @@ function register() {
       groups: workerService.listGroups(),
       tasks: taskService.list({ period: settings.period }).items,
       stats: taskService.stats(settings.period),
-      settings
+      automations: automationService.list().items,
+      automationStats: automationService.stats(),
+      settings,
+      runtime: { apiServer: httpServer.getStatus() }
     };
   });
 
@@ -88,6 +106,22 @@ function register() {
   handle('task:cancel', ({ id, reason } = {}) => taskService.cancel(id, reason));
   handle('task:ack', ({ id } = {}) => taskService.ack(id));
   handle('task:answer', (payload) => taskService.answer(payload));
+
+  // 自主工作（自动任务）
+  handle('automation:list', (query) => automationService.list(query));
+  handle('automation:stats', () => automationService.stats());
+  handle('automation:create', (payload) => automationService.create(payload));
+  handle('automation:update', ({ id, patch } = {}) => automationService.update(id, patch));
+  handle('automation:toggle', ({ id, enabled } = {}) => automationService.toggle(id, enabled));
+  handle('automation:remove', ({ id } = {}) => automationService.remove(id));
+  handle('automation:detail', ({ id } = {}) => automationService.detail(id));
+  handle('automation:runtime', () => ({ apiServer: httpServer.getStatus() }));
+
+  // 通用能力：由主进程写系统剪贴板（复制端点/Token）
+  handle('app:copy-text', ({ text } = {}) => {
+    clipboard.writeText(String(text ?? ''));
+    return { copied: true };
+  });
 
   bus.on(({ type, payload }) => {
     BrowserWindow.getAllWindows().forEach((win) => {

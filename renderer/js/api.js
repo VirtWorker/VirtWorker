@@ -24,6 +24,9 @@ VW.api = (() => {
   return {
     bootstrap: () => call(bridge?.bootstrap),
 
+    /** 复制文本到系统剪贴板 */
+    copyText: (text) => call(bridge?.copyText, text),
+
     settings: {
       get: () => call(bridge?.settings?.get),
       update: (patch) => call(bridge?.settings?.update, patch)
@@ -51,6 +54,17 @@ VW.api = (() => {
       cancel: (id, reason) => call(bridge?.task?.cancel, id, reason),
       ack: (id) => call(bridge?.task?.ack, id),
       answer: (payload) => call(bridge?.task?.answer, payload)
+    },
+
+    automation: {
+      list: (query) => call(bridge?.automation?.list, query),
+      stats: () => call(bridge?.automation?.stats),
+      create: (payload) => call(bridge?.automation?.create, payload),
+      update: (id, patch) => call(bridge?.automation?.update, id, patch),
+      toggle: (id, enabled) => call(bridge?.automation?.toggle, id, enabled),
+      remove: (id) => call(bridge?.automation?.remove, id),
+      detail: (id) => call(bridge?.automation?.detail, id),
+      runtime: () => call(bridge?.automation?.runtime)
     },
 
     /** 订阅主进程事件，返回取消订阅函数 */

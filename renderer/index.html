@@ -297,7 +297,7 @@
             <h1>自主工作</h1>
             <p class="page-subtitle">通过定时、事件或 API 自动开工，并由 Worker 或 WorkerFlow 响应。</p>
           </div>
-          <button class="btn btn-primary" data-soon="新建自动任务">
+          <button class="btn btn-primary" id="new-automation-btn">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             新建自动任务
           </button>
@@ -306,50 +306,60 @@
         <div class="gray-panel">
           <div class="stat-cards flat">
             <div class="stat-item">
-              <div class="stat-num">0</div>
+              <div class="stat-num" id="auto-stat-total">0</div>
               <div class="stat-label">自动任务总数</div>
               <div class="stat-desc">全部自动任务</div>
             </div>
             <div class="stat-item">
-              <div class="stat-num">0</div>
+              <div class="stat-num" id="auto-stat-enabled">0</div>
               <div class="stat-label">已启用</div>
               <div class="stat-desc">当前已启用的自动任务</div>
             </div>
             <div class="stat-item">
-              <div class="stat-num">0</div>
+              <div class="stat-num" id="auto-stat-worker">0</div>
               <div class="stat-label">Worker 执行</div>
               <div class="stat-desc">由 Worker 执行的自动任务</div>
             </div>
             <div class="stat-item">
-              <div class="stat-num">0</div>
+              <div class="stat-num" id="auto-stat-flow">0</div>
               <div class="stat-label">WorkerFlow 执行</div>
               <div class="stat-desc">由 WorkerFlow 执行的自动任务</div>
             </div>
           </div>
         </div>
 
+        <div class="api-hint hidden" id="api-status"></div>
+
         <div class="filter-bar">
           <label class="select">
             <span class="select-label">执行者</span>
-            <select><option>全部执行者</option></select>
+            <select id="auto-filter-executor"><option value="">全部执行者</option></select>
           </label>
           <label class="select">
             <span class="select-label">触发类型</span>
-            <select><option>全部类型</option><option>定时</option><option>事件</option><option>API</option></select>
+            <select id="auto-filter-trigger">
+              <option>全部类型</option>
+              <option>定时</option>
+              <option>事件</option>
+              <option>API</option>
+            </select>
           </label>
           <label class="select">
             <span class="select-label">自动任务状态</span>
-            <select><option>全部状态</option><option>已启用</option><option>已停用</option></select>
+            <select id="auto-filter-status"><option>全部状态</option><option>已启用</option><option>已停用</option></select>
           </label>
           <label class="select">
             <span class="select-label">排序</span>
-            <select><option>最近创建</option><option>最近更新</option></select>
+            <select id="auto-filter-sort"><option>最近创建</option><option>最近更新</option></select>
           </label>
         </div>
 
-        <div class="empty-block tall">
+        <div class="automation-list" id="automation-list"></div>
+
+        <div class="empty-block tall" id="automation-empty">
           <h4 class="empty-title">还没有自动任务</h4>
           <p class="empty-desc">创建自动任务，按定时、事件或 API 自动唤醒 Worker / WorkerFlow。</p>
+          <button class="btn btn-primary empty-action" id="automation-empty-action">新建自动任务</button>
         </div>
       </section>
 
@@ -622,6 +632,145 @@
     </div>
   </div>
 
+  <!-- ==================== 自动任务弹窗（新建 / 编辑） ==================== -->
+  <div class="modal-mask hidden" id="automation-modal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="automation-modal-title">新建自动任务</h3>
+        <button class="icon-btn" id="automation-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="automation-form">
+        <div class="form-row">
+          <div class="form-item">
+            <label class="form-label required">名称</label>
+            <input type="text" name="name" placeholder="例如：每早客户反馈汇总" required maxlength="40" />
+          </div>
+          <div class="form-item">
+            <label class="form-label">描述</label>
+            <input type="text" name="desc" placeholder="选填" maxlength="100" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-item">
+            <label class="form-label required">执行者</label>
+            <select name="executorId" id="automation-executor" class="modal-select"></select>
+          </div>
+          <div class="form-item">
+            <label class="form-label required">触发方式</label>
+            <select name="triggerType" id="automation-trigger-type" class="modal-select">
+              <option value="schedule">定时触发</option>
+              <option value="event">事件触发</option>
+              <option value="api">API 触发</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-item" data-group="schedule">
+          <label class="form-label">重复方式</label>
+          <select name="scheduleMode" id="automation-schedule-mode" class="modal-select">
+            <option value="interval">按间隔重复</option>
+            <option value="hourly">每小时</option>
+            <option value="daily" selected>每天</option>
+            <option value="weekly">每周</option>
+            <option value="once">仅一次</option>
+          </select>
+        </div>
+        <div class="form-item" data-group="schedule" data-mode="interval">
+          <label class="form-label">间隔（分钟）</label>
+          <input type="number" name="everyMinutes" min="1" max="1440" value="30" />
+        </div>
+        <div class="form-row">
+          <div class="form-item hidden" data-group="schedule" data-mode="hourly daily weekly">
+            <label class="form-label">时间（时:分）</label>
+            <input type="time" name="time" value="09:00" />
+          </div>
+          <div class="form-item hidden" data-group="schedule" data-mode="weekly">
+            <label class="form-label">星期</label>
+            <select name="weekday" id="automation-weekday" class="modal-select">
+              <option value="1" selected>周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="0">周日</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-item hidden" data-group="schedule" data-mode="once">
+          <label class="form-label">触发时间</label>
+          <input type="datetime-local" name="at" />
+        </div>
+
+        <div class="form-row">
+          <div class="form-item hidden" data-group="event">
+            <label class="form-label">事件</label>
+            <select name="eventSource" id="automation-event-source" class="modal-select">
+              <option value="task_succeeded">任意任务完成时</option>
+              <option value="task_failed">任意任务失败时</option>
+            </select>
+          </div>
+          <div class="form-item hidden" data-group="event">
+            <label class="form-label">限定执行者</label>
+            <select name="eventAssignee" id="automation-event-assignee" class="modal-select">
+              <option value="">不限</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-item hidden" data-group="api">
+          <p class="form-hint">保存后会生成专属 Token，可用本地端点 <code>POST /automations/:id/run</code> 触发；端点与 Token 会展示在卡片上并可一键复制。</p>
+        </div>
+
+        <div class="form-item">
+          <label class="form-label required">任务目标</label>
+          <textarea name="goal" rows="3" placeholder="触发时交给 Worker 的目标，例如：整理客户反馈并给出优先级" maxlength="500" required></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-item">
+            <label class="form-label">工作目录</label>
+            <input type="text" name="workspace" placeholder="选填" />
+          </div>
+          <div class="form-item">
+            <label class="form-label">优先级</label>
+            <select name="priority" id="automation-priority" class="modal-select">
+              <option value="normal">普通</option>
+              <option value="high">高</option>
+              <option value="urgent">紧急</option>
+              <option value="low">低</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-item">
+          <label class="checkbox-row"><input type="checkbox" name="confirmFirst" /><span>执行前先让我确认方向</span></label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="automation-modal-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== 自动任务运行历史 ==================== -->
+  <div class="modal-mask hidden" id="automation-history-modal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="automation-history-title">运行历史</h3>
+        <button class="icon-btn" id="automation-history-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="task-detail" id="automation-history-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="automation-history-ok">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast -->
   <div class="toast hidden" id="toast"></div>
 
@@ -634,6 +783,7 @@
   <script src="js/views/capabilities.js"></script>
   <script src="js/views/workers.js"></script>
   <script src="js/views/dashboard.js"></script>
+  <script src="js/views/automations.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

@@ -80,7 +80,13 @@ function getOrThrow(id) {
 
 function normalizeTrigger(trigger) {
   const type = TRIGGER_LABEL[trigger?.type] ? trigger.type : 'manual';
-  return { type, refId: trigger?.refId ?? null, label: TRIGGER_LABEL[type] };
+  return {
+    type,
+    refId: trigger?.refId ?? null,
+    /** 事件触发链深度：防止自动任务互相触发形成无限循环 */
+    depth: Number.isInteger(trigger?.depth) ? trigger.depth : 0,
+    label: TRIGGER_LABEL[type]
+  };
 }
 
 /** 解析执行者：支持 Worker 与 Group（Group 归一为组长/首个成员代表执行） */
@@ -145,8 +151,11 @@ function create(params = {}) {
 }
 
 function list(filter = {}) {
-  const period = filter.period || 'month';
+  // period 显式传空字符串表示不限时间（如自动任务的运行历史）
+  const period = filter.period === undefined ? 'month' : filter.period;
   let items = db.all('tasks').filter((task) => isWithinPeriod(task.createdAt, period));
+
+  if (filter.refId) items = items.filter((task) => task.trigger.refId === filter.refId);
 
   const statuses = STATUS_FILTER[filter.status];
   if (statuses) items = items.filter((task) => statuses.includes(task.status));
@@ -169,7 +178,8 @@ function list(filter = {}) {
   }
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return { items: items.map(publicTask), total: items.length };
+  const limited = filter.limit ? items.slice(0, filter.limit) : items;
+  return { items: limited.map(publicTask), total: items.length };
 }
 
 /** 看板统计口径（与 list 共用同一时间过滤，保证数字与列表一致） */
@@ -352,6 +362,7 @@ function succeed(id, result) {
     title: `「${next.title}」已完成`,
     body: '结果已生成，可在「查收结果」中查看。'
   });
+  notifyFinished(next);
   return publicTask(next);
 }
 
@@ -364,7 +375,20 @@ function failTask(id, error) {
     appendEvent(t, 'failed', `执行失败：${t.error.message}`, { from, to: STATUS.failed });
   });
   publish(next, 'task:updated');
+  notifyFinished(next);
   return publicTask(next);
+}
+
+/** 通知调度器：任务进入终态（供事件触发的自动任务使用） */
+function notifyFinished(task) {
+  bus.command('task:finished', {
+    taskId: task.id,
+    title: task.title,
+    status: task.status,
+    assigneeId: task.assignee.id,
+    triggerRefId: task.trigger.refId,
+    depth: task.trigger.depth || 0
+  });
 }
 
 /** 仅记录时间线（如执行者离线等待），不改变任务状态 */
@@ -386,6 +410,7 @@ module.exports = {
   ack,
   answer,
   getTask,
+  resolveAssignee,
   markRunning,
   startStep,
   completeStep,
