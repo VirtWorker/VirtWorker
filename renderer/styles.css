@@ -76,8 +76,10 @@ input, select, textarea {
 
 .page {
   display: none;
-  padding: 32px 40px 60px;
-  max-width: 1280px;
+  padding: 32px 48px 60px;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto; /* 宽窗口下内容居中，避免右侧大面积留白 */
 }
 
 .page.active { display: block; }
@@ -1154,6 +1156,46 @@ input, select, textarea {
 @keyframes toast-in {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ==================== 响应式适配 ==================== */
+
+/* 大屏：加宽内容上限，充分利用空间 */
+@media (min-width: 1600px) {
+  .page { max-width: 1600px; }
+  .skill-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
+
+/* 中屏：@Worker Hero 上下堆叠 */
+@media (max-width: 1200px) {
+  .atworker-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 28px;
+  }
+
+  .atworker-hero-graphic { width: 100%; max-width: 520px; }
+
+  .cap-layout { flex-direction: column; }
+  .cap-side { width: 100%; }
+  .cap-cats { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  .cap-cat .cat-count { margin-left: 6px; }
+}
+
+/* 窄窗口：统计卡片降为两列、精简留白 */
+@media (max-width: 960px) {
+  .page { padding: 24px 24px 48px; }
+
+  .stat-cards { grid-template-columns: repeat(2, 1fr); }
+
+  .stat-cards.flat { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px 0; }
+  .stat-item:nth-child(2) { border-right: none; }
+
+  .hero-title { font-size: 24px; }
+
+  .search-box { width: 100%; }
+
+  .page-header { flex-direction: column; align-items: flex-start; }
 }
 
 /* ==================== 滚动条 ==================== */
