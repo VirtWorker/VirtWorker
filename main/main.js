@@ -1,8 +1,11 @@
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('node:path');
+const db = require('./store/db');
+const ipc = require('./ipc');
+const runtime = require('./runtime/task-runtime');
 
 /**
- * 主进程入口：负责窗口创建、应用生命周期管理与全局安全设置。
+ * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
  */
 
 const isDev = process.argv.includes('--dev') || !app.isPackaged;
@@ -13,6 +16,20 @@ let mainWindow = null;
 /** 单实例锁：避免重复启动多个应用实例（Windows 桌面应用常规实践） */
 if (!app.requestSingleInstanceLock()) {
   app.quit();
+}
+
+/**
+ * 装配领域层：持久化 → IPC 通道 → 任务运行时。
+ * 初始化失败不阻塞窗口创建，页面会以空数据降级启动。
+ */
+function bootstrapServices() {
+  try {
+    db.init(path.join(app.getPath('userData'), 'data'));
+    ipc.register();
+    runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
+  } catch (error) {
+    console.error('[main] 领域服务初始化失败:', error);
+  }
 }
 
 function createWindow() {
@@ -83,6 +100,7 @@ ipcMain.handle('app:ping', (_event, message) => {
 });
 
 app.whenReady().then(() => {
+  bootstrapServices();
   createWindow();
 
   app.on('activate', () => {

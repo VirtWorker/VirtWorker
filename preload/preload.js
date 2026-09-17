@@ -1,9 +1,12 @@
-const { contextBridge, ipcRenderer } = require('electron');
-
 /**
  * 预加载脚本：在渲染进程与主进程之间建立受控的安全桥接。
- * 仅暴露明确需要的 API，不泄漏 Node/Electron 原生能力。
+ * 仅暴露明确需要的 API，不泄漏 Node/Electron 原生能力；
+ * 统一返回主进程的原始响应包 { ok, data, error }，由渲染层 api.js 解包。
  */
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 
 contextBridge.exposeInMainWorld('virtworker', {
   /** 应用基础信息 */
@@ -17,5 +20,44 @@ contextBridge.exposeInMainWorld('virtworker', {
   },
 
   /** 示例：调用主进程能力（按需扩展） */
-  ping: (message) => ipcRenderer.invoke('app:ping', message)
+  ping: (message) => ipcRenderer.invoke('app:ping', message),
+
+  /** 应用启动数据一次性拉取 */
+  bootstrap: () => invoke('app:bootstrap'),
+
+  settings: {
+    get: () => invoke('settings:get'),
+    update: (patch) => invoke('settings:update', patch)
+  },
+
+  worker: {
+    list: (query) => invoke('worker:list', query),
+    create: (payload) => invoke('worker:create', payload),
+    update: (id, patch) => invoke('worker:update', { id, patch }),
+    remove: (id) => invoke('worker:remove', { id })
+  },
+
+  group: {
+    list: () => invoke('group:list'),
+    create: (payload) => invoke('group:create', payload),
+    update: (id, patch) => invoke('group:update', { id, patch }),
+    remove: (id) => invoke('group:remove', { id })
+  },
+
+  task: {
+    list: (query) => invoke('task:list', query),
+    stats: (query) => invoke('task:stats', query),
+    create: (payload) => invoke('task:create', payload),
+    detail: (id) => invoke('task:detail', { id }),
+    cancel: (id, reason) => invoke('task:cancel', { id, reason }),
+    ack: (id) => invoke('task:ack', { id }),
+    answer: (payload) => invoke('task:answer', payload)
+  },
+
+  /** 订阅主进程事件；返回取消订阅函数 */
+  onEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app:event', listener);
+    return () => ipcRenderer.off('app:event', listener);
+  }
 });
