@@ -4,35 +4,514 @@
   <meta charset="UTF-8" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
   />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Vivictus</title>
+  <title>VirtWorker</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="container">
-    <header class="hero">
-      <h1 class="title">Vivictus</h1>
-      <p class="subtitle">Electron 桌面应用已就绪</p>
-    </header>
-
-    <section class="card">
-      <h2>运行环境</h2>
-      <ul id="env-list" class="env-list">
-        <li>加载中...</li>
-      </ul>
-    </section>
-
-    <section class="card">
-      <h2>IPC 测试</h2>
-      <div class="row">
-        <input id="ping-input" type="text" placeholder="输入任意内容…" />
-        <button id="ping-btn" type="button">Ping</button>
+  <div class="app">
+    <!-- ==================== 侧边栏 ==================== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-logo">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </span>
+          <span class="brand-name">VirtWorker</span>
+        </div>
+        <button class="icon-btn" id="collapse-btn" title="收起侧边栏">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+        </button>
       </div>
-      <p id="ping-result" class="result">等待调用…</p>
-    </section>
-  </main>
+
+      <nav class="sidebar-nav">
+        <div class="nav-group-label">工作管理</div>
+        <button class="nav-item active" data-page="dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+          <span>任务看板</span>
+        </button>
+        <button class="nav-item" data-page="atworker">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          <span>@Worker</span>
+        </button>
+        <button class="nav-item" data-page="autonomous">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.2 1 2V17h6v-.3c0-.8.4-1.5 1-2A7 7 0 0 0 12 2z"/></svg>
+          <span>自主工作</span>
+        </button>
+
+        <div class="nav-group-label">员工资源</div>
+        <button class="nav-item" data-page="workers">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M2 21v-1a7 7 0 0 1 14 0v1"/><circle cx="19" cy="16" r="3"/><path d="M19 13v-2m0 10v-2m3-2h2m-16 0h2"/></svg>
+          <span>Worker 管理</span>
+        </button>
+        <button class="nav-item" data-page="capabilities">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/></svg>
+          <span>能力与资源</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-worker-panel">
+        <div class="worker-tabs" id="sidebar-worker-tabs">
+          <button class="worker-tab active" data-wtab="worker">Worker (<span id="sidebar-worker-count">0</span>)</button>
+          <button class="worker-tab" data-wtab="group">Group (<span id="sidebar-group-count">0</span>)</button>
+        </div>
+        <div class="worker-quick-actions">
+          <button class="btn btn-outline btn-block" id="quick-new-worker">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建 Worker
+          </button>
+          <button class="icon-btn" title="搜索 Worker">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          </button>
+        </div>
+        <div class="worker-list-hint">仅展示在线 Worker</div>
+        <div class="sidebar-worker-list" id="sidebar-worker-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="avatar avatar-user">J</div>
+        <div class="user-meta">
+          <div class="user-name">JasonShane</div>
+          <div class="user-plan">Free</div>
+        </div>
+        <button class="icon-btn" title="历史记录">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+        </button>
+        <button class="icon-btn" title="设置">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ==================== 主内容区 ==================== -->
+    <main class="content">
+
+      <!-- ========== 页面：任务看板 ========== -->
+      <section class="page active" id="page-dashboard">
+        <header class="page-header">
+          <div>
+            <h1>任务看板</h1>
+            <p class="page-subtitle">从「事」出发：查看 Worker 做了什么，完成必要操作并查收结果。</p>
+          </div>
+        </header>
+
+        <div class="record-panel">
+          <div class="record-panel-head">
+            <h3>工作记录</h3>
+            <label class="select-inline">
+              <span class="select-label">数据周期</span>
+              <select>
+                <option>一个月</option>
+                <option>一周</option>
+                <option>三个月</option>
+              </select>
+            </label>
+          </div>
+          <div class="stat-cards">
+            <div class="stat-card highlight">
+              <div class="stat-num">0</div>
+              <div class="stat-label">任务总数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-num">0</div>
+              <div class="stat-label">进行中任务</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-num">0</div>
+              <div class="stat-label">需要操作</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-num">0</div>
+              <div class="stat-label">已结束任务</div>
+            </div>
+          </div>
+          <div class="record-panel-foot">
+            <span class="zzz">Worker 们正在休息
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="tabs" id="dashboard-tabs">
+          <button class="tab active" data-tab="action">需要操作 (0)</button>
+          <button class="tab" data-tab="result">查收结果 (0)</button>
+        </div>
+        <div class="empty-block" id="dashboard-tab-empty">
+          <h4 class="empty-title">暂无需要操作的任务</h4>
+          <p class="empty-desc">需要你确认、回答或补充信息的任务会显示在这里。</p>
+        </div>
+
+        <div class="section-head">
+          <h2 class="section-title">全部任务</h2>
+          <div class="view-toggle" id="task-view-toggle">
+            <button class="view-btn active" title="列表视图">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
+            </button>
+            <button class="view-btn" title="看板视图">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="5.5" height="16" rx="1.2"/><rect x="9.5" y="4" width="5.5" height="11" rx="1.2"/><rect x="16" y="4" width="5.5" height="14" rx="1.2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="filter-bar">
+          <label class="search-box">
+            <input type="text" placeholder="搜索任务、Worker 或 Group" />
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          </label>
+          <label class="select">
+            <span class="select-label">Worker / Group</span>
+            <select><option>全部</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">触发方式</span>
+            <select><option>全部</option><option>手动创建</option><option>定时触发</option><option>事件触发</option><option>API 触发</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">任务状态</span>
+            <select><option>全部</option><option>进行中</option><option>需要操作</option><option>已结束</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">数据周期</span>
+            <select><option>一个月</option><option>一周</option><option>三个月</option></select>
+          </label>
+        </div>
+        <div class="empty-block plain">
+          <h4 class="empty-title">暂无任务</h4>
+          <p class="empty-desc">当前筛选条件下没有可展示的任务。</p>
+        </div>
+      </section>
+
+      <!-- ========== 页面：@Worker ========== -->
+      <section class="page" id="page-atworker">
+        <div class="atworker-hero">
+          <div class="atworker-hero-text">
+            <div class="hero-tag">@Worker</div>
+            <h1 class="hero-title">理解会话上下文，把讨论变成任务<br/>自动分派 Worker，持续推进交付</h1>
+            <div class="hero-actions">
+              <button class="btn btn-primary">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                开通 @Worker
+              </button>
+              <button class="btn btn-outline">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3l-9 9"/><circle cx="19" cy="5" r="2"/></svg>
+                IM 连接管理
+              </button>
+              <button class="btn btn-outline">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>
+                待处理的聊天接入申请
+              </button>
+            </div>
+          </div>
+          <div class="atworker-hero-graphic">
+            <div class="mock-chat">
+              <div class="mock-chat-head">
+                <span class="mock-chat-tag">Group</span>
+                <span class="mock-chat-name">VirtWorker 1.0</span>
+              </div>
+              <div class="mock-chat-body">
+                <div class="mock-bubble-row">
+                  <div class="mock-bubble"><span class="at-name">@Worker</span> 整理本周客户反馈，并给出优先级</div>
+                  <div class="mock-avatar">C</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <h2 class="section-title">已开通 @Worker 的 IM 聊天</h2>
+          <div class="view-toggle">
+            <button class="view-btn active" title="列表视图">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
+            </button>
+            <button class="view-btn" title="卡片视图">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="1.2"/><rect x="13" y="3" width="8" height="8" rx="1.2"/><rect x="3" y="13" width="8" height="8" rx="1.2"/><rect x="13" y="13" width="8" height="8" rx="1.2"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <label class="search-box">
+            <input type="text" placeholder="搜索聊天或 Worker" />
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          </label>
+          <label class="select">
+            <span class="select-label">聊天类型</span>
+            <select><option>全部</option><option>单聊</option><option>群聊</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">模型</span>
+            <select><option>全部</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">状态</span>
+            <select><option>全部</option><option>已启用</option><option>已停用</option></select>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:36px"><input type="checkbox" disabled /></th>
+                <th>聊天</th><th>IM 连接</th><th>Worker</th><th>工作目录</th><th>模型 <span class="th-help">?</span></th><th>聊天状态</th><th>启用</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="atworker-table-body"></tbody>
+          </table>
+          <div class="empty-block plain" id="atworker-empty">
+            <h4 class="empty-title">还没有开通 @Worker 的聊天</h4>
+            <p class="empty-desc">点击「开通 @Worker」，依次选择 IM 连接、聊天和参与协作的 Worker。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 页面：自主工作 ========== -->
+      <section class="page" id="page-autonomous">
+        <header class="page-header">
+          <div>
+            <h1>自主工作</h1>
+            <p class="page-subtitle">通过定时、事件或 API 自动开工，并由 Worker 或 WorkerFlow 响应。</p>
+          </div>
+          <button class="btn btn-primary">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建自动任务
+          </button>
+        </header>
+
+        <div class="gray-panel">
+          <div class="stat-cards flat">
+            <div class="stat-item">
+              <div class="stat-num">0</div>
+              <div class="stat-label">自动任务总数</div>
+              <div class="stat-desc">全部自动任务</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-num">0</div>
+              <div class="stat-label">已启用</div>
+              <div class="stat-desc">当前已启用的自动任务</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-num">0</div>
+              <div class="stat-label">Worker 执行</div>
+              <div class="stat-desc">由 Worker 执行的自动任务</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-num">0</div>
+              <div class="stat-label">WorkerFlow 执行</div>
+              <div class="stat-desc">由 WorkerFlow 执行的自动任务</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <label class="select">
+            <span class="select-label">执行者</span>
+            <select><option>全部执行者</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">触发类型</span>
+            <select><option>全部类型</option><option>定时</option><option>事件</option><option>API</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">自动任务状态</span>
+            <select><option>全部状态</option><option>已启用</option><option>已停用</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">排序</span>
+            <select><option>最近创建</option><option>最近更新</option></select>
+          </label>
+        </div>
+
+        <div class="empty-block tall">
+          <h4 class="empty-title">还没有自动任务</h4>
+          <p class="empty-desc">创建自动任务，按定时、事件或 API 自动唤醒 Worker / WorkerFlow。</p>
+        </div>
+      </section>
+
+      <!-- ========== 页面：Worker 管理 ========== -->
+      <section class="page" id="page-workers">
+        <header class="page-header">
+          <div>
+            <h1>Worker 管理</h1>
+            <p class="page-subtitle">选择 Worker 开始任务，或者新建一个开始工作。</p>
+          </div>
+          <div class="header-actions">
+            <button class="btn btn-outline">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+              分享记录
+            </button>
+            <button class="btn btn-outline">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              导入 Worker
+            </button>
+            <button class="btn btn-primary" id="new-worker-btn">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              新建 Worker
+            </button>
+          </div>
+        </header>
+
+        <div class="segmented" id="manage-segmented">
+          <button class="segment active" data-seg="worker">Worker</button>
+          <button class="segment" data-seg="group">Group</button>
+        </div>
+
+        <div class="filter-bar">
+          <label class="search-box">
+            <input type="text" placeholder="搜索名称或角色..." />
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+          </label>
+          <label class="select">
+            <span class="select-label">运行状态</span>
+            <select><option>在线</option><option>全部</option><option>离线</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">角色</span>
+            <select><option>全部角色</option><option>通用助理</option><option>数据分析</option><option>内容创作</option><option>研发工程</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">环境</span>
+            <select><option>全部环境</option><option>云端</option><option>本地</option></select>
+          </label>
+          <label class="select">
+            <span class="select-label">排序字段</span>
+            <select><option>默认排序</option><option>最近创建</option><option>名称</option></select>
+          </label>
+          <span class="filter-count" id="worker-count-label">0 个 Worker</span>
+        </div>
+
+        <div class="worker-grid" id="worker-grid"></div>
+
+        <div class="empty-block tall" id="worker-empty">
+          <div class="empty-icon robot">
+            <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"/><circle cx="9" cy="14" r="1.2" fill="currentColor"/><circle cx="15" cy="14" r="1.2" fill="currentColor"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M4 13H2m20 0h-2"/></svg>
+          </div>
+          <h4 class="empty-title">暂无 Worker</h4>
+          <p class="empty-desc">创建Worker后，可以在这里集中管理Worker。</p>
+          <button class="btn btn-primary empty-action">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建 Worker
+          </button>
+        </div>
+      </section>
+
+      <!-- ========== 页面：能力与资源 ========== -->
+      <section class="page" id="page-capabilities">
+        <header class="page-header">
+          <div>
+            <h1>能力与资源</h1>
+            <p class="page-subtitle">释放你的 Worker 潜能，解锁更多可能</p>
+          </div>
+        </header>
+
+        <div class="cap-cards">
+          <button class="cap-card">
+            <span class="cap-icon pink">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+            </span>
+            <span class="cap-meta"><span class="cap-title">Skills</span><span class="cap-desc">探索与安装 Skill</span></span>
+          </button>
+          <button class="cap-card">
+            <span class="cap-icon blue">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+            </span>
+            <span class="cap-meta"><span class="cap-title">连接器</span><span class="cap-desc">连接外部工具与服务</span></span>
+          </button>
+          <button class="cap-card">
+            <span class="cap-icon gray">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </span>
+            <span class="cap-meta"><span class="cap-title">知识库</span><span class="cap-desc">沉淀与共享知识</span></span>
+          </button>
+          <button class="cap-card">
+            <span class="cap-icon teal">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V13a3 3 0 0 0 3 3h6.5"/><path d="M18 15.5V11a3 3 0 0 0-3-3h-6.5" opacity="0"/></svg>
+            </span>
+            <span class="cap-meta"><span class="cap-title">WorkerFlow</span><span class="cap-desc">编排可复用工作流</span></span>
+          </button>
+          <button class="cap-card">
+            <span class="cap-icon amber">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            </span>
+            <span class="cap-meta"><span class="cap-title">公开项目</span><span class="cap-desc">管理 Worker 共享项目</span></span>
+          </button>
+        </div>
+
+        <div class="tabs underline" id="cap-tabs">
+          <button class="tab active" data-tab="market">技能市场</button>
+          <button class="tab" data-tab="mine">我的技能</button>
+        </div>
+
+        <div class="cap-layout">
+          <aside class="cap-side">
+            <label class="search-box">
+              <input type="text" placeholder="搜索 Skills..." />
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            </label>
+            <div class="cap-cats" id="cap-cats"></div>
+          </aside>
+          <div class="cap-main">
+            <div class="cap-main-head">
+              <span class="cap-main-title"><b id="cap-current-cat">全部分类</b>&nbsp;&nbsp;<span id="cap-skill-count" class="cap-skill-count">0 个 Skill</span></span>
+            </div>
+            <div class="skill-grid" id="skill-grid"></div>
+            <div class="empty-block plain hidden" id="skill-empty">
+              <h4 class="empty-title">暂无技能</h4>
+              <p class="empty-desc">安装 Skill 后将展示在这里。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ==================== 新建 Worker 弹窗 ==================== -->
+  <div class="modal-mask hidden" id="worker-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>新建 Worker</h3>
+        <button class="icon-btn" id="worker-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="worker-form">
+        <div class="form-item">
+          <label class="form-label required">名称</label>
+          <input type="text" id="worker-name-input" name="name" placeholder="给 Worker 起个名字" required maxlength="20" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">角色</label>
+          <select name="role" class="modal-select">
+            <option>通用助理</option>
+            <option>数据分析</option>
+            <option>内容创作</option>
+            <option>研发工程</option>
+          </select>
+        </div>
+        <div class="form-item">
+          <label class="form-label">运行环境</label>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="env" value="云端" checked /><span>云端</span></label>
+            <label class="radio"><input type="radio" name="env" value="本地" /><span>本地</span></label>
+          </div>
+        </div>
+        <div class="form-item">
+          <label class="form-label">描述</label>
+          <textarea name="desc" rows="3" placeholder="简单描述这个数字员工的职责（选填）" maxlength="100"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="worker-modal-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast hidden" id="toast"></div>
 
   <script src="renderer.js"></script>
 </body>

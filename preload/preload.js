@@ -5,10 +5,10 @@ const { contextBridge, ipcRenderer } = require('electron');
  * 仅暴露明确需要的 API，不泄漏 Node/Electron 原生能力。
  */
 
-contextBridge.exposeInMainWorld('vivictus', {
+contextBridge.exposeInMainWorld('virtworker', {
   /** 应用基础信息 */
   appInfo: {
-    name: 'Vivictus',
+    name: 'VirtWorker',
     versions: {
       electron: process.versions.electron,
       chrome: process.versions.chrome,

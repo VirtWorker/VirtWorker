@@ -1,9 +1,9 @@
 {
   "name": "virtworker",
-  "productName": "Vivictus",
+  "productName": "VirtWorker",
   "version": "0.1.0-Alpha",
-  "description": "Vivictus - Windows desktop application built with Electron",
-  "author": "Vivictus Team",
+  "description": "VirtWorker - 自定义创建数字员工 Agent 并实现协同工作的 Windows 桌面应用",
+  "author": "VirtWorker Team",
   "license": "MIT",
   "main": "main/main.js",
   "scripts": {
@@ -19,9 +19,9 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.vivictus.virtworker",
-    "productName": "Vivictus",
-    "copyright": "Copyright © 2026 Vivictus",
+    "appId": "com.virtworker.app",
+    "productName": "VirtWorker",
+    "copyright": "Copyright © 2026 VirtWorker",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -49,7 +49,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Vivictus"
+      "shortcutName": "VirtWorker"
     },
     "portable": {
       "artifactName": "${productName}-${version}-Portable.${ext}"

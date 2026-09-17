@@ -22,10 +22,10 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     show: false, // 防止启动时白屏闪烁，ready-to-show 后再显示
-    title: 'Vivictus',
+    title: 'VirtWorker',
     icon: path.join(__dirname, '..', 'build', 'icon.ico'),
     autoHideMenuBar: true,
-    backgroundColor: '#1e1f22',
+    backgroundColor: '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       // 安全最佳实践：关闭 Node 集成，开启上下文隔离与沙箱
@@ -43,7 +43,8 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    if (isDev) {
+    // 仅在显式传入 --devtools 时自动打开开发者工具，避免遮挡主窗口
+    if (process.argv.includes('--devtools')) {
       mainWindow?.webContents.openDevTools({ mode: 'detach' });
     }
   });
