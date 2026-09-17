@@ -2163,6 +2163,75 @@ input, select, textarea {
 
 .citation-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 
+/* ==================== 设置中心 / 分享记录 ==================== */
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.settings-row input[type="number"] {
+  width: 120px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 11px;
+}
+
+.settings-row input[type="number"]:focus { border-color: var(--accent); }
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.share-list { display: flex; flex-direction: column; gap: 14px; }
+
+.share-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.share-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 4px 16px rgba(16, 165, 74, .07);
+}
+
+.share-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.share-name { font-size: 14.5px; font-weight: 600; flex: 1; min-width: 0; }
+
+.share-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.share-code {
+  font-size: 12.5px;
+  letter-spacing: .5px;
+  background: var(--accent-light);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-weight: 600;
+}
+
+.share-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+
 /* ==================== 响应式适配 ==================== */
 
 /* 大屏：加宽内容上限，充分利用空间 */

@@ -4,7 +4,9 @@
  * - 统一把事件总线上的事件以 app:event 转发给所有窗口
  */
 
-const { ipcMain, BrowserWindow, clipboard, dialog } = require('electron');
+const { ipcMain, BrowserWindow, clipboard, dialog, shell, app } = require('electron');
+const fs = require('node:fs');
+const path = require('node:path');
 const bus = require('../runtime/event-bus');
 const db = require('../store/db');
 const workerService = require('../services/worker-service');
@@ -12,7 +14,9 @@ const taskService = require('../services/task-service');
 const automationService = require('../services/automation-service');
 const capabilityService = require('../services/capability-service');
 const flowService = require('../services/flow-service');
+const shareService = require('../services/share-service');
 const httpServer = require('../runtime/http-server');
+const { fail } = require('../util/errors');
 
 const API_VERSION = 1;
 
@@ -22,7 +26,9 @@ const DEFAULT_SETTINGS = {
   mockRandomAction: true,
   notify: true,
   catchUpMissed: true,
-  apiPort: httpServer.DEFAULT_PORT
+  apiPort: httpServer.DEFAULT_PORT,
+  /** 已结束且已查收的任务保留天数 */
+  taskRetentionDays: 90
 };
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
 const TASK_VIEWS = ['list', 'board'];
@@ -43,6 +49,12 @@ function sanitizeSettings(patch = {}) {
       const port = Number(patch[key]);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) return;
       safe[key] = port;
+      return;
+    }
+    if (key === 'taskRetentionDays') {
+      const days = Number(patch[key]);
+      if (!Number.isInteger(days) || days < 1 || days > 3650) return;
+      safe[key] = days;
       return;
     }
     safe[key] = typeof DEFAULT_SETTINGS[key] === 'boolean' ? Boolean(patch[key]) : patch[key];
@@ -83,6 +95,8 @@ function register() {
       automationStats: automationService.stats(),
       capabilityStats: { ...capabilityService.stats(), ...flowService.stats() },
       flows: flowService.list().items,
+      shares: shareService.list(),
+      shareStats: shareService.stats(),
       settings,
       runtime: { apiServer: httpServer.getStatus() }
     };
@@ -151,6 +165,79 @@ function register() {
   handle('flow:update', ({ id, patch } = {}) => flowService.update(id, patch));
   handle('flow:remove', ({ id } = {}) => flowService.remove(id));
   handle('flow:detail', ({ id } = {}) => flowService.detail(id));
+
+  // 分享与公开项目
+  handle('share:list', () => shareService.list());
+  handle('share:stats', () => shareService.stats());
+  handle('share:create', (payload) => shareService.createShare(payload));
+  handle('share:visibility', ({ id, visibility } = {}) => shareService.setVisibility(id, visibility));
+  handle('share:remove', ({ id } = {}) => shareService.remove(id));
+  handle('share:preview', ({ code } = {}) => shareService.previewByCode(code));
+  handle('share:import', ({ code } = {}) => shareService.importByCode(code));
+  /** 生成资源包内容（不落盘），由渲染层再决定是否保存为文件 */
+  handle('share:export', ({ resourceType, resourceId } = {}) => shareService.buildPayload(resourceType, resourceId));
+  /** 直接导入资源包内容（文件导入路径） */
+  handle('share:import-payload', (payload) => shareService.importPayload(payload));
+
+  // 文件对话框与本地维护
+  handle('app:save-file', async ({ suggestedName, content } = {}) => {
+    const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    const result = await dialog.showSaveDialog(parent, {
+      title: '导出资源包',
+      defaultPath: suggestedName || 'virtworker-resource.json',
+      filters: [{ name: 'VirtWorker 资源包', extensions: ['json'] }]
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    fs.writeFileSync(result.filePath, String(content ?? ''), 'utf8');
+    return { canceled: false, filePath: result.filePath };
+  });
+  handle('app:open-file', async () => {
+    const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    const result = await dialog.showOpenDialog(parent, {
+      title: '选择资源包文件',
+      properties: ['openFile'],
+      filters: [{ name: 'VirtWorker 资源包', extensions: ['json'] }]
+    });
+    if (result.canceled || !result.filePaths.length) return { canceled: true };
+    const filePath = result.filePaths[0];
+    const stat = fs.statSync(filePath);
+    if (stat.size > 2 * 1024 * 1024) throw fail.validation('文件过大（上限 2MB）');
+    return { canceled: false, filePath, content: fs.readFileSync(filePath, 'utf8') };
+  });
+  handle('app:data-stats', () => {
+    const dir = path.join(app.getPath('userData'), 'data');
+    let files = [];
+    try {
+      files = fs
+        .readdirSync(dir)
+        .filter((name) => name.endsWith('.json'))
+        .map((name) => {
+          const filePath = path.join(dir, name);
+          let count = 0;
+          try {
+            const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            count = Array.isArray(payload.items) ? payload.items.length : 1;
+          } catch (error) {
+            count = 0;
+          }
+          return { name, size: fs.statSync(filePath).size, count };
+        });
+    } catch (error) {
+      files = [];
+    }
+    return { dir, files, totalSize: files.reduce((total, file) => total + file.size, 0) };
+  });
+  handle('app:open-data-dir', async () => {
+    const error = await shell.openPath(path.join(app.getPath('userData'), 'data'));
+    return { opened: !error, error };
+  });
+  handle('app:relaunch', () => {
+    app.relaunch();
+    app.exit(0);
+    return { relaunching: true };
+  });
+  handle('app:purge-preview', () => taskService.purgePreview(readSettings().taskRetentionDays));
+  handle('app:purge-tasks', () => taskService.purgeExpired(readSettings().taskRetentionDays));
 
   // 通用能力：由主进程写系统剪贴板（复制端点/Token）
   handle('app:copy-text', ({ text } = {}) => {

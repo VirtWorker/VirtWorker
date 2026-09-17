@@ -25,7 +25,29 @@ VW.api = (() => {
     bootstrap: () => call(bridge?.bootstrap),
 
     /** 复制文本到系统剪贴板 */
-    copyText: (text) => call(bridge?.copyText, text),
+    copyText: (text) => call(bridge?.app?.copyText, text),
+
+    app: {
+      dataStats: () => call(bridge?.app?.dataStats),
+      openDataDir: () => call(bridge?.app?.openDataDir),
+      relaunch: () => call(bridge?.app?.relaunch),
+      purgePreview: () => call(bridge?.app?.purgePreview),
+      purgeTasks: () => call(bridge?.app?.purgeTasks),
+      saveFile: (payload) => call(bridge?.app?.saveFile, payload),
+      openFile: () => call(bridge?.app?.openFile)
+    },
+
+    share: {
+      list: () => call(bridge?.share?.list),
+      stats: () => call(bridge?.share?.stats),
+      create: (payload) => call(bridge?.share?.create, payload),
+      setVisibility: (id, visibility) => call(bridge?.share?.setVisibility, id, visibility),
+      remove: (id) => call(bridge?.share?.remove, id),
+      preview: (code) => call(bridge?.share?.preview, code),
+      importByCode: (code) => call(bridge?.share?.importByCode, code),
+      exportPayload: (resourceType, resourceId) => call(bridge?.share?.exportPayload, resourceType, resourceId),
+      importPayload: (payload) => call(bridge?.share?.importPayload, payload)
+    },
 
     settings: {
       get: () => call(bridge?.settings?.get),

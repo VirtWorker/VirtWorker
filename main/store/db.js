@@ -10,7 +10,7 @@ const path = require('node:path');
 const schema = require('./schema');
 const { fail } = require('../util/errors');
 
-const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations', 'capabilities', 'chunks', 'flows'];
+const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations', 'capabilities', 'chunks', 'flows', 'shares'];
 
 let baseDir = '';
 const cache = new Map();

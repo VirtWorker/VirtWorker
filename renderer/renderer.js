@@ -147,6 +147,12 @@
 
       if (type === 'app:notice') {
         VW.toast.show(`${payload.title}${payload.body ? `：${payload.body}` : ''}`);
+        VW.views.shell.notify(payload.title, payload.body || '');
+        return;
+      }
+
+      if (type.startsWith('share:')) {
+        VW.views.capabilities.refreshShares();
         return;
       }
 
@@ -191,6 +197,8 @@
         apiServer: data.runtime.apiServer,
         capabilityStats: data.capabilityStats,
         flows: data.flows,
+        shares: data.shares,
+        shareStats: data.shareStats,
         settings: data.settings
       });
       store.state.filters.statsPeriod = data.settings.period || 'month';
@@ -217,6 +225,7 @@
     VW.views.workers.init();
     VW.views.dashboard.init();
     VW.views.automations.init();
+    VW.views.shell.init();
 
     store.on(['workers', 'groups', 'ui'], renderSidebar);
     store.on('stats', renderNavBadge);

@@ -404,6 +404,33 @@ function recordEvent(id, message) {
   publish(next, 'task:updated');
 }
 
+/** 已结束、已查收且超出保留期的任务（未查收的结果不会被清理，避免用户还没看就消失） */
+function expiredTasks(days = 90, now = Date.now()) {
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = now - retention * 24 * 60 * 60 * 1000;
+  const items = db.all('tasks').filter((task) => {
+    if (!FINISHED_STATUS.includes(task.status)) return false;
+    if (!task.resultAckedAt) return false;
+    const settledAt = new Date(task.resultAckedAt).getTime();
+    return !Number.isNaN(settledAt) && settledAt < threshold;
+  });
+  return { retention, items };
+}
+
+/** 清理过期任务（连带其时间线），应用启动与设置中心手动触发都会调用 */
+function purgeExpired(days = 90, now = Date.now()) {
+  const { retention, items } = expiredTasks(days, now);
+  items.forEach((task) => db.remove('tasks', task.id));
+  items.forEach((task) => bus.emit('task:removed', { id: task.id }));
+  return { removed: items.length, retention };
+}
+
+/** 预览可清理数量（设置中心展示用） */
+function purgePreview(days = 90, now = Date.now()) {
+  const { retention, items } = expiredTasks(days, now);
+  return { removable: items.length, retention };
+}
+
 module.exports = {
   STATUS,
   ACTIVE_STATUS,
@@ -424,5 +451,7 @@ module.exports = {
   requestAction,
   succeed,
   failTask,
-  recordEvent
+  recordEvent,
+  purgeExpired,
+  purgePreview
 };

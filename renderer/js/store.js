@@ -23,6 +23,9 @@ VW.store = (() => {
     apiServer: { running: false, port: null, error: null },
     /** WorkerFlow 列表（可作为任务/自动任务的执行者） */
     flows: [],
+    /** 分享记录（公开项目） */
+    shares: [],
+    shareStats: { total: 0, publicCount: 0, importTotal: 0 },
     /** 能力与资源统计（入口卡片计数） */
     capabilityStats: { skill: 0, connector: 0, authorizedConnector: 0, knowledge: 0, chunkTotal: 0, total: 0, nodeTotal: 0, usable: 0 },
     settings: { taskView: 'list', period: 'month', mockRandomAction: true, notify: true },

@@ -127,6 +127,7 @@ VW.views.workers = (() => {
           <div class="worker-card-actions">
             <button class="mini-btn" data-act="start">开始任务</button>
             <button class="mini-btn" data-act="mount">能力挂载${worker.capabilityCount ? ` (${worker.capabilityCount})` : ''}</button>
+            <button class="mini-btn" data-act="share">分享</button>
           </div>
         </div>`;
       card.querySelector('[data-act="start"]').addEventListener('click', () =>
@@ -134,6 +135,9 @@ VW.views.workers = (() => {
       );
       card.querySelector('[data-act="mount"]').addEventListener('click', () =>
         VW.views.capabilities.openMount(worker.id)
+      );
+      card.querySelector('[data-act="share"]').addEventListener('click', () =>
+        VW.views.capabilities.openShare('worker', worker.id)
       );
       grid.appendChild(card);
     });
@@ -249,6 +253,30 @@ VW.views.workers = (() => {
 
     document.getElementById('worker-form').addEventListener('submit', submitWorker);
     document.getElementById('group-form').addEventListener('submit', submitGroup);
+
+    // 导入资源包（Worker / WorkerFlow）
+    document.getElementById('import-worker-btn').addEventListener('click', async () => {
+      try {
+        const file = await VW.api.app.openFile();
+        if (file.canceled) return;
+        let payload = null;
+        try {
+          payload = JSON.parse(file.content);
+        } catch (error) {
+          throw new Error('文件内容不是合法的 JSON');
+        }
+        await VW.views.capabilities.importAndReport(payload);
+        await refreshAll();
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+    });
+
+    // 分享记录 → 跳到「能力与资源 · 公开项目」
+    document.getElementById('share-records-btn').addEventListener('click', () => {
+      document.querySelector('.nav-item[data-page="capabilities"]').click();
+      VW.views.capabilities.showSection('share');
+    });
     document.getElementById('worker-modal-close').addEventListener('click', () => VW.modal.close('worker-modal'));
     document.getElementById('worker-modal-cancel').addEventListener('click', () => VW.modal.close('worker-modal'));
     document.getElementById('group-modal-close').addEventListener('click', () => VW.modal.close('group-modal'));

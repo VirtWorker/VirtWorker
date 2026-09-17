@@ -5,6 +5,7 @@ const ipc = require('./ipc');
 const runtime = require('./runtime/task-runtime');
 const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
+const taskService = require('./services/task-service');
 
 /**
  * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
@@ -31,9 +32,16 @@ function bootstrapServices() {
     runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
     scheduler.start(); // 启动补跑错过的定时任务并排程
     httpServer.start(); // API 触发的本地端点（仅回环地址）
+    purgeExpiredTasks(); // 按保留策略清理历史任务
   } catch (error) {
     console.error('[main] 领域服务初始化失败:', error);
   }
+}
+
+/** 保留策略：清理已结束且已查收、且超出保留期的任务，避免数据无限增长 */
+function purgeExpiredTasks() {
+  const { removed, retention } = taskService.purgeExpired(db.getSettings().taskRetentionDays);
+  if (removed) console.log(`[main] 已按保留策略（${retention} 天）清理 ${removed} 条历史任务`);
 }
 
 function createWindow() {

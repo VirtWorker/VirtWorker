@@ -25,9 +25,6 @@ contextBridge.exposeInMainWorld('virtworker', {
   /** 应用启动数据一次性拉取 */
   bootstrap: () => invoke('app:bootstrap'),
 
-  /** 复制文本到系统剪贴板（由主进程执行，避免渲染层权限限制） */
-  copyText: (text) => invoke('app:copy-text', { text }),
-
   settings: {
     get: () => invoke('settings:get'),
     update: (patch) => invoke('settings:update', patch)
@@ -93,6 +90,31 @@ contextBridge.exposeInMainWorld('virtworker', {
     update: (id, patch) => invoke('flow:update', { id, patch }),
     remove: (id) => invoke('flow:remove', { id }),
     detail: (id) => invoke('flow:detail', { id })
+  },
+
+  /** 应用级：设置、数据维护、文件对话框 */
+  app: {
+    dataStats: () => invoke('app:data-stats'),
+    openDataDir: () => invoke('app:open-data-dir'),
+    relaunch: () => invoke('app:relaunch'),
+    purgePreview: () => invoke('app:purge-preview'),
+    purgeTasks: () => invoke('app:purge-tasks'),
+    saveFile: (payload) => invoke('app:save-file', payload),
+    openFile: () => invoke('app:open-file'),
+    copyText: (text) => invoke('app:copy-text', { text })
+  },
+
+  /** 分享与公开项目（资源包导出/导入、分享码） */
+  share: {
+    list: () => invoke('share:list'),
+    stats: () => invoke('share:stats'),
+    create: (payload) => invoke('share:create', payload),
+    setVisibility: (id, visibility) => invoke('share:visibility', { id, visibility }),
+    remove: (id) => invoke('share:remove', { id }),
+    preview: (code) => invoke('share:preview', { code }),
+    importByCode: (code) => invoke('share:import', { code }),
+    exportPayload: (resourceType, resourceId) => invoke('share:export', { resourceType, resourceId }),
+    importPayload: (payload) => invoke('share:import-payload', payload)
   },
 
   /** 订阅主进程事件；返回取消订阅函数 */

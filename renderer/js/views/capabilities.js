@@ -35,12 +35,14 @@ VW.views.capabilities = (() => {
 
   async function refresh() {
     try {
-      const [market, stats, connectors, capabilities, flows] = await Promise.all([
+      const [market, stats, connectors, capabilities, flows, shares, shareStats] = await Promise.all([
         VW.api.capability.skillMarket(),
         VW.api.capability.stats(),
         VW.api.capability.connectorCatalog(),
         VW.api.capability.list(),
-        VW.api.flow.list()
+        VW.api.flow.list(),
+        VW.api.share.list(),
+        VW.api.share.stats()
       ]);
       state.market = market.items;
       state.installed = capabilities.filter((item) => item.type === 'skill');
@@ -48,8 +50,18 @@ VW.views.capabilities = (() => {
       state.connectors = connectors;
       state.loaded = true;
       // flows 放入全局 store：任务与自动任务的「执行者」下拉需要列出 WorkerFlow
-      store.set({ capabilityStats: stats, flows: flows.items });
+      store.set({ capabilityStats: stats, flows: flows.items, shares, shareStats });
       render();
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  /** 仅刷新分享记录（可见性切换、导入计数等高频操作） */
+  async function refreshShares() {
+    try {
+      const [shares, shareStats] = await Promise.all([VW.api.share.list(), VW.api.share.stats()]);
+      store.set({ shares, shareStats });
     } catch (error) {
       VW.toast.show(error.message);
     }
@@ -89,6 +101,7 @@ VW.views.capabilities = (() => {
     renderConnectors();
     renderKnowledge();
     renderFlows();
+    renderShares();
   }
 
   // ==================== Skills ====================
@@ -305,6 +318,7 @@ VW.views.capabilities = (() => {
           <span class="automation-stats">创建于 ${formatTime(flow.createdAt)}</span>
           <div class="worker-card-actions">
             <button class="mini-btn" data-act="run">用它创建任务</button>
+            <button class="mini-btn" data-act="share">分享</button>
             <button class="mini-btn" data-act="edit">编辑</button>
             <button class="mini-btn" data-act="remove">删除</button>
           </div>
@@ -548,6 +562,193 @@ VW.views.capabilities = (() => {
     }
   }
 
+  // ==================== 公开项目（分享记录） ====================
+
+  let currentShare = null;
+
+  function shareCardHtml(share) {
+    return `
+      <div class="share-card" data-id="${share.id}">
+        <div class="share-head">
+          <span class="share-name">${escapeHtml(share.title)}</span>
+          <span class="meta-chip">${escapeHtml(share.typeLabel)}</span>
+          <span class="status-badge ${share.visibility === 'public' ? 'status-running' : 'status-canceled'}">
+            ${share.visibility === 'public' ? '公开' : '仅自己'}
+          </span>
+        </div>
+        <div class="automation-line">${escapeHtml(share.summary)}</div>
+        <div class="share-code-row">
+          <code class="share-code">${escapeHtml(share.code)}</code>
+          <span class="form-hint">已被导入 ${share.importCount} 次 · 更新于 ${formatTime(share.updatedAt)}</span>
+        </div>
+        <div class="share-foot">
+          <div class="worker-card-actions">
+            <button class="mini-btn" data-act="copy">复制分享码</button>
+            <button class="mini-btn" data-act="export">导出 JSON</button>
+            <button class="mini-btn" data-act="import">导入到本机</button>
+            <button class="mini-btn" data-act="visibility">${share.visibility === 'public' ? '设为仅自己' : '设为公开'}</button>
+            <button class="mini-btn" data-act="remove">删除</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderShares() {
+    const shares = store.state.shares || [];
+    document.getElementById('cap-count-share').textContent = String(shares.length);
+    document.getElementById('share-summary').textContent = `${shares.filter((share) => share.visibility === 'public').length} 个公开 · 共 ${shares.length} 个已分享资源`;
+    document.getElementById('share-list').innerHTML = shares.map(shareCardHtml).join('');
+    document.getElementById('share-empty').classList.toggle('hidden', shares.length > 0);
+  }
+
+  /** 导出资源包为 JSON 文件（由主进程弹出保存对话框） */
+  async function exportShare(share) {
+    try {
+      const payload = await VW.api.share.exportPayload(share.resourceType, share.resourceId);
+      const result = await VW.api.app.saveFile({
+        suggestedName: `${share.title}.virtworker.json`,
+        content: JSON.stringify(payload, null, 2)
+      });
+      if (result.canceled) return;
+      VW.toast.show(`已导出到 ${result.filePath}`);
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  /** 导入资源包内容（分享码与文件两条路径共用） */
+  async function importAndReport(payload) {
+    const result = await VW.api.share.importPayload(payload);
+    await Promise.all([refresh(), VW.views.workers.refreshAll()]);
+    const warn = result.warnings && result.warnings.length ? `（${result.warnings.join('；')}）` : '';
+    VW.toast.show(`已导入${result.type === 'flow' ? '流程' : 'Worker'}「${result.name}」${warn}`);
+    return result;
+  }
+
+  async function openShare(resourceType, resourceId) {
+    try {
+      const share = await VW.api.share.create({ resourceType, resourceId });
+      currentShare = share;
+      document.getElementById('share-modal-title').textContent = `分享 · ${share.title}`;
+      document.getElementById('share-code-value').value = share.code;
+      document.getElementById('share-visibility-toggle').checked = share.visibility === 'public';
+      document.getElementById('share-content-summary').textContent = `${share.typeLabel} · ${share.summary}`;
+      VW.modal.open('share-modal');
+      await refreshShares();
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  function bindShareEvents() {
+    document.getElementById('share-modal-close').addEventListener('click', () => VW.modal.close('share-modal'));
+    document.getElementById('share-modal-ok').addEventListener('click', () => VW.modal.close('share-modal'));
+    document.getElementById('copy-share-code-btn').addEventListener('click', async () => {
+      if (!currentShare) return;
+      try {
+        await VW.api.copyText(currentShare.code);
+        VW.toast.show('分享码已复制');
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+    });
+    document.getElementById('share-visibility-toggle').addEventListener('change', async (event) => {
+      if (!currentShare) return;
+      try {
+        currentShare = await VW.api.share.setVisibility(currentShare.id, event.target.checked ? 'public' : 'private');
+        VW.toast.show(event.target.checked ? '已设为公开' : '已设为仅自己可见');
+        await refreshShares();
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+    });
+    document.getElementById('share-export-btn').addEventListener('click', () => {
+      if (currentShare) exportShare(currentShare);
+    });
+    document.getElementById('share-delete-btn').addEventListener('click', async () => {
+      if (!currentShare) return;
+      if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
+      try {
+        await VW.api.share.remove(currentShare.id);
+        VW.modal.close('share-modal');
+        VW.toast.show('已取消分享');
+        await refreshShares();
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+    });
+
+    // 按分享码导入
+    const codeInput = document.getElementById('share-code-input');
+    const importBtn = document.getElementById('share-import-btn');
+    const hint = document.getElementById('share-preview-hint');
+    let previewPayload = null;
+
+    document.getElementById('share-preview-btn').addEventListener('click', async () => {
+      try {
+        const { share, payload } = await VW.api.share.preview(codeInput.value);
+        previewPayload = payload;
+        hint.textContent = `找到「${share.title}」（${share.typeLabel} · ${share.summary}），点击「导入」即可复制一份到本机。`;
+        importBtn.disabled = false;
+      } catch (error) {
+        previewPayload = null;
+        importBtn.disabled = true;
+        hint.textContent = error.message;
+      }
+    });
+
+    importBtn.addEventListener('click', async () => {
+      try {
+        const { payload } = await VW.api.share.preview(codeInput.value);
+        await importAndReport(previewPayload || payload);
+        codeInput.value = '';
+        previewPayload = null;
+        importBtn.disabled = true;
+        hint.textContent = '分享码为本机资源包引用；跨设备请使用「导出为 JSON」后传文件导入。';
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+    });
+
+    document.getElementById('share-list').addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-act]');
+      if (!button) return;
+      const share = (store.state.shares || []).find((item) => item.id === button.closest('.share-card').dataset.id);
+      if (!share) return;
+      const action = button.dataset.act;
+
+      try {
+        if (action === 'copy') {
+          await VW.api.copyText(share.code);
+          VW.toast.show('分享码已复制');
+          return;
+        }
+        if (action === 'export') return exportShare(share);
+        if (action === 'import') {
+          const result = await VW.api.share.importByCode(share.code);
+          await Promise.all([refresh(), VW.views.workers.refreshAll()]);
+          const warn = result.warnings && result.warnings.length ? `（${result.warnings.join('；')}）` : '';
+          VW.toast.show(`已导入「${result.name}」${warn}`);
+          return;
+        }
+        if (action === 'visibility') {
+          await VW.api.share.setVisibility(share.id, share.visibility === 'public' ? 'private' : 'public');
+          await refreshShares();
+          return;
+        }
+        if (action === 'remove') {
+          if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
+          await VW.api.share.remove(share.id);
+          await refreshShares();
+          VW.toast.show('已取消分享');
+        }
+      } catch (error) {
+        VW.toast.show(error.message);
+      }
+      return undefined;
+    });
+  }
+
   // ==================== 事件绑定 ====================
 
   function bindSkillEvents() {
@@ -717,6 +918,7 @@ VW.views.capabilities = (() => {
       const action = button.dataset.act;
 
       if (action === 'edit' && flow) return openFlowModal(flow);
+      if (action === 'share' && flow) return openShare('flow', flow.id);
       if (action === 'run' && flow) {
         document.querySelector('.nav-item[data-page="dashboard"]').click();
         return VW.views.dashboard.openCreateTask(flow.id);
@@ -752,14 +954,22 @@ VW.views.capabilities = (() => {
     });
   }
 
+  /** 供外部跳转时指定小节（如 Worker 页的「分享记录」按钮） */
+  function showSection(name) {
+    state.section = name;
+    renderSections();
+  }
+
   function init() {
     bindSectionSwitch();
     bindSkillEvents();
     bindConnectorEvents();
     bindKnowledgeEvents();
     bindFlowEvents();
+    bindShareEvents();
     bindMountEvents();
 
+    store.on('shares', renderShares);
     store.on(['workers', 'groups'], () => {
       renderCounts();
       renderConnectors();
@@ -771,5 +981,5 @@ VW.views.capabilities = (() => {
     refresh();
   }
 
-  return { init, refresh, openMount };
+  return { init, refresh, refreshShares, openMount, openShare, importAndReport, showSection };
 })();
