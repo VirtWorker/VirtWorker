@@ -111,9 +111,17 @@ function register() {
   handle('settings:update', (patch) => {
     const before = readSettings();
     const saved = db.setSettings(sanitizeSettings(patch));
-    // 端口变化时重启本地触发端点，新状态通过事件总线广播给渲染层
+    // 端口变化时重启本地触发端点，新状态通过事件总线广播给渲染层；
+    // 重启失败（如新端口被占用）则回滚端口设置并按原端口恢复服务，
+    // 保证"已保存的设置"与"实际监听端口"始终一致
     if (saved.apiPort !== before.apiPort) {
-      return httpServer.restart().then((runtime) => {
+      return httpServer.restart().then(async (runtime) => {
+        if (!runtime.running) {
+          const rolledBack = db.setSettings({ apiPort: before.apiPort });
+          const restored = await httpServer.restart();
+          bus.emit('app:runtime', { apiServer: restored });
+          return { ...rolledBack, apiPortRollback: before.apiPort };
+        }
         bus.emit('app:runtime', { apiServer: runtime });
         return saved;
       });

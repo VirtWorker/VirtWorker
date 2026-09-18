@@ -169,17 +169,35 @@ function stop() {
   status = { running: false, port: null, error: null };
 }
 
-/** 端口变更后重启（settings 修改 apiPort 时调用）：等旧监听真正关闭后再按新端口启动，避免 EADDRINUSE */
+/**
+ * 端口变更后重启（settings 修改 apiPort 时调用）：等旧监听真正关闭后再按新端口启动，避免 EADDRINUSE。
+ * Promise 在新端口监听成功或失败（状态收敛）后 resolve，调用方可据此判断重启结果；
+ * start() 同步返回时 listen/error 回调尚未触发，直接读取状态会误判。
+ */
 function restart() {
   return new Promise((resolve) => {
-    if (!server) return resolve(start());
+    let started = false;
+    const begin = () => {
+      if (started) return;
+      started = true;
+      status = { running: false, port: null, error: null }; // 清零，避免轮询读到旧状态误判已收敛
+      start();
+      // 成功时 listen 回调置 running，失败时 error 事件置 port/error，轮询等待二者之一
+      const deadline = Date.now() + 1500;
+      const poll = () => {
+        if (status.running || status.port !== null || Date.now() > deadline) return resolve(getStatus());
+        setTimeout(poll, 20);
+      };
+      poll();
+    };
+    if (!server) return begin();
     const closing = server;
     server = null;
     status = { running: false, port: null, error: null };
-    closing.close(() => resolve(start()));
+    closing.close(begin);
     // 兜底：无活动连接时 close 回调可能延迟，1s 后强制启动
     setTimeout(() => {
-      if (!server) resolve(start());
+      if (!server) begin();
     }, 1000).unref?.();
   });
 }

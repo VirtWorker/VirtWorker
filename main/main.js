@@ -23,7 +23,10 @@ logger.installGlobalHandlers();
 let mainWindow = null;
 
 /** 单实例锁：避免重复启动多个应用实例（Windows 桌面应用常规实践） */
-if (!app.requestSingleInstanceLock()) {
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  // 注意：app.quit() 是异步的，whenReady 回调仍可能执行，需用标志位短路后续初始化，
+  // 防止第二实例在退出完成前短暂写同一份数据目录
   app.quit();
 }
 
@@ -49,6 +52,21 @@ function bootstrapServices() {
 function purgeExpiredTasks() {
   const { removed, retention } = taskService.purgeExpired(db.getSettings().taskRetentionDays);
   if (removed) console.log(`[main] 已按保留策略（${retention} 天）清理 ${removed} 条历史任务`);
+}
+
+/**
+ * 外链安全放行：用 URL 解析校验协议，防止大小写混排、控制字符等变体
+ * 绕过字符串前缀判断；拒绝携带 userinfo（https://evil.com@host 形态）的地址。
+ */
+function openExternalIfSafe(url) {
+  try {
+    const parsed = new URL(String(url ?? ''));
+    if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && !parsed.username && !parsed.password) {
+      shell.openExternal(parsed.href);
+    }
+  } catch (error) {
+    // 非法 URL 直接忽略，不打开
+  }
 }
 
 function createWindow() {
@@ -90,10 +108,22 @@ function createWindow() {
 
   // 外部链接一律通过系统默认浏览器打开，避免渲染进程导航到任意站点
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://') || url.startsWith('http://')) {
-      shell.openExternal(url);
-    }
+    openExternalIfSafe(url);
     return { action: 'deny' };
+  });
+
+  // 阻止主窗口导航到本地页面之外的任何地址（纵深防御：即使被 XSS 也不能整页跳转加载远程内容）
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let allowed;
+    try {
+      allowed = new URL(url).protocol === 'file:';
+    } catch (error) {
+      allowed = false;
+    }
+    if (!allowed) {
+      event.preventDefault();
+      console.warn('[main] 已拦截主窗口导航:', url);
+    }
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -119,6 +149,9 @@ ipcMain.handle('app:ping', (_event, message) => {
 });
 
 app.whenReady().then(() => {
+  // 第二实例：requestSingleInstanceLock 已失败且 quit 已发起，直接返回，
+  // 避免在退出完成前执行 bootstrapServices 写数据目录
+  if (!hasSingleInstanceLock) return;
   bootstrapServices();
   createWindow();
 

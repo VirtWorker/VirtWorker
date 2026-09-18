@@ -80,6 +80,12 @@ VW.views.shell = (() => {
       store.set({ settings: saved });
       VW.applyTheme(saved.theme);
       VW.modal.close('settings-modal');
+
+      // 主进程重启端点失败时已回滚端口设置，响应携带 apiPortRollback 指明回退到的端口
+      if (saved.apiPortRollback) {
+        VW.toast.show(`端口 ${patch.apiPort} 被占用，已回退为 ${saved.apiPort}`);
+        return;
+      }
       VW.toast.show('设置已保存');
 
       // 端口改动后主进程会自动重启本地端点并广播 app:runtime；这里根据最新状态提示结果
