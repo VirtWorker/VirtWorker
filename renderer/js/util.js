@@ -68,5 +68,35 @@ VW.util = (() => {
     return `${prefix}${assignee.name || ''}`;
   }
 
-  return { escapeHtml, safeStyle, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, PRIORITY_LABEL, ACTION_LABEL };
+  /**
+   * 任务历史列表（最近任务弹窗 / 自动任务运行历史共用）。
+   * @param {object[]} tasks 任务数组
+   * @param {object} [options]
+   *   - label:    顶部说明文案（如「最近 20 条任务」）
+   *   - metaOf:   (task) => string，第二行元信息文案
+   *   - btnText:  右侧按钮文案（默认「查看」）
+   *   - btnAttrs: 按钮附加属性串（如自动任务用 `data-act="open-task"`，其事件委托选择器依赖它）
+   *   - emptyText: 空列表提示
+   */
+  function historyListHtml(tasks, { label, metaOf, btnText = '查看', btnAttrs = '', emptyText = '还没有任务记录。' } = {}) {
+    if (!tasks.length) return `<div class="detail-section"><p class="detail-sub">${escapeHtml(emptyText)}</p></div>`;
+    return `<div class="detail-section">
+             <div class="detail-label">${escapeHtml(label)}</div>
+             ${tasks
+               .map(
+                 (task) => `
+               <div class="history-item">
+                 <div class="history-main">
+                   <span class="history-title">${escapeHtml(task.title)}</span>
+                   <span class="history-meta">${escapeHtml(metaOf ? metaOf(task) : formatTime(task.createdAt))}</span>
+                 </div>
+                 ${statusBadge(task.status)}
+                 <button class="mini-btn" ${btnAttrs} data-task="${escapeHtml(task.id)}">${escapeHtml(btnText)}</button>
+               </div>`
+               )
+               .join('')}
+           </div>`;
+  }
+
+  return { escapeHtml, safeStyle, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, historyListHtml, PRIORITY_LABEL, ACTION_LABEL };
 })();

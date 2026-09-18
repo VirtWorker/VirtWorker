@@ -33,28 +33,37 @@ VW.views.capabilities = (() => {
 
   // ==================== 数据 ====================
 
+  /** 进行中的刷新（并发去重：多次触发只跑一次，后来者复用同一 Promise） */
+  let inflight = null;
+
   async function refresh() {
-    try {
-      const [market, stats, connectors, capabilities, flows, shares, shareStats] = await Promise.all([
-        VW.api.capability.skillMarket(),
-        VW.api.capability.stats(),
-        VW.api.capability.connectorCatalog(),
-        VW.api.capability.list(),
-        VW.api.flow.list(),
-        VW.api.share.list(),
-        VW.api.share.stats()
-      ]);
-      state.market = market.items;
-      state.installed = capabilities.filter((item) => item.type === 'skill');
-      state.knowledge = capabilities.filter((item) => item.type === 'knowledge');
-      state.connectors = connectors;
-      state.loaded = true;
-      // flows 放入全局 store：任务与自动任务的「执行者」下拉需要列出 WorkerFlow
-      store.set({ capabilityStats: stats, flows: flows.items, shares, shareStats });
-      render();
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        const [market, stats, connectors, capabilities, flows, shares, shareStats] = await Promise.all([
+          VW.api.capability.skillMarket(),
+          VW.api.capability.stats(),
+          VW.api.capability.connectorCatalog(),
+          VW.api.capability.list(),
+          VW.api.flow.list(),
+          VW.api.share.list(),
+          VW.api.share.stats()
+        ]);
+        state.market = market.items;
+        state.installed = capabilities.filter((item) => item.type === 'skill');
+        state.knowledge = capabilities.filter((item) => item.type === 'knowledge');
+        state.connectors = connectors;
+        state.loaded = true;
+        // flows 放入全局 store：任务与自动任务的「执行者」下拉需要列出 WorkerFlow
+        store.set({ capabilityStats: stats, flows: flows.items, shares, shareStats });
+        render();
+      } catch (error) {
+        VW.toast.show(error.message);
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
   }
 
   /** 仅刷新分享记录（可见性切换、导入计数等高频操作） */
@@ -893,7 +902,12 @@ VW.views.capabilities = (() => {
 
     document.getElementById('add-flow-node').addEventListener('click', () => {
       syncNodesFromForm();
-      const worker = store.state.workers[flowNodes.length % store.state.workers.length];
+      const workers = store.state.workers;
+      if (!workers.length) {
+        VW.toast.show('请先创建 Worker 再编排流程');
+        return;
+      }
+      const worker = workers[flowNodes.length % workers.length];
       flowNodes.push({
         title: `步骤 ${flowNodes.length + 1}`,
         workerId: worker.id,
@@ -965,6 +979,7 @@ VW.views.capabilities = (() => {
   /** 供外部跳转时指定小节（如 Worker 页的「分享记录」按钮） */
   function showSection(name) {
     state.section = name;
+    ensureLoaded();
     renderSections();
   }
 
@@ -984,10 +999,14 @@ VW.views.capabilities = (() => {
       renderKnowledge();
       renderFlows();
     });
+    // 懒加载：进入能力页才拉取视图数据（启动数据由 bootstrap 提供 flows/shares 等全局切片），
+    // 避免与 bootstrap 并发重复请求、消除首屏 7 个 IPC 竞争
+    store.on('ui', (s) => {
+      if (s.ui.page === 'capabilities') ensureLoaded();
+    });
 
     render();
-    refresh();
   }
 
-  return { init, refresh, refreshShares, openMount, openShare, importAndReport, showSection };
+  return { init, refresh, refreshShares, ensureLoaded, openMount, openShare, importAndReport, showSection };
 })();

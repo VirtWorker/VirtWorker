@@ -7,7 +7,7 @@ window.VW = window.VW || {};
 VW.views = VW.views || {};
 
 VW.views.automations = (() => {
-  const { escapeHtml, formatTime, statusBadge, assigneeLabel } = VW.util;
+  const { escapeHtml, formatTime, assigneeLabel } = VW.util;
   const store = VW.store;
 
   /** 当前编辑中的自动任务 id；为空表示新建 */
@@ -284,26 +284,13 @@ VW.views.automations = (() => {
       const { automation, runs } = await VW.api.automation.detail(id);
       document.getElementById('automation-history-title').textContent = `运行历史 · ${automation.name}`;
       const body = document.getElementById('automation-history-body');
-      body.innerHTML = runs.length
-        ? `<div class="detail-section">
-             <div class="detail-label">最近 ${runs.length} 次触发</div>
-             ${runs
-               .map(
-                 (task) => `
-               <div class="history-item">
-                 <div class="history-main">
-                   <span class="history-title">${escapeHtml(task.title)}</span>
-                   <span class="history-meta">${formatTime(task.createdAt)} · ${escapeHtml(
-                     task.input?.payload?.reason || task.trigger.label
-                   )}</span>
-                 </div>
-                 ${statusBadge(task.status)}
-                 <button class="mini-btn" data-act="open-task" data-task="${task.id}">查看任务</button>
-               </div>`
-               )
-               .join('')}
-           </div>`
-        : '<div class="detail-section"><p class="detail-sub">该自动任务还没有触发记录，等它开工后这里会显示每次运行的任务。</p></div>';
+      body.innerHTML = VW.util.historyListHtml(runs, {
+        label: `最近 ${runs.length} 次触发`,
+        metaOf: (task) => `${formatTime(task.createdAt)} · ${task.input?.payload?.reason || task.trigger.label}`,
+        btnText: '查看任务',
+        btnAttrs: 'data-act="open-task"',
+        emptyText: '该自动任务还没有触发记录，等它开工后这里会显示每次运行的任务。'
+      });
       VW.modal.open('automation-history-modal');
     } catch (error) {
       VW.toast.show(error.message);

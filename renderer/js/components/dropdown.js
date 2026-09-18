@@ -13,11 +13,8 @@ VW.dropdown = (() => {
   const CHECK_SVG =
     '<svg class="check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
 
-  function escapeHtml(value) {
-    const div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
-  }
+  // 统一复用 util.js 的转义实现（加载顺序保证 VW.util 先于本文件）
+  const escapeHtml = VW.util.escapeHtml;
 
   function closeAll() {
     if (!openDropdown) return;

@@ -261,6 +261,12 @@ VW.views.dashboard = (() => {
 
   // ==================== 操作提交 ====================
 
+  /** 单选按钮组：点中一个即高亮它、取消同组其余（队列与详情弹窗共用） */
+  function activateChoice(choice) {
+    choice.parentElement.querySelectorAll('.choice-btn').forEach((item) => item.classList.remove('active'));
+    choice.classList.add('active');
+  }
+
   /** 从容器中读取用户填写的操作内容 */
   function readAnswer(scope) {
     const choice = scope.querySelector('.choice-btn.active');
@@ -518,8 +524,13 @@ VW.views.dashboard = (() => {
       refresh();
     });
 
-    // 队列操作（事件委托）
+    // 队列操作（事件委托：选项切换 + 按钮动作合并为单一监听，避免同一次点击执行两遍）
     document.getElementById('dashboard-tab-list').addEventListener('click', (event) => {
+      const choice = event.target.closest('.choice-btn');
+      if (choice) {
+        activateChoice(choice);
+        return;
+      }
       const item = event.target.closest('.queue-item');
       if (!item) return;
       const task = store.state.queue.action.concat(store.state.queue.result).find((t) => t.id === item.dataset.id);
@@ -529,14 +540,6 @@ VW.views.dashboard = (() => {
       if (action === 'ack') return ackTask(item.dataset.id);
       if (action === 'submit' && task) return submitAnswer(item, task, task.actionRequest);
       return undefined;
-    });
-
-    // 队列内选项切换
-    document.getElementById('dashboard-tab-list').addEventListener('click', (event) => {
-      const choice = event.target.closest('.choice-btn');
-      if (!choice) return;
-      choice.parentElement.querySelectorAll('.choice-btn').forEach((item) => item.classList.remove('active'));
-      choice.classList.add('active');
     });
 
     // 全部任务：行内操作 + 点击行查看详情
@@ -555,8 +558,7 @@ VW.views.dashboard = (() => {
     document.getElementById('task-detail-body').addEventListener('click', (event) => {
       const choice = event.target.closest('.choice-btn');
       if (choice) {
-        choice.parentElement.querySelectorAll('.choice-btn').forEach((item) => item.classList.remove('active'));
-        choice.classList.add('active');
+        activateChoice(choice);
         return;
       }
       if (event.target.closest('[data-act="submit-answer"]') && detailState) {

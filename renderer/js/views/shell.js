@@ -7,7 +7,7 @@ window.VW = window.VW || {};
 VW.views = VW.views || {};
 
 VW.views.shell = (() => {
-  const { escapeHtml, formatTime, statusBadge, assigneeLabel } = VW.util;
+  const { formatTime, assigneeLabel, historyListHtml } = VW.util;
   const store = VW.store;
 
   /** 系统通知：仅在设置开启时发送，失败静默降级为应用内提示 */
@@ -123,26 +123,11 @@ VW.views.shell = (() => {
     try {
       const { items } = await VW.api.task.list({ period: '', limit: 20 });
       const body = document.getElementById('history-body');
-      body.innerHTML = items.length
-        ? `<div class="detail-section">
-             <div class="detail-label">最近 ${items.length} 条任务（不受看板筛选影响）</div>
-             ${items
-               .map(
-                 (task) => `
-               <div class="history-item">
-                 <div class="history-main">
-                   <span class="history-title">${escapeHtml(task.title)}</span>
-                   <span class="history-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
-                     task.trigger.label
-                   )} · ${formatTime(task.createdAt)}</span>
-                 </div>
-                 ${statusBadge(task.status)}
-                 <button class="mini-btn" data-task="${task.id}">查看</button>
-               </div>`
-               )
-               .join('')}
-           </div>`
-        : '<div class="detail-section"><p class="detail-sub">还没有任务记录，去任务看板创建第一个任务吧。</p></div>';
+      body.innerHTML = historyListHtml(items, {
+        label: `最近 ${items.length} 条任务（不受看板筛选影响）`,
+        metaOf: (task) => `${assigneeLabel(task.assignee)} · ${task.trigger.label} · ${formatTime(task.createdAt)}`,
+        emptyText: '还没有任务记录，去任务看板创建第一个任务吧。'
+      });
       VW.modal.open('history-modal');
     } catch (error) {
       VW.toast.show(error.message);
