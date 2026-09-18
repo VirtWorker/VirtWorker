@@ -162,10 +162,12 @@ function register() {
   handle('capability:connector-catalog', () => capabilityService.connectorCatalog());
   handle('capability:authorize', ({ key, secret } = {}) => capabilityService.authorizeConnector(key, { secret }));
   handle('capability:revoke', ({ id } = {}) => capabilityService.revokeConnector(id));
-  handle('capability:create-knowledge', ({ dir, ticket } = {}) => {
+  handle('capability:create-knowledge', (payload = {}) => {
     // 目录必须来自目录选择对话框的一次性授权，防止渲染层传入任意路径读取本地文件
+    const { dir, ticket } = payload;
     if (!dirGrant.consume(ticket, dir)) throw fail.validation('目录未授权，请重新通过对话框选择目录');
-    return capabilityService.createKnowledge({ dir, ticket });
+    // 完整透传 payload（含 name/desc），否则服务层校验"请填写知识库名称"必然失败
+    return capabilityService.createKnowledge(payload);
   });
   handle('capability:reindex', ({ id } = {}) => capabilityService.reindexKnowledge(id));
   handle('capability:search', ({ id, keyword, limit } = {}) => capabilityService.searchKnowledge(id, keyword, limit));
