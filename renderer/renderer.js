@@ -207,8 +207,8 @@
         shareStats: data.shareStats,
         settings: data.settings
       });
-      store.state.filters.statsPeriod = data.settings.period || 'month';
-      store.state.filters.task.period = data.settings.period || 'month';
+      store.setFilters({ statsPeriod: data.settings.period || 'month' });
+      store.setFilters('task', { period: data.settings.period || 'month' });
       store.state.ready = true;
       document.getElementById('stats-period').value = store.state.filters.statsPeriod;
       document.getElementById('filter-period').value = store.state.filters.task.period;

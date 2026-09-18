@@ -216,7 +216,7 @@ VW.views.workers = (() => {
     search.addEventListener(
       'input',
       debounce((event) => {
-        store.state.filters.worker.keyword = event.target.value.trim();
+        store.setFilters('worker', { keyword: event.target.value.trim() });
         refresh();
       }, 200)
     );
@@ -225,7 +225,7 @@ VW.views.workers = (() => {
       const select = document.getElementById(id);
       if (defaultValue !== undefined) select.value = defaultValue;
       select.addEventListener('change', (event) => {
-        store.state.filters.worker[key] = event.target.value;
+        store.setFilters('worker', { [key]: event.target.value });
         refresh();
       });
     };

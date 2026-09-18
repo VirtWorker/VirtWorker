@@ -2,6 +2,8 @@
  * JSON 集合存储（仅主进程使用）
  * - 内存缓存 + 原子写（*.tmp → rename），写入前保留一份 *.bak
  * - 读取失败或版本过高时回退备份，再失败则以空集合启动，不阻塞应用
+ * - 写入节流：变更先落缓存，100ms 内的多次写合并为一次磁盘写入；
+ *   进程退出前必须 flush()，保证不丢数据（缓存始终是读取的唯一来源）
  * - 对外只暴露集合级接口，不体现实现细节，便于后续替换为 SQLite
  */
 
@@ -12,9 +14,15 @@ const { fail } = require('../util/errors');
 
 const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations', 'capabilities', 'chunks', 'flows', 'shares'];
 
+/** 合并写入窗口（毫秒）：任务执行高频更新时显著减少全量重写次数 */
+const WRITE_COALESCE_MS = 100;
+
 let baseDir = '';
 const cache = new Map();
 let settings = {};
+/** 待落盘的集合：name → items 快照 */
+const dirty = new Map();
+let flushTimer = null;
 
 function fileOf(name) {
   return path.join(baseDir, `${name}.json`);
@@ -57,8 +65,8 @@ function loadSettings() {
   return {};
 }
 
-/** 原子写：临时文件 → 备份旧文件 → rename 替换 */
-function persist(name, items) {
+/** 真正落盘单个集合：临时文件 → 备份旧文件 → rename 替换 */
+function writeCollection(name, items) {
   const file = fileOf(name);
   const tmp = `${file}.tmp`;
   const payload = JSON.stringify(
@@ -66,12 +74,43 @@ function persist(name, items) {
     null,
     2
   );
-  try {
-    fs.writeFileSync(tmp, payload, 'utf8');
-    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    throw fail.storage(`写入 ${name}.json 失败：${error.message}`);
+  fs.writeFileSync(tmp, payload, 'utf8');
+  if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * 标记集合为脏并调度合并写入：同一窗口内的多次变更只写一次磁盘。
+ * 缓存已同步更新，读取路径不受写入时机影响；进程退出前调用 flush() 落盘。
+ */
+function persist(name, items) {
+  dirty.set(name, items);
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flush();
+  }, WRITE_COALESCE_MS);
+  // 不阻塞事件循环/进程退出
+  flushTimer.unref?.();
+}
+
+/** 立即把所有脏集合落盘；失败的集合保留待下次重试。进程退出前必须调用。 */
+function flush() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  for (const [name, items] of [...dirty.entries()]) {
+    try {
+      writeCollection(name, items);
+      dirty.delete(name);
+    } catch (error) {
+      console.error(`[store] 写入 ${name}.json 失败，将在下次刷新重试：${error.message}`);
+    }
   }
 }
 
@@ -145,4 +184,4 @@ function setSettings(patch) {
   return clone(settings);
 }
 
-module.exports = { init, all, find, insert, update, remove, removeWhere, getSettings, setSettings, COLLECTIONS };
+module.exports = { init, all, find, insert, update, remove, removeWhere, getSettings, setSettings, flush, COLLECTIONS };

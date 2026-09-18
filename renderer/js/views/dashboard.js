@@ -429,11 +429,7 @@ VW.views.dashboard = (() => {
   }
 
   function fillAssigneeSelect(selectedId) {
-    const select = document.getElementById('task-assignee');
-    const options = assigneeOptions();
-    select.innerHTML = options.map((item) => `<option value="${item.value}">${escapeHtml(item.label)}</option>`).join('');
-    if (selectedId && options.some((item) => item.value === selectedId)) select.value = selectedId;
-    VW.dropdown.refresh(select);
+    VW.assigneeSelect.fill('task-assignee', { selectedId });
   }
 
   function openCreateTask(assigneeId) {
@@ -481,7 +477,7 @@ VW.views.dashboard = (() => {
       button.addEventListener('click', () => {
         const view = button.dataset.view;
         store.merge('settings', { taskView: view });
-        VW.api.settings.update({ taskView: view }).catch(() => {});
+        VW.api.settings.update({ taskView: view }).catch((error) => VW.toast.show(`视图偏好保存失败：${error.message}`));
       });
     });
 
@@ -489,37 +485,36 @@ VW.views.dashboard = (() => {
     const statsPeriod = document.getElementById('stats-period');
     statsPeriod.value = store.state.filters.statsPeriod;
     statsPeriod.addEventListener('change', (event) => {
-      store.state.filters.statsPeriod = event.target.value;
-      VW.api.settings.update({ period: event.target.value }).catch(() => {});
+      store.setFilters({ statsPeriod: event.target.value });
+      VW.api.settings.update({ period: event.target.value }).catch((error) => VW.toast.show(`周期偏好保存失败：${error.message}`));
       refresh({ silent: true });
     });
 
     // 筛选栏
-    const filters = store.state.filters.task;
-    filters.period = statsPeriod.value;
+    store.setFilters('task', { period: statsPeriod.value });
     const filterPeriod = document.getElementById('filter-period');
-    filterPeriod.value = filters.period;
+    filterPeriod.value = store.state.filters.task.period;
     filterPeriod.addEventListener('change', (event) => {
-      filters.period = event.target.value;
+      store.setFilters('task', { period: event.target.value });
       refresh();
     });
 
     document.getElementById('task-search').addEventListener(
       'input',
       debounce((event) => {
-        filters.keyword = event.target.value.trim();
+        store.setFilters('task', { keyword: event.target.value.trim() });
         refresh();
       }, 200)
     );
     ['triggerType', 'status'].forEach((key) => {
       const id = key === 'triggerType' ? 'filter-trigger' : 'filter-status';
       document.getElementById(id).addEventListener('change', (event) => {
-        filters[key] = event.target.value;
+        store.setFilters('task', { [key]: event.target.value });
         refresh();
       });
     });
     document.getElementById('filter-assignee').addEventListener('change', (event) => {
-      filters.assigneeId = event.target.value;
+      store.setFilters('task', { assigneeId: event.target.value });
       refresh();
     });
 
@@ -597,16 +592,13 @@ VW.views.dashboard = (() => {
 
   /** 「全部任务」的执行者筛选器：随 Worker/Group 数据变化重建 */
   function renderAssigneeFilter() {
-    const select = document.getElementById('filter-assignee');
-    const current = store.state.filters.task.assigneeId;
-    select.innerHTML = ['<option value="">全部</option>']
-      .concat(assigneeOptions().map((item) => `<option value="${item.value}">${escapeHtml(item.label)}</option>`))
-      .join('');
-    if (current && assigneeOptions().some((item) => item.value === current)) select.value = current;
-    else if (current) {
-      store.state.filters.task.assigneeId = '';
+    const effective = VW.assigneeSelect.fill('filter-assignee', {
+      placeholder: '全部',
+      selectedId: store.state.filters.task.assigneeId
+    });
+    if (effective !== store.state.filters.task.assigneeId) {
+      store.setFilters('task', { assigneeId: effective });
     }
-    VW.dropdown.refresh(select);
   }
 
   /** 事件驱动的详情刷新：仅刷新当前打开的任务，且用户正在填写操作时不打断 */

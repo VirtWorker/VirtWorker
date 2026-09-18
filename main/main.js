@@ -8,6 +8,12 @@ const runtime = require('./runtime/task-runtime');
 const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
 const taskService = require('./services/task-service');
+const logger = require('./util/logger');
+
+// 尽早接管全局异常并镜像 console，让启动阶段的错误也能落盘
+logger.init(path.join(app.getPath('userData'), 'logs'));
+logger.mirrorConsole();
+logger.installGlobalHandlers();
 
 /**
  * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
@@ -131,17 +137,13 @@ app.on('window-all-closed', () => {
   }
 });
 
-// 全局未捕获异常兜底，避免静默崩溃
-process.on('uncaughtException', (error) => {
-  console.error('[main] 未捕获异常:', error);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[main] 未处理的 Promise 拒绝:', reason);
-});
+// 全局未捕获异常兜底已由 logger.installGlobalHandlers() 统一接管（见文件顶部）
 
-// 退出前释放调度定时器、本地端点与运行时任务状态
+// 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流
 app.on('before-quit', () => {
   runtime.shutdown();
   scheduler.stop();
   httpServer.stop();
+  db.flush();
+  logger.close();
 });

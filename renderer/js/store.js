@@ -88,6 +88,20 @@ VW.store = (() => {
     notify([section]);
   }
 
+  /**
+   * 筛选条件变更的唯一入口（替代对 state.filters 的直接赋值）。
+   * - setFilters({ statsPeriod: 'week' })            顶层切片
+   * - setFilters('task', { keyword: 'abc' })         嵌套切片（浅合并该切片）
+   */
+  function setFilters(section, values) {
+    if (typeof section === 'object' && section !== null) {
+      Object.assign(state.filters, section);
+    } else {
+      Object.assign(state.filters[section], values);
+    }
+    notify(['filters']);
+  }
+
   /** 执行者下拉选项：Worker / Group / WorkerFlow（任务派发、自动任务执行者共用） */
   function assigneeOptions() {
     const workers = state.workers.map((worker) => ({ value: worker.id, label: `Worker · ${worker.name}` }));
@@ -96,5 +110,5 @@ VW.store = (() => {
     return [...workers, ...groups, ...flows];
   }
 
-  return { state, on, set, merge, assigneeOptions };
+  return { state, on, set, merge, setFilters, assigneeOptions };
 })();

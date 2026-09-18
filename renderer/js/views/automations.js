@@ -131,15 +131,9 @@ VW.views.automations = (() => {
 
   /** 执行者筛选器：随 Worker/Group 数据变化重建 */
   function renderExecutorFilter() {
-    const select = document.getElementById('auto-filter-executor');
     const current = store.state.filters.automation.executorId;
-    const options = store.assigneeOptions();
-    select.innerHTML = ['<option value="">全部执行者</option>']
-      .concat(options.map((item) => `<option value="${item.value}">${escapeHtml(item.label)}</option>`))
-      .join('');
-    if (current && options.some((item) => item.value === current)) select.value = current;
-    else store.state.filters.automation.executorId = '';
-    VW.dropdown.refresh(select);
+    const effective = VW.assigneeSelect.fill('auto-filter-executor', { placeholder: '全部执行者', selectedId: current });
+    if (effective !== current) store.setFilters('automation', { executorId: effective });
   }
 
   // ==================== 弹窗 ====================
@@ -150,21 +144,11 @@ VW.views.automations = (() => {
   }
 
   function fillExecutorSelect(selectedId) {
-    const select = document.getElementById('automation-executor');
-    const options = store.assigneeOptions();
-    select.innerHTML = options.map((item) => `<option value="${item.value}">${escapeHtml(item.label)}</option>`).join('');
-    if (selectedId && options.some((item) => item.value === selectedId)) select.value = selectedId;
-    VW.dropdown.refresh(select);
+    VW.assigneeSelect.fill('automation-executor', { selectedId });
   }
 
   function fillEventAssigneeSelect(selectedId) {
-    const select = document.getElementById('automation-event-assignee');
-    const options = store.assigneeOptions();
-    select.innerHTML = ['<option value="">不限</option>']
-      .concat(options.map((item) => `<option value="${item.value}">${escapeHtml(item.label)}</option>`))
-      .join('');
-    if (selectedId && options.some((item) => item.value === selectedId)) select.value = selectedId;
-    VW.dropdown.refresh(select);
+    VW.assigneeSelect.fill('automation-event-assignee', { placeholder: '不限', selectedId });
   }
 
   /** 按触发方式与重复方式显示对应字段 */
@@ -348,21 +332,20 @@ VW.views.automations = (() => {
     applyVisibility();
 
     // 筛选器
-    const filters = store.state.filters.automation;
     document.getElementById('auto-filter-trigger').addEventListener('change', (event) => {
-      filters.triggerType = event.target.value;
+      store.setFilters('automation', { triggerType: event.target.value });
       refresh();
     });
     document.getElementById('auto-filter-status').addEventListener('change', (event) => {
-      filters.status = event.target.value;
+      store.setFilters('automation', { status: event.target.value });
       refresh();
     });
     document.getElementById('auto-filter-sort').addEventListener('change', (event) => {
-      filters.sort = event.target.value;
+      store.setFilters('automation', { sort: event.target.value });
       refresh();
     });
     document.getElementById('auto-filter-executor').addEventListener('change', (event) => {
-      filters.executorId = event.target.value;
+      store.setFilters('automation', { executorId: event.target.value });
       refresh();
     });
 

@@ -175,7 +175,17 @@ function authorizeConnector(connectorKey, params = {}) {
   if (secret.length > 2048) throw fail.validation('凭据长度超出限制');
 
   const existing = listAll().find((item) => item.type === 'connector' && item.connectorKey === connectorKey);
-  const credential = { sealed: vault.seal(secret), mask: vault.mask(secret), mode: definition.mode };
+  const sealed = vault.seal(secret);
+  const credential = { sealed, mask: vault.mask(secret), mode: definition.mode };
+
+  // 系统密钥链不可用时凭据仅做 base64 编码（伪加密），必须让用户知情
+  if (sealed.mode !== 'encrypted') {
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: '凭据未获得系统级加密保护',
+      body: `当前系统密钥链不可用，「${definition.name}」的凭据仅做了基础编码存储。请检查 Windows 凭据服务是否正常，敏感凭据建议改用受保护的账户。`
+    });
+  }
 
   if (existing) {
     const next = { ...existing, credential, status: 'authorized', updatedAt: nowIso() };
