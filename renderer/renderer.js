@@ -187,6 +187,25 @@
     badge.classList.toggle('hidden', count === 0);
   }
 
+  // ==================== 主题 ====================
+
+  /** 应用主题：light/dark 直接生效，system 跟随操作系统偏好（暴露给设置弹窗调用） */
+  function applyTheme(theme) {
+    const resolved =
+      theme === 'system' || !theme
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light'
+        : theme;
+    document.documentElement.dataset.theme = resolved;
+  }
+  VW.applyTheme = applyTheme;
+
+  // 跟随系统时，系统偏好切换实时生效
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if ((store.state.settings.theme || 'system') === 'system') applyTheme('system');
+  });
+
   // ==================== 启动 ====================
 
   async function bootstrap() {
@@ -209,6 +228,7 @@
       });
       store.setFilters({ statsPeriod: data.settings.period || 'month' });
       store.setFilters('task', { period: data.settings.period || 'month' });
+      applyTheme(data.settings.theme);
       store.state.ready = true;
       document.getElementById('stats-period').value = store.state.filters.statsPeriod;
       document.getElementById('filter-period').value = store.state.filters.task.period;

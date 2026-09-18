@@ -53,6 +53,7 @@ VW.views.shell = (() => {
     document.getElementById('setting-notify').checked = Boolean(settings.notify);
     document.getElementById('setting-catchup').checked = Boolean(settings.catchUpMissed);
     document.getElementById('setting-random-action').checked = Boolean(settings.mockRandomAction);
+    document.getElementById('setting-theme').value = settings.theme || 'system';
     document.getElementById('setting-api-port').value = settings.apiPort || store.state.apiServer.port || '';
     document.getElementById('setting-retention').value = settings.taskRetentionDays || 90;
     document.getElementById('setting-api-hint').textContent = store.state.apiServer.running
@@ -69,6 +70,7 @@ VW.views.shell = (() => {
       notify: document.getElementById('setting-notify').checked,
       catchUpMissed: document.getElementById('setting-catchup').checked,
       mockRandomAction: document.getElementById('setting-random-action').checked,
+      theme: document.getElementById('setting-theme').value,
       apiPort: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : store.state.settings.apiPort,
       taskRetentionDays: Number.isInteger(retention) && retention >= 1 ? retention : store.state.settings.taskRetentionDays
     };
@@ -76,6 +78,7 @@ VW.views.shell = (() => {
     try {
       const saved = await VW.api.settings.update(patch);
       store.set({ settings: saved });
+      VW.applyTheme(saved.theme);
       VW.modal.close('settings-modal');
       VW.toast.show('设置已保存');
 

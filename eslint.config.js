@@ -4,7 +4,7 @@ const globals = require('globals');
 module.exports = [
   js.configs.recommended,
   {
-    ignores: ['node_modules/**', 'dist/**', 'docs/**'],
+    ignores: ['node_modules/**', 'dist/**', 'docs/**', 'renderer/app.bundle.js'],
     rules: {
       // catch 中不使用 error 变量是本项目的常见惯例（降级处理）
       'no-unused-vars': ['error', { caughtErrors: 'none', args: 'none', ignoreRestSiblings: true }],
@@ -15,7 +15,7 @@ module.exports = [
   },
   {
     // 主进程与预加载：Node 环境
-    files: ['main/**/*.js', 'preload/**/*.js', 'eslint.config.js'],
+    files: ['main/**/*.js', 'preload/**/*.js', 'scripts/**/*.js', 'eslint.config.js'],
     languageOptions: { globals: { ...globals.node } }
   },
   {

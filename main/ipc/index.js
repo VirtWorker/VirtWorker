@@ -29,11 +29,14 @@ const DEFAULT_SETTINGS = {
   catchUpMissed: true,
   apiPort: httpServer.DEFAULT_PORT,
   /** 已结束且已查收的任务保留天数 */
-  taskRetentionDays: 90
+  taskRetentionDays: 90,
+  /** 界面主题：浅色 / 深色 / 跟随系统 */
+  theme: 'system'
 };
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
 const TASK_VIEWS = ['list', 'board'];
 const PERIODS = ['week', 'month', 'quarter'];
+const THEMES = ['light', 'dark', 'system'];
 
 function readSettings() {
   return { ...DEFAULT_SETTINGS, ...db.getSettings() };
@@ -46,6 +49,7 @@ function sanitizeSettings(patch = {}) {
     if (patch[key] === undefined) return;
     if (key === 'taskView' && !TASK_VIEWS.includes(patch[key])) return;
     if (key === 'period' && !PERIODS.includes(patch[key])) return;
+    if (key === 'theme' && !THEMES.includes(patch[key])) return;
     if (key === 'apiPort') {
       const port = Number(patch[key]);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) return;

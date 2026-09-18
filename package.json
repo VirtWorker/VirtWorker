@@ -7,12 +7,17 @@
   "license": "MIT",
   "main": "main/main.js",
   "scripts": {
+    "prestart": "node scripts/build-renderer.js",
     "start": "electron .",
+    "predev": "node scripts/build-renderer.js",
     "dev": "electron . --dev",
+    "build:renderer": "node scripts/build-renderer.js",
+    "watch:renderer": "node scripts/build-renderer.js --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint main preload renderer",
+    "lint": "eslint main preload renderer scripts",
     "rebuild": "electron-rebuild",
+    "prebuild": "node scripts/build-renderer.js",
     "build": "electron-builder --win",
     "build:dir": "electron-builder --win --dir",
     "build:portable": "electron-builder --win portable"
@@ -21,6 +26,7 @@
     "@eslint/js": "^10.0.1",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
     "vitest": "^5.0.1"

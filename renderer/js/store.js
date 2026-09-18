@@ -35,7 +35,8 @@ VW.store = (() => {
       notify: true,
       catchUpMissed: true,
       apiPort: 17891,
-      taskRetentionDays: 90
+      taskRetentionDays: 90,
+      theme: 'system'
     },
     filters: {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },

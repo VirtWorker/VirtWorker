@@ -4,6 +4,8 @@ node_modules/
 # 构建产物
 out/
 dist/
+renderer/app.bundle.js
+renderer/app.bundle.js.map
 
 # 日志
 logs/

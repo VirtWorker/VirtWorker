@@ -245,10 +245,10 @@
         <div class="section-head">
           <h2 class="section-title">已开通 @Worker 的 IM 聊天</h2>
           <div class="view-toggle">
-            <button class="view-btn active" title="列表视图">
+            <button class="view-btn active" title="列表视图" disabled>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
             </button>
-            <button class="view-btn" title="卡片视图">
+            <button class="view-btn" title="卡片视图" disabled>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="1.2"/><rect x="13" y="3" width="8" height="8" rx="1.2"/><rect x="3" y="13" width="8" height="8" rx="1.2"/><rect x="13" y="13" width="8" height="8" rx="1.2"/></svg>
             </button>
           </div>
@@ -256,20 +256,20 @@
 
         <div class="filter-bar">
           <label class="search-box">
-            <input type="text" placeholder="搜索聊天或 Worker" />
+            <input type="text" placeholder="搜索聊天或 Worker（即将上线）" disabled />
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
           </label>
           <label class="select">
             <span class="select-label">聊天类型</span>
-            <select><option>全部</option><option>单聊</option><option>群聊</option></select>
+            <select disabled><option>全部</option><option>单聊</option><option>群聊</option></select>
           </label>
           <label class="select">
             <span class="select-label">模型</span>
-            <select><option>全部</option></select>
+            <select disabled><option>全部</option></select>
           </label>
           <label class="select">
             <span class="select-label">状态</span>
-            <select><option>全部</option><option>已启用</option><option>已停用</option></select>
+            <select disabled><option>全部</option><option>已启用</option><option>已停用</option></select>
           </label>
         </div>
 
@@ -1035,6 +1035,18 @@
         </div>
 
         <div class="detail-section">
+          <div class="detail-label">外观</div>
+          <div class="settings-row">
+            <span>主题</span>
+            <select id="setting-theme">
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+              <option value="system">跟随系统</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="detail-section">
           <div class="detail-label">通知</div>
           <label class="checkbox-row">
             <input type="checkbox" id="setting-notify" />
@@ -1082,21 +1094,7 @@
 
   <!-- Toast（由 VW.toast 动态创建堆叠容器） -->
 
-  <script src="js/util.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/store.js"></script>
-  <script src="js/components/toast.js"></script>
-  <script src="js/components/dropdown.js"></script>
-  <script src="js/components/modal.js"></script>
-  <script src="js/components/assignee-select.js"></script>
-  <script src="js/views/capabilities-knowledge.js"></script>
-  <script src="js/views/capabilities-flows.js"></script>
-  <script src="js/views/capabilities-shares.js"></script>
-  <script src="js/views/capabilities.js"></script>
-  <script src="js/views/workers.js"></script>
-  <script src="js/views/dashboard.js"></script>
-  <script src="js/views/automations.js"></script>
-  <script src="js/views/shell.js"></script>
-  <script src="renderer.js"></script>
+  <!-- 渲染层脚本由 scripts/build-renderer.js 按依赖顺序打包为单文件（npm start / npm run dev 前自动构建） -->
+  <script src="app.bundle.js"></script>
 </body>
 </html>
