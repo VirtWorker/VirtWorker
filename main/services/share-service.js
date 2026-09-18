@@ -77,6 +77,28 @@ function buildWorkerPayload(workerId) {
   };
 }
 
+/** 把能力 ID 列表转为可跨设备迁移的名称引用（本机 ID 在别的设备上无意义） */
+function toCapabilityRefs(ids) {
+  return (ids || [])
+    .map((id) => db.find('capabilities', id))
+    .filter(Boolean)
+    .map((item) => ({ title: item.title, type: item.type, connectorKey: item.connectorKey || null }));
+}
+
+/** 导入时按名称/connectorKey 把资源包里的能力引用映射回本机 ID；匹配不到的丢弃 */
+function fromCapabilityRefs(refs, warnings) {
+  const local = db.all('capabilities');
+  return (refs || [])
+    .map((ref) => {
+      const found = local.find((item) =>
+        ref.connectorKey ? item.connectorKey === ref.connectorKey : item.title === ref.title && item.type === ref.type
+      );
+      if (!found && warnings && ref.title) warnings.push(`本机未安装能力「${ref.title}」，对应挂载已跳过`);
+      return found ? found.id : null;
+    })
+    .filter(Boolean);
+}
+
 /** 导出 WorkerFlow：节点按 Worker 名称记录，导入时按名称匹配 */
 function buildFlowPayload(flowId) {
   const flow = db.find('flows', flowId);
@@ -94,7 +116,9 @@ function buildFlowPayload(flowId) {
         title: node.title,
         instruction: node.instruction,
         workerName: worker ? worker.name : '',
-        capabilityIds: node.capabilityIds || []
+        // 名称引用用于跨设备重映射；capabilityIds 仅对本机导入（分享码）路径有效
+        capabilityIds: node.capabilityIds || [],
+        capabilityRefs: toCapabilityRefs(node.capabilityIds)
       };
     })
   };
@@ -199,6 +223,7 @@ function importFlow(payload) {
     (candidate) => db.all('flows').some((flow) => flow.name === candidate)
   );
 
+  const warnings = [];
   const flow = flowService.create({
     name,
     desc: resource.desc,
@@ -206,11 +231,14 @@ function importFlow(payload) {
       title: node.title,
       instruction: node.instruction,
       workerId: db.all('workers').find((worker) => worker.name === node.workerName).id,
-      capabilityIds: (node.capabilityIds || []).filter((id) => db.find('capabilities', id))
+      // 跨设备包用名称引用重映射；旧包/本机分享码无 refs 时退回按本机 ID 过滤
+      capabilityIds: node.capabilityRefs
+        ? fromCapabilityRefs(node.capabilityRefs, warnings)
+        : (node.capabilityIds || []).filter((id) => db.find('capabilities', id))
     }))
   });
 
-  return { type: 'flow', name: flow.name, flow, warnings: [] };
+  return { type: 'flow', name: flow.name, flow, warnings: [...new Set(warnings)] };
 }
 
 /** 导入资源包（文件导入与分享码导入共用） */

@@ -1,14 +1,15 @@
 /**
- * 能力与资源页：Skills（技能市场 / 我的技能）、连接器授权、知识库导入与检索、WorkerFlow 编排，
- * 以及 Worker 能力挂载弹窗（Worker 管理页也复用）。
- * 能力数据由主进程维护，本视图只负责渲染与提交。
+ * 能力与资源页（主模块）：Skills（技能市场 / 我的技能）、连接器授权、Worker 能力挂载。
+ * 知识库 / WorkerFlow / 公开项目三个小节已拆分为独立模块：
+ *   capabilities-knowledge.js、capabilities-flows.js、capabilities-shares.js
+ * 四个模块通过 VW.capCtx 共享数据与刷新入口，能力数据由主进程维护，本层只做渲染与提交。
  */
 window.VW = window.VW || {};
 
 VW.views = VW.views || {};
 
 VW.views.capabilities = (() => {
-  const { escapeHtml, debounce, formatTime } = VW.util;
+  const { escapeHtml, debounce } = VW.util;
   const store = VW.store;
 
   const state = {
@@ -20,15 +21,9 @@ VW.views.capabilities = (() => {
     installed: [],
     connectors: [],
     knowledge: [],
-    /** 知识库检索预览的展开状态、关键词与结果 */
-    searchOpen: {},
-    searchQueries: {},
-    searchResults: {},
     loaded: false
   };
 
-  let editingFlowId = null;
-  let flowNodes = [];
   let authorizingConnectorKey = null;
 
   // ==================== 数据 ====================
@@ -84,7 +79,7 @@ VW.views.capabilities = (() => {
     return store.state.workers.filter((worker) => (worker.capabilityIds || []).includes(capabilityId)).length;
   }
 
-  // ==================== 渲染：入口与小节 ====================
+  // ==================== 渲染 ====================
 
   function renderCounts() {
     const stats = store.state.capabilityStats || {};
@@ -108,9 +103,9 @@ VW.views.capabilities = (() => {
     renderSections();
     renderSkills();
     renderConnectors();
-    renderKnowledge();
-    renderFlows();
-    renderShares();
+    VW.views.capabilitiesKnowledge.render();
+    VW.views.capabilitiesFlows.render();
+    VW.views.capabilitiesShares.render();
   }
 
   // ==================== Skills ====================
@@ -230,114 +225,6 @@ VW.views.capabilities = (() => {
       .join('');
   }
 
-  // ==================== 知识库 ====================
-
-  function knowledgeCardHtml(library) {
-    const mounted = mountedCount(library.id);
-    const source = library.source || {};
-    const hits = state.searchResults[library.id] || [];
-    const open = Boolean(state.searchOpen[library.id]);
-    return `
-      <div class="knowledge-card" data-id="${library.id}">
-        <div class="knowledge-head">
-          <span class="knowledge-name">${escapeHtml(library.title)}</span>
-          <span class="status-badge status-done">已索引</span>
-        </div>
-        ${library.desc ? `<div class="automation-line">${escapeHtml(library.desc)}</div>` : ''}
-        <div class="knowledge-meta">
-          <span>${source.fileCount || 0} 个文件</span>
-          <span>${source.chunkCount || 0} 条片段</span>
-          <span>索引于 ${formatTime(source.at || library.updatedAt)}</span>
-          ${mounted ? `<span>已挂载 ${mounted} 个 Worker</span>` : ''}
-        </div>
-        <div class="knowledge-dir" title="${escapeHtml(library.dir)}">${escapeHtml(library.dir)}</div>
-        ${
-          open
-            ? `<div class="knowledge-search">
-                 <div class="input-with-action">
-                   <input type="text" data-field="search" placeholder="输入关键词预览检索命中" value="${escapeHtml(
-                     state.searchQueries?.[library.id] || ''
-                   )}" />
-                   <button class="btn btn-outline" data-act="search">检索</button>
-                 </div>
-                 ${
-                   hits.length
-                     ? `<div class="knowledge-hits">${hits
-                         .map(
-                           (hit) => `<div class="knowledge-hit">
-                             <div class="hit-file">${escapeHtml(hit.file)} · 命中分 ${hit.score}</div>
-                             <div class="hit-snippet">${escapeHtml(hit.snippet)}</div>
-                           </div>`
-                         )
-                         .join('')}</div>`
-                     : state.searchQueries?.[library.id]
-                       ? '<p class="form-hint">没有命中内容，换个关键词试试。</p>'
-                       : ''
-                 }
-               </div>`
-            : ''
-        }
-        <div class="knowledge-foot">
-          <div class="worker-card-actions">
-            <button class="mini-btn" data-act="toggle-search">${open ? '收起检索' : '检索预览'}</button>
-            <button class="mini-btn" data-act="mount">挂载到 Worker</button>
-            <button class="mini-btn" data-act="reindex">重建索引</button>
-            <button class="mini-btn" data-act="remove">删除</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  function renderKnowledge() {
-    const list = document.getElementById('knowledge-list');
-    const empty = document.getElementById('knowledge-empty');
-    list.innerHTML = state.knowledge.map(knowledgeCardHtml).join('');
-    empty.classList.toggle('hidden', state.knowledge.length > 0);
-  }
-
-  // ==================== WorkerFlow ====================
-
-  function renderFlows() {
-    const list = document.getElementById('flow-list');
-    const empty = document.getElementById('flow-empty');
-    const flows = store.state.flows || [];
-    list.innerHTML = flows
-      .map(
-        (flow) => `
-      <div class="flow-card" data-id="${flow.id}">
-        <div class="flow-head">
-          <span class="flow-name">${escapeHtml(flow.name)}</span>
-          <span class="status-badge status-done">${flow.nodeCount} 个节点</span>
-        </div>
-        ${flow.desc ? `<div class="automation-line">${escapeHtml(flow.desc)}</div>` : ''}
-        <div class="flow-steps">
-          ${flow.nodes
-            .map(
-              (node, index) => `
-            <div class="flow-step">
-              <span class="flow-step-index">${index + 1}</span>
-              <span class="flow-step-title">${escapeHtml(node.title)}</span>
-              <span class="flow-step-worker${node.workerMissing ? ' missing' : ''}">${escapeHtml(node.workerName)}</span>
-              <span class="flow-step-instruction">${escapeHtml(node.instruction)}</span>
-            </div>`
-            )
-            .join('')}
-        </div>
-        <div class="flow-foot">
-          <span class="automation-stats">创建于 ${formatTime(flow.createdAt)}</span>
-          <div class="worker-card-actions">
-            <button class="mini-btn" data-act="run">用它创建任务</button>
-            <button class="mini-btn" data-act="share">分享</button>
-            <button class="mini-btn" data-act="edit">编辑</button>
-            <button class="mini-btn" data-act="remove">删除</button>
-          </div>
-        </div>
-      </div>`
-      )
-      .join('');
-    empty.classList.toggle('hidden', flows.length > 0);
-  }
-
   // ==================== 挂载 ====================
 
   function renderMountGroups(workerId) {
@@ -436,336 +323,6 @@ VW.views.capabilities = (() => {
     }
   }
 
-  // ==================== 知识库弹窗 ====================
-
-  // 目录授权 ticket：仅由主进程对话框签发，创建知识库时原样回传校验
-  let dirTicket = '';
-
-  function openKnowledgeModal() {
-    document.getElementById('knowledge-form').reset();
-    document.getElementById('knowledge-dir').value = '';
-    dirTicket = '';
-    VW.modal.open('knowledge-modal');
-  }
-
-  async function pickDirectory() {
-    try {
-      const { dir, ticket } = await VW.api.capability.pickDirectory();
-      if (dir) {
-        document.getElementById('knowledge-dir').value = dir;
-        dirTicket = ticket || '';
-      }
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
-  }
-
-  async function submitKnowledge(event) {
-    event.preventDefault();
-    const form = document.getElementById('knowledge-form');
-    try {
-      const created = await VW.api.capability.createKnowledge({
-        name: form.name.value,
-        desc: form.desc.value,
-        dir: form.dir.value,
-        ticket: dirTicket
-      });
-      VW.modal.close('knowledge-modal');
-      await refresh();
-      VW.toast.show(`知识库已索引：${created.source.chunkCount} 条片段`);
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
-  }
-
-  // ==================== 流程弹窗 ====================
-
-  function nodeRowHtml(node, index) {
-    const workers = store.state.workers;
-    return `
-      <div class="flow-node" data-index="${index}">
-        <div class="flow-node-head">
-          <span class="flow-node-index">${index + 1}</span>
-          <input type="text" data-field="title" placeholder="步骤名称（如：收集资料）" value="${escapeHtml(node.title || '')}" maxlength="30" />
-          <button type="button" class="icon-btn" data-act="up" title="上移">↑</button>
-          <button type="button" class="icon-btn" data-act="down" title="下移">↓</button>
-          <button type="button" class="icon-btn" data-act="remove-node" title="删除该步">✕</button>
-        </div>
-        <div class="flow-node-body">
-          <select data-field="workerId" class="modal-select">
-            ${workers
-              .map(
-                (worker) =>
-                  `<option value="${worker.id}" ${node.workerId === worker.id ? 'selected' : ''}>${escapeHtml(
-                    worker.name
-                  )}（${escapeHtml(worker.role)}）</option>`
-              )
-              .join('')}
-          </select>
-          <input type="text" data-field="instruction" placeholder="指令模板，可用 {goal} 引用任务目标" value="${escapeHtml(
-            node.instruction || ''
-          )}" maxlength="300" />
-        </div>
-      </div>`;
-  }
-
-  function renderFlowNodes() {
-    const container = document.getElementById('flow-nodes');
-    container.innerHTML = flowNodes.map(nodeRowHtml).join('');
-    VW.dropdown.enhanceAll(container); // 动态创建的 select 需要即时增强为统一下拉
-    const submitBtn = document.getElementById('add-flow-node');
-    submitBtn.classList.toggle('hidden', flowNodes.length >= 8);
-  }
-
-  /** 从表单读回节点内容，保证增删排序后不丢用户已填内容 */
-  function syncNodesFromForm() {
-    document.querySelectorAll('#flow-nodes .flow-node').forEach((row) => {
-      const index = Number(row.dataset.index);
-      if (!flowNodes[index]) return;
-      flowNodes[index].title = row.querySelector('[data-field="title"]').value;
-      flowNodes[index].workerId = row.querySelector('[data-field="workerId"]').value;
-      flowNodes[index].instruction = row.querySelector('[data-field="instruction"]').value;
-    });
-  }
-
-  function openFlowModal(flow) {
-    if (!store.state.workers.length) {
-      VW.toast.show('请先创建 Worker');
-      return;
-    }
-    editingFlowId = flow ? flow.id : null;
-    document.getElementById('flow-modal-title').textContent = flow ? '编辑流程' : '新建流程';
-    const form = document.getElementById('flow-form');
-    form.reset();
-
-    flowNodes = flow
-      ? flow.nodes.map((node) => ({
-          id: node.id,
-          title: node.title,
-          workerId: node.workerId,
-          instruction: node.instruction
-        }))
-      : [{ title: '步骤 1', workerId: store.state.workers[0].id, instruction: '围绕「{goal}」完成该步骤的准备工作' }];
-
-    if (flow) {
-      form.name.value = flow.name;
-      form.desc.value = flow.desc || '';
-    }
-    renderFlowNodes();
-    VW.modal.open('flow-modal');
-  }
-
-  async function submitFlow(event) {
-    event.preventDefault();
-    syncNodesFromForm();
-    const form = document.getElementById('flow-form');
-    if (!flowNodes.length) {
-      VW.toast.show('请至少添加一个步骤');
-      return;
-    }
-    const payload = { name: form.name.value, desc: form.desc.value, nodes: flowNodes };
-    try {
-      if (editingFlowId) {
-        await VW.api.flow.update(editingFlowId, payload);
-        VW.toast.show('流程已更新');
-      } else {
-        const created = await VW.api.flow.create(payload);
-        VW.toast.show(`流程「${created.name}」已创建`);
-      }
-      VW.modal.close('flow-modal');
-      await refresh();
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
-  }
-
-  // ==================== 公开项目（分享记录） ====================
-
-  let currentShare = null;
-
-  function shareCardHtml(share) {
-    return `
-      <div class="share-card" data-id="${share.id}">
-        <div class="share-head">
-          <span class="share-name">${escapeHtml(share.title)}</span>
-          <span class="meta-chip">${escapeHtml(share.typeLabel)}</span>
-          <span class="status-badge ${share.visibility === 'public' ? 'status-running' : 'status-canceled'}">
-            ${share.visibility === 'public' ? '公开' : '仅自己'}
-          </span>
-        </div>
-        <div class="automation-line">${escapeHtml(share.summary)}</div>
-        <div class="share-code-row">
-          <code class="share-code">${escapeHtml(share.code)}</code>
-          <span class="form-hint">已被导入 ${share.importCount} 次 · 更新于 ${formatTime(share.updatedAt)}</span>
-        </div>
-        <div class="share-foot">
-          <div class="worker-card-actions">
-            <button class="mini-btn" data-act="copy">复制分享码</button>
-            <button class="mini-btn" data-act="export">导出 JSON</button>
-            <button class="mini-btn" data-act="import">导入到本机</button>
-            <button class="mini-btn" data-act="visibility">${share.visibility === 'public' ? '设为仅自己' : '设为公开'}</button>
-            <button class="mini-btn" data-act="remove">删除</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  function renderShares() {
-    const shares = store.state.shares || [];
-    document.getElementById('cap-count-share').textContent = String(shares.length);
-    document.getElementById('share-summary').textContent = `${shares.filter((share) => share.visibility === 'public').length} 个公开 · 共 ${shares.length} 个已分享资源`;
-    document.getElementById('share-list').innerHTML = shares.map(shareCardHtml).join('');
-    document.getElementById('share-empty').classList.toggle('hidden', shares.length > 0);
-  }
-
-  /** 导出资源包为 JSON 文件（由主进程弹出保存对话框） */
-  async function exportShare(share) {
-    try {
-      const payload = await VW.api.share.exportPayload(share.resourceType, share.resourceId);
-      const result = await VW.api.app.saveFile({
-        suggestedName: `${share.title}.virtworker.json`,
-        content: JSON.stringify(payload, null, 2)
-      });
-      if (result.canceled) return;
-      VW.toast.show(`已导出到 ${result.filePath}`);
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
-  }
-
-  /** 导入资源包内容（分享码与文件两条路径共用） */
-  async function importAndReport(payload) {
-    const result = await VW.api.share.importPayload(payload);
-    await Promise.all([refresh(), VW.views.workers.refreshAll()]);
-    const warn = result.warnings && result.warnings.length ? `（${result.warnings.join('；')}）` : '';
-    VW.toast.show(`已导入${result.type === 'flow' ? '流程' : 'Worker'}「${result.name}」${warn}`);
-    return result;
-  }
-
-  async function openShare(resourceType, resourceId) {
-    try {
-      const share = await VW.api.share.create({ resourceType, resourceId });
-      currentShare = share;
-      document.getElementById('share-modal-title').textContent = `分享 · ${share.title}`;
-      document.getElementById('share-code-value').value = share.code;
-      document.getElementById('share-visibility-toggle').checked = share.visibility === 'public';
-      document.getElementById('share-content-summary').textContent = `${share.typeLabel} · ${share.summary}`;
-      VW.modal.open('share-modal');
-      await refreshShares();
-    } catch (error) {
-      VW.toast.show(error.message);
-    }
-  }
-
-  function bindShareEvents() {
-    document.getElementById('share-modal-close').addEventListener('click', () => VW.modal.close('share-modal'));
-    document.getElementById('share-modal-ok').addEventListener('click', () => VW.modal.close('share-modal'));
-    document.getElementById('copy-share-code-btn').addEventListener('click', async () => {
-      if (!currentShare) return;
-      try {
-        await VW.api.copyText(currentShare.code);
-        VW.toast.show('分享码已复制');
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-    });
-    document.getElementById('share-visibility-toggle').addEventListener('change', async (event) => {
-      if (!currentShare) return;
-      try {
-        currentShare = await VW.api.share.setVisibility(currentShare.id, event.target.checked ? 'public' : 'private');
-        VW.toast.show(event.target.checked ? '已设为公开' : '已设为仅自己可见');
-        await refreshShares();
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-    });
-    document.getElementById('share-export-btn').addEventListener('click', () => {
-      if (currentShare) exportShare(currentShare);
-    });
-    document.getElementById('share-delete-btn').addEventListener('click', async () => {
-      if (!currentShare) return;
-      if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
-      try {
-        await VW.api.share.remove(currentShare.id);
-        VW.modal.close('share-modal');
-        VW.toast.show('已取消分享');
-        await refreshShares();
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-    });
-
-    // 按分享码导入
-    const codeInput = document.getElementById('share-code-input');
-    const importBtn = document.getElementById('share-import-btn');
-    const hint = document.getElementById('share-preview-hint');
-    let previewPayload = null;
-
-    document.getElementById('share-preview-btn').addEventListener('click', async () => {
-      try {
-        const { share, payload } = await VW.api.share.preview(codeInput.value);
-        previewPayload = payload;
-        hint.textContent = `找到「${share.title}」（${share.typeLabel} · ${share.summary}），点击「导入」即可复制一份到本机。`;
-        importBtn.disabled = false;
-      } catch (error) {
-        previewPayload = null;
-        importBtn.disabled = true;
-        hint.textContent = error.message;
-      }
-    });
-
-    importBtn.addEventListener('click', async () => {
-      try {
-        const { payload } = await VW.api.share.preview(codeInput.value);
-        await importAndReport(previewPayload || payload);
-        codeInput.value = '';
-        previewPayload = null;
-        importBtn.disabled = true;
-        hint.textContent = '分享码为本机资源包引用；跨设备请使用「导出为 JSON」后传文件导入。';
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-    });
-
-    document.getElementById('share-list').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-act]');
-      if (!button) return;
-      const share = (store.state.shares || []).find((item) => item.id === button.closest('.share-card').dataset.id);
-      if (!share) return;
-      const action = button.dataset.act;
-
-      try {
-        if (action === 'copy') {
-          await VW.api.copyText(share.code);
-          VW.toast.show('分享码已复制');
-          return;
-        }
-        if (action === 'export') return exportShare(share);
-        if (action === 'import') {
-          const result = await VW.api.share.importByCode(share.code);
-          await Promise.all([refresh(), VW.views.workers.refreshAll()]);
-          const warn = result.warnings && result.warnings.length ? `（${result.warnings.join('；')}）` : '';
-          VW.toast.show(`已导入「${result.name}」${warn}`);
-          return;
-        }
-        if (action === 'visibility') {
-          await VW.api.share.setVisibility(share.id, share.visibility === 'public' ? 'private' : 'public');
-          await refreshShares();
-          return;
-        }
-        if (action === 'remove') {
-          if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
-          await VW.api.share.remove(share.id);
-          await refreshShares();
-          VW.toast.show('已取消分享');
-        }
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-      return undefined;
-    });
-  }
-
   // ==================== 事件绑定 ====================
 
   function bindSkillEvents() {
@@ -844,121 +401,6 @@ VW.views.capabilities = (() => {
     document.getElementById('connector-modal-cancel').addEventListener('click', () => VW.modal.close('connector-modal'));
   }
 
-  function bindKnowledgeEvents() {
-    document.getElementById('new-knowledge-btn').addEventListener('click', openKnowledgeModal);
-    document.getElementById('pick-directory-btn').addEventListener('click', pickDirectory);
-    document.getElementById('knowledge-form').addEventListener('submit', submitKnowledge);
-    document.getElementById('knowledge-modal-close').addEventListener('click', () => VW.modal.close('knowledge-modal'));
-    document.getElementById('knowledge-modal-cancel').addEventListener('click', () => VW.modal.close('knowledge-modal'));
-
-    const list = document.getElementById('knowledge-list');
-    list.addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-act]');
-      if (!button) return;
-      const id = button.closest('.knowledge-card').dataset.id;
-      const action = button.dataset.act;
-
-      try {
-        if (action === 'toggle-search') {
-          state.searchOpen[id] = !state.searchOpen[id];
-          renderKnowledge();
-          return;
-        }
-        if (action === 'search') {
-          const input = button.closest('.knowledge-search').querySelector('[data-field="search"]');
-          state.searchQueries = state.searchQueries || {};
-          state.searchQueries[id] = input.value;
-          state.searchResults[id] = input.value.trim() ? await VW.api.capability.search(id, input.value) : [];
-          renderKnowledge();
-          return;
-        }
-        if (action === 'mount') {
-          await openMount();
-          return;
-        }
-        if (action === 'reindex') {
-          const updated = await VW.api.capability.reindex(id);
-          await refresh();
-          VW.toast.show(`索引已重建：${updated.source.chunkCount} 条片段`);
-          return;
-        }
-        if (action === 'remove') {
-          if (!window.confirm('删除知识库会同时清除其索引，确认删除？')) return;
-          await VW.api.capability.remove(id);
-          await refresh();
-          VW.toast.show('知识库已删除');
-        }
-      } catch (error) {
-        VW.toast.show(error.message);
-      }
-    });
-  }
-
-  function bindFlowEvents() {
-    document.getElementById('new-flow-btn').addEventListener('click', () => openFlowModal(null));
-    document.getElementById('flow-form').addEventListener('submit', submitFlow);
-    document.getElementById('flow-modal-close').addEventListener('click', () => VW.modal.close('flow-modal'));
-    document.getElementById('flow-modal-cancel').addEventListener('click', () => VW.modal.close('flow-modal'));
-
-    document.getElementById('add-flow-node').addEventListener('click', () => {
-      syncNodesFromForm();
-      const workers = store.state.workers;
-      if (!workers.length) {
-        VW.toast.show('请先创建 Worker 再编排流程');
-        return;
-      }
-      const worker = workers[flowNodes.length % workers.length];
-      flowNodes.push({
-        title: `步骤 ${flowNodes.length + 1}`,
-        workerId: worker.id,
-        instruction: '围绕「{goal}」完成该步骤的准备工作'
-      });
-      renderFlowNodes();
-    });
-
-    document.getElementById('flow-nodes').addEventListener('click', (event) => {
-      const button = event.target.closest('[data-act]');
-      if (!button) return;
-      const index = Number(button.closest('.flow-node').dataset.index);
-      syncNodesFromForm();
-
-      if (button.dataset.act === 'remove-node') flowNodes.splice(index, 1);
-      if (button.dataset.act === 'up' && index > 0) {
-        [flowNodes[index - 1], flowNodes[index]] = [flowNodes[index], flowNodes[index - 1]];
-      }
-      if (button.dataset.act === 'down' && index < flowNodes.length - 1) {
-        [flowNodes[index + 1], flowNodes[index]] = [flowNodes[index], flowNodes[index + 1]];
-      }
-      renderFlowNodes();
-    });
-
-    document.getElementById('flow-list').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-act]');
-      if (!button) return;
-      const id = button.closest('.flow-card').dataset.id;
-      const flow = (store.state.flows || []).find((item) => item.id === id);
-      const action = button.dataset.act;
-
-      if (action === 'edit' && flow) return openFlowModal(flow);
-      if (action === 'share' && flow) return openShare('flow', flow.id);
-      if (action === 'run' && flow) {
-        document.querySelector('.nav-item[data-page="dashboard"]').click();
-        return VW.views.dashboard.openCreateTask(flow.id);
-      }
-      if (action === 'remove') {
-        if (!window.confirm('删除流程不会影响已产生的任务，确认删除？')) return undefined;
-        try {
-          await VW.api.flow.remove(id);
-          await refresh();
-          VW.toast.show('流程已删除');
-        } catch (error) {
-          VW.toast.show(error.message);
-        }
-      }
-      return undefined;
-    });
-  }
-
   function bindMountEvents() {
     document.getElementById('mount-modal-save').addEventListener('click', saveMount);
     document.getElementById('mount-modal-close').addEventListener('click', () => VW.modal.close('mount-modal'));
@@ -984,20 +426,23 @@ VW.views.capabilities = (() => {
   }
 
   function init() {
+    // 共享上下文：子模块通过它访问数据与刷新入口，避免循环依赖
+    VW.capCtx = { state, refresh, refreshShares, openMount, openShare, mountedCount };
+
     bindSectionSwitch();
     bindSkillEvents();
     bindConnectorEvents();
-    bindKnowledgeEvents();
-    bindFlowEvents();
-    bindShareEvents();
     bindMountEvents();
+    VW.views.capabilitiesKnowledge.bind();
+    VW.views.capabilitiesFlows.bind();
+    VW.views.capabilitiesShares.bind();
 
-    store.on('shares', renderShares);
+    store.on('shares', () => VW.views.capabilitiesShares.render());
     store.on(['workers', 'groups'], () => {
       renderCounts();
       renderConnectors();
-      renderKnowledge();
-      renderFlows();
+      VW.views.capabilitiesKnowledge.render();
+      VW.views.capabilitiesFlows.render();
     });
     // 懒加载：进入能力页才拉取视图数据（启动数据由 bootstrap 提供 flows/shares 等全局切片），
     // 避免与 bootstrap 并发重复请求、消除首屏 7 个 IPC 竞争
@@ -1006,6 +451,16 @@ VW.views.capabilities = (() => {
     });
 
     render();
+  }
+
+  /** 分享入口：委托给 shares 子模块 */
+  function openShare(resourceType, resourceId) {
+    return VW.views.capabilitiesShares.openShare(resourceType, resourceId);
+  }
+
+  /** 资源包导入（Worker 管理页复用）：委托给 shares 子模块 */
+  function importAndReport(payload) {
+    return VW.views.capabilitiesShares.importAndReport(payload);
   }
 
   return { init, refresh, refreshShares, ensureLoaded, openMount, openShare, importAndReport, showSection };
