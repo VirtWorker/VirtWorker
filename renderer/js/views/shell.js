@@ -65,7 +65,6 @@ VW.views.shell = (() => {
   async function saveSettings() {
     const port = Number(document.getElementById('setting-api-port').value);
     const retention = Number(document.getElementById('setting-retention').value);
-    const previousPort = store.state.settings.apiPort;
     const patch = {
       notify: document.getElementById('setting-notify').checked,
       catchUpMissed: document.getElementById('setting-catchup').checked,
@@ -80,11 +79,12 @@ VW.views.shell = (() => {
       VW.modal.close('settings-modal');
       VW.toast.show('设置已保存');
 
-      // 仅在「端口确实被改动」且与当前监听的端口不一致时提示重启
-      if (saved.apiPort !== previousPort && saved.apiPort !== store.state.apiServer.port) {
-        if (window.confirm(`API 触发端口已改为 ${saved.apiPort}，需要重启应用生效。现在重启？`)) {
-          await VW.api.app.relaunch();
-        }
+      // 端口改动后主进程会自动重启本地端点并广播 app:runtime；这里根据最新状态提示结果
+      if (patch.apiPort !== store.state.apiServer.port) {
+        await new Promise((r) => setTimeout(r, 1200)); // 等待端点重启完成
+        const server = store.state.apiServer;
+        if (server.running) VW.toast.show(`API 端点已在 ${server.port} 端口生效`);
+        else VW.toast.show(`API 端点启动失败：${server.error || '端口不可用'}`);
       }
     } catch (error) {
       VW.toast.show(error.message);

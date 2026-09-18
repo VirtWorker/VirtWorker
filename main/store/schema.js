@@ -39,7 +39,11 @@ function upgrade(items, fromVersion) {
   while (version < SCHEMA_VERSION) {
     version += 1;
     const migrate = MIGRATIONS[version];
-    if (migrate) data = migrate(data);
+    // 缺迁移函数时拒绝加载：静默跳级会把旧结构当新结构使用，属于数据损坏
+    if (!migrate) {
+      return { ok: false, reason: `缺少 ${version} 版迁移定义，无法安全升级（请补充 MIGRATIONS[${version}]）` };
+    }
+    data = migrate(data);
   }
   return { ok: true, items: data };
 }

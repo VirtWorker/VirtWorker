@@ -2,6 +2,8 @@ const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
+const executor = require('./runtime/executor');
+const executorMock = require('./runtime/executor-mock');
 const runtime = require('./runtime/task-runtime');
 const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
@@ -10,8 +12,6 @@ const taskService = require('./services/task-service');
 /**
  * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
  */
-
-const isDev = process.argv.includes('--dev') || !app.isPackaged;
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -28,6 +28,7 @@ if (!app.requestSingleInstanceLock()) {
 function bootstrapServices() {
   try {
     db.init(path.join(app.getPath('userData'), 'data'));
+    executor.register(executorMock, { activate: true }); // 当前为模拟执行器；接入真实 LLM 时注册并 setActive 即可
     ipc.register();
     runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
     scheduler.start(); // 启动补跑错过的定时任务并排程
@@ -138,8 +139,9 @@ process.on('unhandledRejection', (reason) => {
   console.error('[main] 未处理的 Promise 拒绝:', reason);
 });
 
-// 退出前释放调度定时器与本地端点
+// 退出前释放调度定时器、本地端点与运行时任务状态
 app.on('before-quit', () => {
+  runtime.shutdown();
   scheduler.stop();
   httpServer.stop();
 });

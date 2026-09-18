@@ -29,5 +29,6 @@ $RECYCLE.BIN/
 docs/
 tmp/
 test/
+tests/
 build/
 electron-builder.yml

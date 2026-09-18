@@ -264,6 +264,7 @@ function buildResult(task, worker) {
 }
 
 module.exports = {
+  name: 'mock',
   buildSteps,
   buildFlowSteps,
   stepDelay,

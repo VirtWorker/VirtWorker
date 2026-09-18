@@ -169,4 +169,19 @@ function stop() {
   status = { running: false, port: null, error: null };
 }
 
-module.exports = { start, stop, getStatus, DEFAULT_PORT };
+/** 端口变更后重启（settings 修改 apiPort 时调用）：等旧监听真正关闭后再按新端口启动，避免 EADDRINUSE */
+function restart() {
+  return new Promise((resolve) => {
+    if (!server) return resolve(start());
+    const closing = server;
+    server = null;
+    status = { running: false, port: null, error: null };
+    closing.close(() => resolve(start()));
+    // 兜底：无活动连接时 close 回调可能延迟，1s 后强制启动
+    setTimeout(() => {
+      if (!server) resolve(start());
+    }, 1000).unref?.();
+  });
+}
+
+module.exports = { start, stop, restart, getStatus, DEFAULT_PORT };

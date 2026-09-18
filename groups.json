@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-18T02:51:41.536Z",
+  "items": [
+    {
+      "id": "gp_9b34a8",
+      "name": "唯一组",
+      "desc": "",
+      "memberIds": [],
+      "leadWorkerId": null,
+      "createdAt": "2026-09-18T02:51:41.532Z",
+      "updatedAt": "2026-09-18T02:51:41.536Z"
+    }
+  ]
+}

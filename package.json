@@ -9,14 +9,21 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint main preload renderer",
     "rebuild": "electron-rebuild",
     "build": "electron-builder --win",
     "build:dir": "electron-builder --win --dir",
     "build:portable": "electron-builder --win portable"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "vitest": "^5.0.1"
   },
   "build": {
     "appId": "com.virtworker.app",

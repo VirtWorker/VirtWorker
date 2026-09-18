@@ -115,6 +115,36 @@ function resolveAssignee(assigneeId) {
 
 // ==================== 创建 / 查询 ====================
 
+/**
+ * 收敛外部传入的 payload：限制嵌套深度、字符串长度与总规模，
+ * 丢弃函数/符号等不可序列化值，防止任意结构数据入库或被渲染层回显。
+ */
+const PAYLOAD_MAX_DEPTH = 4;
+const PAYLOAD_MAX_STRING = 2000;
+const PAYLOAD_MAX_ARRAY = 50;
+const PAYLOAD_MAX_KEYS = 50;
+
+function sanitizeValue(value, depth) {
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.slice(0, PAYLOAD_MAX_STRING);
+  if (depth >= PAYLOAD_MAX_DEPTH) return undefined; // 超深直接丢弃
+  if (Array.isArray(value)) return value.slice(0, PAYLOAD_MAX_ARRAY).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item !== undefined);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value).slice(0, PAYLOAD_MAX_KEYS)) {
+      const cleaned = sanitizeValue(value[key], depth + 1);
+      if (cleaned !== undefined) out[key] = cleaned;
+    }
+    return out;
+  }
+  return undefined; // function / symbol / bigint 等丢弃
+}
+
+function sanitizePayload(payload) {
+  const cleaned = sanitizeValue(payload, 0);
+  return cleaned && typeof cleaned === 'object' ? cleaned : {};
+}
+
 function create(params = {}) {
   const goal = String(params.goal ?? '').trim();
   if (!goal) throw fail.validation('任务目标不能为空');
@@ -133,15 +163,17 @@ function create(params = {}) {
     trigger,
     assignee,
     confirmFirst: Boolean(params.confirmFirst),
-    workspace: { cwd: String(params.workspace ?? '').trim(), env: assignee.env },
-    input: { payload: params.payload ?? {}, attachments: [] },
+    workspace: { cwd: String(params.workspace ?? '').trim().slice(0, 300), env: assignee.env },
+    input: { payload: sanitizePayload(params.payload), attachments: [] },
     steps: [],
     progress: 0,
     actionRequest: null,
     result: null,
     resultAckedAt: null,
     error: null,
-    tags: Array.isArray(params.tags) ? params.tags.slice(0, 5) : [],
+    tags: Array.isArray(params.tags)
+      ? [...new Set(params.tags.slice(0, 5).map((tag) => String(tag).trim().slice(0, 20)).filter(Boolean))]
+      : [],
     createdAt: nowIso(),
     startedAt: null,
     updatedAt: nowIso(),

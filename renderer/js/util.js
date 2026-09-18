@@ -11,6 +11,17 @@ VW.util = (() => {
     return div.innerHTML;
   }
 
+  /**
+   * 样式值白名单校验：用于把外部数据安全地插入 style 属性。
+   * 只允许颜色/渐变等安全字符（不含引号、尖括号、冒号、& 等可逃逸属性的字符），
+   * 校验失败返回兜底值，作为服务端白名单之外的纵深防御。
+   */
+  const SAFE_STYLE_RE = /^[#a-zA-Z0-9(),.\s%/-]+$/;
+  function safeStyle(value, fallback = '') {
+    const text = String(value ?? '').trim();
+    return text && SAFE_STYLE_RE.test(text) ? text : fallback;
+  }
+
   function debounce(fn, wait = 200) {
     let timer = null;
     return (...args) => {
@@ -57,5 +68,5 @@ VW.util = (() => {
     return `${prefix}${assignee.name || ''}`;
   }
 
-  return { escapeHtml, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, PRIORITY_LABEL, ACTION_LABEL };
+  return { escapeHtml, safeStyle, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, PRIORITY_LABEL, ACTION_LABEL };
 })();

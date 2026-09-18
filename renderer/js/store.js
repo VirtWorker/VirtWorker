@@ -28,7 +28,15 @@ VW.store = (() => {
     shareStats: { total: 0, publicCount: 0, importTotal: 0 },
     /** 能力与资源统计（入口卡片计数） */
     capabilityStats: { skill: 0, connector: 0, authorizedConnector: 0, knowledge: 0, chunkTotal: 0, total: 0, nodeTotal: 0, usable: 0 },
-    settings: { taskView: 'list', period: 'month', mockRandomAction: true, notify: true },
+    settings: {
+      taskView: 'list',
+      period: 'month',
+      mockRandomAction: true,
+      notify: true,
+      catchUpMissed: true,
+      apiPort: 17891,
+      taskRetentionDays: 90
+    },
     filters: {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
       statsPeriod: 'month',

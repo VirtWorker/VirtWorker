@@ -6,6 +6,7 @@
  *   分享码是**本机**资源包引用（导入即复制一份到本机），跨设备请使用导出的 JSON 文件。
  */
 
+const { randomBytes } = require('node:crypto');
 const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const workerService = require('./worker-service');
@@ -21,8 +22,9 @@ const TYPE_LABEL = { worker: 'Worker', flow: 'WorkerFlow' };
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function generateCode() {
+  // 用加密随机源避免分享码可预测（Math.random 存在被枚举的风险）
   const block = () =>
-    Array.from({ length: 4 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('');
+    Array.from(randomBytes(4), (byte) => CODE_ALPHABET[byte % CODE_ALPHABET.length]).join('');
   return `VW-${block()}-${block()}`;
 }
 
@@ -108,6 +110,28 @@ function validatePayload(payload) {
   if (payload.kind !== EXPORT_KIND) throw fail.validation('文件类型不匹配（缺少 VirtWorker 标识）');
   if (Number(payload.version) > EXPORT_VERSION) throw fail.validation('资源包版本高于当前应用支持的版本');
   if (!SUPPORTED_TYPES.includes(payload.resourceType)) throw fail.validation('暂不支持该类型的资源包');
+  const resource = payload.resource;
+  if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
+    throw fail.validation('资源包缺少 resource 内容');
+  }
+  for (const key of ['name', 'role', 'env', 'desc']) {
+    if (resource[key] !== undefined && typeof resource[key] !== 'string') {
+      throw fail.validation(`资源字段「${key}」类型不合法`);
+    }
+  }
+  // 数组规模收敛 + 按类型校验必需清单，避免无界遍历与结构缺失
+  if (payload.resourceType === 'worker' && !Array.isArray(payload.capabilities)) {
+    throw fail.validation('Worker 资源包缺少 capabilities 清单');
+  }
+  if (payload.resourceType === 'flow' && !Array.isArray(payload.nodes)) {
+    throw fail.validation('流程资源包缺少 nodes 清单');
+  }
+  if (payload.nodes !== undefined && (!Array.isArray(payload.nodes) || payload.nodes.length > 20)) {
+    throw fail.validation('资源包节点列表不合法（最多 20 个）');
+  }
+  if (payload.capabilities !== undefined && (!Array.isArray(payload.capabilities) || payload.capabilities.length > 50)) {
+    throw fail.validation('资源包能力列表不合法（最多 50 项）');
+  }
   return payload;
 }
 

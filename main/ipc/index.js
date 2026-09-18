@@ -16,6 +16,7 @@ const capabilityService = require('../services/capability-service');
 const flowService = require('../services/flow-service');
 const shareService = require('../services/share-service');
 const httpServer = require('../runtime/http-server');
+const dirGrant = require('../runtime/dir-grant');
 const { fail } = require('../util/errors');
 
 const API_VERSION = 1;
@@ -103,7 +104,18 @@ function register() {
   });
 
   handle('settings:get', () => readSettings());
-  handle('settings:update', (patch) => db.setSettings(sanitizeSettings(patch)));
+  handle('settings:update', (patch) => {
+    const before = readSettings();
+    const saved = db.setSettings(sanitizeSettings(patch));
+    // 端口变化时重启本地触发端点，新状态通过事件总线广播给渲染层
+    if (saved.apiPort !== before.apiPort) {
+      return httpServer.restart().then((runtime) => {
+        bus.emit('app:runtime', { apiServer: runtime });
+        return saved;
+      });
+    }
+    return saved;
+  });
 
   // 员工资源
   handle('worker:list', (query) => workerService.listWorkers(query));
@@ -146,7 +158,11 @@ function register() {
   handle('capability:connector-catalog', () => capabilityService.connectorCatalog());
   handle('capability:authorize', ({ key, secret } = {}) => capabilityService.authorizeConnector(key, { secret }));
   handle('capability:revoke', ({ id } = {}) => capabilityService.revokeConnector(id));
-  handle('capability:create-knowledge', (payload) => capabilityService.createKnowledge(payload));
+  handle('capability:create-knowledge', ({ dir, ticket } = {}) => {
+    // 目录必须来自目录选择对话框的一次性授权，防止渲染层传入任意路径读取本地文件
+    if (!dirGrant.consume(ticket, dir)) throw fail.validation('目录未授权，请重新通过对话框选择目录');
+    return capabilityService.createKnowledge({ dir, ticket });
+  });
   handle('capability:reindex', ({ id } = {}) => capabilityService.reindexKnowledge(id));
   handle('capability:search', ({ id, keyword, limit } = {}) => capabilityService.searchKnowledge(id, keyword, limit));
   handle('capability:pick-directory', async () => {
@@ -156,7 +172,9 @@ function register() {
       title: '选择要导入的目录',
       properties: ['openDirectory']
     });
-    return { dir: result.canceled ? '' : result.filePaths[0] || '' };
+    if (result.canceled || !result.filePaths[0]) return { dir: '', ticket: '' };
+    const dir = result.filePaths[0];
+    return { dir, ticket: dirGrant.grant(dir) };
   });
 
   // WorkerFlow

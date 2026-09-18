@@ -5,6 +5,8 @@
 
 const db = require('../store/db');
 const bus = require('../runtime/event-bus');
+const flowService = require('./flow-service');
+const automationService = require('./automation-service');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
@@ -146,7 +148,16 @@ function removeWorker(id) {
   const worker = getWorker(id);
   if (!worker) throw fail.notFound('Worker 不存在');
 
+  // 悬空引用防护：流程依赖该 Worker 时必须先调整流程（自动删节点会静默改变流程语义）
+  const usedFlows = flowService.list({ workerId: id }).items;
+  if (usedFlows.length) {
+    throw fail.validation(
+      `该 Worker 正被流程「${usedFlows.map((flow) => flow.name).join('、')}」使用，请先在流程中替换或移除对应步骤`
+    );
+  }
+
   // 同步从 Group 成员中摘除，避免出现悬空引用
+  const emptiedGroupIds = [];
   db.all('groups')
     .filter((group) => group.memberIds.includes(id))
     .forEach((group) => {
@@ -156,13 +167,32 @@ function removeWorker(id) {
         leadWorkerId: group.leadWorkerId === id ? null : group.leadWorkerId,
         updatedAt: nowIso()
       };
+      if (!next.memberIds.length) emptiedGroupIds.push(group.id);
       db.update('groups', group.id, next);
       bus.emit('group:updated', decorateGroup(next));
     });
 
+  // 级联：停用执行者已失效的自动任务（直接绑定该 Worker，或绑定删除后成员清空的 Group）
+  const staleAutomations = automationService
+    .listAll()
+    .filter(
+      (automation) =>
+        automation.enabled &&
+        ((automation.executor.type === 'worker' && automation.executor.id === id) ||
+          (automation.executor.type === 'group' && emptiedGroupIds.includes(automation.executor.id)))
+    );
+  staleAutomations.forEach((automation) => {
+    automationService.update(automation.id, { enabled: false });
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: `自动任务「${automation.name}」已停用`,
+      body: '其执行者 Worker 已被删除，请重新指定执行者后再启用'
+    });
+  });
+
   db.remove('workers', id);
   bus.emit('worker:removed', { id });
-  return { id };
+  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id) };
 }
 
 // ==================== Group ====================

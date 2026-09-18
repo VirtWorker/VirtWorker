@@ -24,7 +24,12 @@ let timer = null;
 function start() {
   bus.onCommand('automation:changed', () => arm());
   bus.onCommand('task:finished', onTaskFinished);
-  catchUpMissed();
+  try {
+    catchUpMissed();
+  } catch (error) {
+    // 补跑阶段的任何异常都不应阻止排程，否则调度器整体停摆
+    console.error('[scheduler] 启动补跑异常:', error);
+  }
   arm();
 }
 
@@ -38,12 +43,33 @@ function catchUpMissed() {
   const missed = automationService.dueSchedules();
   if (!missed.length) return;
   if (db.getSettings().catchUpMissed === false) {
-    missed.forEach((automation) => automationService.advanceSchedule(automation.id));
+    missed.forEach((automation) => tryAdvance(automation));
     console.log(`[scheduler] 已跳过 ${missed.length} 个错过的定时任务（补跑已关闭）`);
     return;
   }
-  missed.forEach((automation) => fire(automation, '补跑错过的定时'));
+  missed.forEach((automation) => fireSafely(automation, '补跑错过的定时'));
   console.log(`[scheduler] 已补跑 ${missed.length} 个错过的定时任务`);
+}
+
+/** 安全触发：单个自动任务失败（如执行者已删除）不影响其余任务与后续排程 */
+function fireSafely(automation, reason, overrides = {}) {
+  try {
+    return fire(automation, reason, overrides);
+  } catch (error) {
+    console.error(`[scheduler] 触发自动任务「${automation.name}」失败:`, error.message || error);
+    // 触发失败仍推进计划，避免同一失效任务在每个 tick 反复抛错刷屏
+    tryAdvance(automation);
+    return null;
+  }
+}
+
+/** 推进计划（容错版）：失效任务跳过时不因写入异常中断整体流程 */
+function tryAdvance(automation) {
+  try {
+    automationService.advanceSchedule(automation.id);
+  } catch (error) {
+    console.error(`[scheduler] 推进自动任务「${automation.name}」计划失败:`, error.message || error);
+  }
 }
 
 /** 触发一个自动任务：装配输入 → 创建任务 → 推进计划 */
@@ -83,7 +109,7 @@ function onTaskFinished(payload = {}) {
     if (automation.id === payload.triggerRefId) return; // 不由自身触发的任务回触自己
     const scoped = automation.trigger.event.assigneeId;
     if (scoped && scoped !== payload.assigneeId) return;
-    fire(automation, `事件触发：${EVENT_SOURCE_LABEL[source]}`, { depth });
+    fireSafely(automation, `事件触发：${EVENT_SOURCE_LABEL[source]}`, { depth });
   });
 }
 
@@ -98,8 +124,13 @@ function arm() {
 
 function tick() {
   timer = null;
-  automationService.dueSchedules().forEach((automation) => fire(automation, '定时触发'));
-  arm();
+  try {
+    automationService.dueSchedules().forEach((automation) => fireSafely(automation, '定时触发'));
+  } catch (error) {
+    console.error('[scheduler] tick 异常:', error);
+  } finally {
+    arm(); // 无论本轮是否出错，必须重排下一次唤醒
+  }
 }
 
 module.exports = { start, stop, fire };

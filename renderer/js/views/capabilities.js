@@ -142,7 +142,7 @@ VW.views.capabilities = (() => {
     return `
       <div class="skill-card" data-skill="${skill.skillId || skill.id || ''}" data-capability="${capabilityId}">
         <div class="skill-head">
-          <span class="skill-icon" style="background:${skill.color || '#eef0f2'};color:${skill.fg || '#5c6066'}">
+          <span class="skill-icon" style="background:${VW.util.safeStyle(skill.color, '#eef0f2')};color:${VW.util.safeStyle(skill.fg, '#5c6066')}">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
           </span>
           <span class="skill-title">${escapeHtml(skill.title)}</span>
@@ -153,7 +153,7 @@ VW.views.capabilities = (() => {
         <div class="skill-foot">
           <span class="skill-author">作者 ${escapeHtml(skill.author)}</span>
           ${mounted ? `<span class="skill-down">已挂载 ${mounted} 个 Worker</span>` : ''}
-          ${mode === 'market' ? `<span class="skill-down">${skill.downloads.toLocaleString()}</span>` : ''}
+          ${mode === 'market' ? `<span class="skill-down">${Number(skill.downloads || 0).toLocaleString()}</span>` : ''}
         </div>
         <div class="skill-actions">
           ${
@@ -429,16 +429,23 @@ VW.views.capabilities = (() => {
 
   // ==================== 知识库弹窗 ====================
 
+  // 目录授权 ticket：仅由主进程对话框签发，创建知识库时原样回传校验
+  let dirTicket = '';
+
   function openKnowledgeModal() {
     document.getElementById('knowledge-form').reset();
     document.getElementById('knowledge-dir').value = '';
+    dirTicket = '';
     VW.modal.open('knowledge-modal');
   }
 
   async function pickDirectory() {
     try {
-      const { dir } = await VW.api.capability.pickDirectory();
-      if (dir) document.getElementById('knowledge-dir').value = dir;
+      const { dir, ticket } = await VW.api.capability.pickDirectory();
+      if (dir) {
+        document.getElementById('knowledge-dir').value = dir;
+        dirTicket = ticket || '';
+      }
     } catch (error) {
       VW.toast.show(error.message);
     }
@@ -451,7 +458,8 @@ VW.views.capabilities = (() => {
       const created = await VW.api.capability.createKnowledge({
         name: form.name.value,
         desc: form.desc.value,
-        dir: form.dir.value
+        dir: form.dir.value,
+        ticket: dirTicket
       });
       VW.modal.close('knowledge-modal');
       await refresh();

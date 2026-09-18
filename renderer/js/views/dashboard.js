@@ -85,7 +85,7 @@ VW.views.dashboard = (() => {
   function actionItemHtml(task) {
     const request = task.actionRequest || {};
     return `
-      <div class="queue-item" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -142,7 +142,7 @@ VW.views.dashboard = (() => {
   function resultItemHtml(task) {
     const result = task.result || {};
     return `
-      <div class="queue-item" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -205,7 +205,7 @@ VW.views.dashboard = (() => {
       container.innerHTML = tasks
         .map(
           (task) => `
-        <div class="task-row" data-id="${task.id}">
+        <div class="task-row" tabindex="0" data-id="${task.id}">
           <div class="task-row-main">
             <div class="task-row-title">${escapeHtml(task.title)}</div>
             <div class="task-row-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
@@ -238,7 +238,7 @@ VW.views.dashboard = (() => {
                 ? items
                     .map(
                       (task) => `
-              <div class="board-card" data-id="${task.id}">
+              <div class="board-card" tabindex="0" data-id="${task.id}">
                 <div class="board-card-title">${escapeHtml(task.title)}</div>
                 <div class="board-card-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${statusMeta(task.status).label}</div>
                 ${progressHtml(task)}
@@ -383,7 +383,7 @@ VW.views.dashboard = (() => {
         ${statusBadge(task.status)}
         <span>${escapeHtml(assigneeLabel(task.assignee))}</span>
         <span>${escapeHtml(task.trigger.label)}</span>
-        <span>优先级 ${PRIORITY_LABEL[task.priority] || task.priority}</span>
+        <span>优先级 ${escapeHtml(PRIORITY_LABEL[task.priority] || task.priority || '未知')}</span>
         <span>创建于 ${formatTime(task.createdAt)}</span>
       </div>
       <div class="detail-section">

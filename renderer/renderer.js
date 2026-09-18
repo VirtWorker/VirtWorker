@@ -48,7 +48,7 @@
         ? matched
             .map(
               (group) => `
-          <div class="sidebar-worker-item" data-group="${group.id}">
+          <div class="sidebar-worker-item" role="button" tabindex="0" data-group="${group.id}">
             <span class="avatar avatar-sm avatar-group">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19v-1a6 6 0 0 1 12 0v1"/><circle cx="18" cy="10" r="2.4"/></svg>
             </span>
@@ -68,8 +68,8 @@
       ? online
           .map(
             (worker) => `
-        <div class="sidebar-worker-item" data-worker="${worker.id}">
-          <span class="avatar avatar-sm" style="background:${worker.avatarColor}">${escapeHtml(worker.name.slice(0, 1))}</span>
+        <div class="sidebar-worker-item" role="button" tabindex="0" data-worker="${worker.id}">
+          <span class="avatar avatar-sm" style="background:${VW.util.safeStyle(worker.avatarColor, '#eef0f2')}">${escapeHtml(worker.name.slice(0, 1))}</span>
           <span class="w-name">${escapeHtml(worker.name)}</span>
           <span class="status-dot" title="在线"></span>
         </div>`
@@ -151,6 +151,12 @@
         return;
       }
 
+      if (type === 'app:runtime') {
+        // 本地触发端点状态变化（如端口重启），同步到 store 供设置页展示
+        if (payload?.apiServer) store.set({ apiServer: payload.apiServer });
+        return;
+      }
+
       if (type.startsWith('share:')) {
         VW.views.capabilities.refreshShares();
         return;
@@ -209,10 +215,51 @@
       // 队列数据（需要操作 / 查收结果）启动时按周期拉取一次
       await VW.views.dashboard.refresh({ silent: true });
     } catch (error) {
-      // 降级：主进程不可用时页面仍可打开，仅展示空态
+      // 降级：主进程不可用时页面仍可打开，展示可重试的错误横幅而非静默空态
       console.error('[app] 启动数据加载失败:', error);
-      VW.toast.show('数据加载失败，请重启应用');
+      showBootstrapError();
     }
+  }
+
+  /** 启动数据加载失败横幅：提供「重试」入口，成功后自动移除 */
+  function showBootstrapError() {
+    if (document.getElementById('bootstrap-error')) return;
+    const banner = document.createElement('div');
+    banner.id = 'bootstrap-error';
+    banner.className = 'bootstrap-error';
+    banner.setAttribute('role', 'alert');
+    banner.innerHTML = `
+      <span>数据加载失败，界面暂不可用。</span>
+      <button type="button" class="btn btn-primary" id="bootstrap-retry">重试</button>`;
+    document.querySelector('.app').prepend(banner);
+    document.getElementById('bootstrap-retry').addEventListener('click', async () => {
+      const button = document.getElementById('bootstrap-retry');
+      button.disabled = true;
+      button.textContent = '加载中…';
+      await bootstrap();
+      if (store.state.ready) banner.remove();
+      else {
+        button.disabled = false;
+        button.textContent = '重试';
+      }
+    });
+  }
+
+  /**
+   * 键盘激活：让自定义可点元素（role="button" / tabindex="0" 的 div）支持键盘操作。
+   * 原生控件（button/input/a 等）由浏览器处理，这里跳过避免重复触发。
+   */
+  function bindKeyboardActivation() {
+    const NATIVE = 'button, a[href], input, select, textarea, label';
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest(NATIVE)) return;
+      if (target.getAttribute('role') !== 'button' && target.tabIndex !== 0) return;
+      event.preventDefault(); // Space 默认滚动页面
+      target.click();
+    });
   }
 
   function init() {
@@ -220,6 +267,7 @@
     bindNavigation();
     bindSidebar();
     bindPlaceholders();
+    bindKeyboardActivation();
 
     VW.views.capabilities.init();
     VW.views.workers.init();
