@@ -117,6 +117,27 @@ function resolveExecution(task) {
 
 function dispatch(taskId) {
   if (contexts.has(taskId)) return; // 防止重复派发导致并行执行
+  // 派发链路（解析执行方式、构建步骤、标记运行）任何一环抛错都必须把任务落为失败，
+  // 否则异常只会被事件总线的 command 吞掉，任务将永远停留在"排队中"
+  try {
+    dispatchUnsafe(taskId);
+  } catch (error) {
+    console.error(`[runtime] 任务 ${taskId} 派发失败:`, error);
+    // 清理派发中间态：markRunning 前已占用并发槽位，异常时必须释放，否则槽位泄漏
+    waiting.delete(taskId);
+    clearTimer(retryTimers, taskId);
+    retryAttempts.delete(taskId);
+    contexts.delete(taskId);
+    try {
+      taskService.failTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '派发失败' });
+    } catch (failError) {
+      // 任务已被并发删除等极端情况：仅记录，不向上抛
+      console.error(`[runtime] 任务 ${taskId} 失败落库异常:`, failError);
+    }
+  }
+}
+
+function dispatchUnsafe(taskId) {
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.queued) return;
 

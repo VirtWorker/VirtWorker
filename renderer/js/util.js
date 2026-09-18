@@ -8,7 +8,9 @@ VW.util = (() => {
   function escapeHtml(value) {
     const div = document.createElement('div');
     div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
+    // textContent→innerHTML 只转义 & < >，不转义引号；本函数大量用于双引号属性内
+    // （如 value="${escapeHtml(...)}"），必须补齐引号转义，否则输入 " 即可逃逸属性注入事件
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   /**
