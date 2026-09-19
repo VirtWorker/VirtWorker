@@ -41,8 +41,10 @@ function normalizeNodes(nodes) {
     const instruction = String(node.instruction ?? '').trim();
     if (!instruction) throw fail.validation(`第 ${index + 1} 步请填写指令模板`);
     if (instruction.length > 300) throw fail.validation(`第 ${index + 1} 步指令最多 300 字`);
+    // node.id 可能来自导入的资源包：仅接受合理长度的字符串，否则重新生成，防止超大 id 污染存储
+    const nodeId = typeof node.id === 'string' && node.id.length > 0 && node.id.length <= 64 ? node.id : createId('nd');
     return {
-      id: node.id || createId('nd'),
+      id: nodeId,
       title: String(node.title ?? '').trim().slice(0, 30) || `步骤 ${index + 1}`,
       workerId: worker.id,
       instruction,
