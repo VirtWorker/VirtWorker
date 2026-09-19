@@ -4,7 +4,7 @@
   "version": "0.1.0-Alpha",
   "description": "VirtWorker - 自定义创建数字员工 Agent 并实现协同工作的 Windows 桌面应用",
   "author": "VirtWorker Team",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "main": "main/main.js",
   "scripts": {
     "prestart": "node scripts/build-renderer.js",
