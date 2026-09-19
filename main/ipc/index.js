@@ -42,6 +42,16 @@ function readSettings() {
   return { ...DEFAULT_SETTINGS, ...db.getSettings() };
 }
 
+/** 收敛渲染层传入的保存文件名：剥掉路径片段并过滤非法字符，防止对话框 defaultPath 被注入相对/绝对路径 */
+function safeFileName(name, fallback) {
+  const base = path
+    .basename(String(name ?? ''))
+    .replace(/[\\/:*?"<>|\p{C}]/gu, '_')
+    .replace(/^\.+$/, '')
+    .trim();
+  return base || fallback;
+}
+
 /** 入参校验只做边界收敛，业务校验仍在服务层 */
 function sanitizeSettings(patch = {}) {
   const safe = {};
@@ -216,7 +226,7 @@ function register() {
     const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
     const result = await dialog.showSaveDialog(parent, {
       title: '导出资源包',
-      defaultPath: suggestedName || 'virtworker-resource.json',
+      defaultPath: safeFileName(suggestedName, 'virtworker-resource.json'),
       filters: [{ name: 'VirtWorker 资源包', extensions: ['json'] }]
     });
     if (result.canceled || !result.filePath) return { canceled: true };

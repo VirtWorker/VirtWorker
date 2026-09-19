@@ -86,7 +86,21 @@ function readBody(req) {
   });
 }
 
+/**
+ * Host 头校验：本服务只面向本机回环。若攻击者的网页把自有域名解析到 127.0.0.1（DNS rebinding），
+ * 浏览器发出的请求虽来自本机，Host 仍是攻击域名。只放行回环主机名可从源头阻断该类跨站请求。
+ */
+function isLoopbackHost(host) {
+  const value = String(host || '').trim().toLowerCase();
+  if (value.startsWith('[')) return value === '[::1]' || /^\[::1\]:\d+$/.test(value); // IPv6 字面量（可带端口）
+  const hostname = value.replace(/:\d+$/, '');
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
 async function handle(req, res) {
+  if (!isLoopbackHost(req.headers.host)) {
+    return failRequest(res, 403, 'FORBIDDEN', '拒绝非本地来源的请求');
+  }
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
 

@@ -111,7 +111,11 @@ function resolveExecution(task) {
     return { kind: 'flow', plan };
   }
   const worker = workerService.resolveExecutorWorker(task.assignee);
-  if (!worker || worker.status === 'offline') return { kind: 'offline', name: task.assignee.name };
+  if (!worker) {
+    // 执行者已被删除（或 Group 成员被清空）时按离线处理只会无限重试，任务将永远卡在排队中，直接判失败
+    return { kind: 'invalid', reason: `执行者「${task.assignee.name}」不存在或没有可用成员，请重新选择执行者` };
+  }
+  if (worker.status === 'offline') return { kind: 'offline', name: task.assignee.name };
   return { kind: 'worker', worker };
 }
 

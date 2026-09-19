@@ -156,6 +156,16 @@ function validatePayload(payload) {
   if (payload.capabilities !== undefined && (!Array.isArray(payload.capabilities) || payload.capabilities.length > 50)) {
     throw fail.validation('资源包能力列表不合法（最多 50 项）');
   }
+  // 元素级校验：null / 数组等畸形元素会让导入逻辑抛 TypeError（表现为 INTERNAL），提前收敛为明确的校验错误
+  if (Array.isArray(payload.nodes) && payload.nodes.some((node) => !node || typeof node !== 'object' || Array.isArray(node))) {
+    throw fail.validation('资源包流程节点格式不合法');
+  }
+  if (
+    Array.isArray(payload.capabilities) &&
+    payload.capabilities.some((item) => !item || typeof item !== 'object' || Array.isArray(item))
+  ) {
+    throw fail.validation('资源包能力清单格式不合法');
+  }
   return payload;
 }
 

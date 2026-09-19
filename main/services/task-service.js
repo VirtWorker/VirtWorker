@@ -83,8 +83,8 @@ function normalizeTrigger(trigger) {
   return {
     type,
     refId: trigger?.refId ?? null,
-    /** 事件触发链深度：防止自动任务互相触发形成无限循环 */
-    depth: Number.isInteger(trigger?.depth) ? trigger.depth : 0,
+    /** 事件触发链深度：钳制到非负区间（负值会让调度器的链深度上限永久失效） */
+    depth: Number.isInteger(trigger?.depth) ? Math.min(10, Math.max(0, trigger.depth)) : 0,
     label: TRIGGER_LABEL[type]
   };
 }
@@ -98,6 +98,7 @@ function resolveAssignee(assigneeId) {
     const group = db.find('groups', id);
     if (!group) throw fail.notFound('所选 Group 不存在');
     const leadId = group.leadWorkerId || group.memberIds[0];
+    if (!leadId) throw fail.validation('该 Group 没有成员，请先为其添加成员再派发任务');
     const lead = leadId ? db.find('workers', leadId) : null;
     return { type: 'group', id: group.id, name: group.name, env: lead?.env ?? 'cloud' };
   }
