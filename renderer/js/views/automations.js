@@ -259,8 +259,9 @@ VW.views.automations = (() => {
 
   async function submitForm(event) {
     event.preventDefault();
-    const payload = readForm();
+    // readForm 含日期换算（toISOString 对非法输入会抛错），必须放进 try 统一以 Toast 提示
     try {
+      const payload = readForm();
       if (editingId) {
         await VW.api.automation.update(editingId, payload);
         VW.toast.show('自动任务已更新');

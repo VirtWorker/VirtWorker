@@ -345,11 +345,16 @@ function createKnowledge(params = {}) {
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
-  db.insert('capabilities', capability);
-
-  const source = indexDirectory(capability.id, dir);
+  // 先索引、后入库：索引失败（如目录没有可索引文本）时不能留下 status=indexed 但没有任何片段的幽灵知识库
+  let source;
+  try {
+    source = indexDirectory(capability.id, dir);
+  } catch (error) {
+    db.removeWhere('chunks', (chunk) => chunk.capabilityId === capability.id);
+    throw error;
+  }
   const next = { ...capability, source, updatedAt: nowIso() };
-  db.update('capabilities', capability.id, next);
+  db.insert('capabilities', next);
   publish(next, 'capability:created');
   return decorate(next);
 }
