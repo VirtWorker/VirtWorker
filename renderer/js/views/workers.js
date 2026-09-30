@@ -24,7 +24,7 @@ VW.views.workers = (() => {
       if (seq !== refreshSeq) return;
       store.set({ workerList, groups });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -40,7 +40,7 @@ VW.views.workers = (() => {
       if (seq !== refreshSeq) return;
       store.set({ workers, workerList, groups });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -194,7 +194,7 @@ VW.views.workers = (() => {
       VW.toast.show(`Worker「${worker.name}」已删除${notes.length ? `（${notes.join('，')}）` : ''}`);
       await refreshAll();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -206,7 +206,7 @@ VW.views.workers = (() => {
       VW.toast.show(`Group「${group.name}」已删除${disabled ? `（${disabled} 个自动任务已停用）` : ''}`);
       await refreshAll();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -230,7 +230,7 @@ VW.views.workers = (() => {
         await refreshAll();
         VW.toast.show(editingWorkerId ? `Worker「${worker.name}」已保存` : `数字员工「${worker.name}」创建成功`);
       })
-      .catch((error) => VW.toast.show(error.message));
+      .catch((error) => VW.toast.fromError(error));
   }
 
   // ==================== 新建 / 编辑 Group ====================
@@ -277,7 +277,7 @@ VW.views.workers = (() => {
         await refreshAll();
         VW.toast.show(editingGroupId ? `Group「${group.name}」已保存` : `Group「${group.name}」创建成功`);
       })
-      .catch((error) => VW.toast.show(error.message));
+      .catch((error) => VW.toast.fromError(error));
   }
 
   // ==================== 初始化 ====================
@@ -340,7 +340,7 @@ VW.views.workers = (() => {
         await VW.views.capabilities.importAndReport(payload);
         await refreshAll();
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
 

@@ -31,7 +31,7 @@ VW.views.automations = (() => {
       if (seq !== refreshSeq) return;
       store.set({ automations: list.items, automationStats: stats, apiServer: runtime.apiServer });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -279,7 +279,7 @@ VW.views.automations = (() => {
       VW.modal.close('automation-modal');
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -299,7 +299,7 @@ VW.views.automations = (() => {
       });
       VW.modal.open('automation-history-modal');
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -355,7 +355,7 @@ VW.views.automations = (() => {
           await refresh();
         })
         .catch(async (error) => {
-          VW.toast.show(error.message);
+          VW.toast.fromError(error);
           await refresh(); // 失败时回滚界面开关状态
         });
     });
@@ -377,7 +377,7 @@ VW.views.automations = (() => {
           await VW.api.automation.copyInvocation(id);
           VW.toast.show('调用命令已复制到剪贴板');
         } catch (error) {
-          VW.toast.show(error.message);
+          VW.toast.fromError(error);
         }
         return undefined;
       }
@@ -388,7 +388,7 @@ VW.views.automations = (() => {
           VW.toast.show('已生成新 Token，请重新复制调用命令');
           await refresh();
         } catch (error) {
-          VW.toast.show(error.message);
+          VW.toast.fromError(error);
         }
         return undefined;
       }
@@ -399,7 +399,7 @@ VW.views.automations = (() => {
           VW.toast.show('自动任务已删除');
           await refresh();
         } catch (error) {
-          VW.toast.show(error.message);
+          VW.toast.fromError(error);
         }
       }
       return undefined;

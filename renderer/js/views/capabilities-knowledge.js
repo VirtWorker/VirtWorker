@@ -94,7 +94,7 @@ VW.views.capabilitiesKnowledge = (() => {
         dirTicket = ticket || '';
       }
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -112,7 +112,7 @@ VW.views.capabilitiesKnowledge = (() => {
       await VW.capCtx.refresh();
       VW.toast.show(`知识库已索引：${created.source.chunkCount} 条片段`);
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -160,7 +160,7 @@ VW.views.capabilitiesKnowledge = (() => {
           VW.toast.show('知识库已删除');
         }
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
   }

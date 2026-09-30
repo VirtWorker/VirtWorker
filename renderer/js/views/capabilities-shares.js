@@ -60,7 +60,7 @@ VW.views.capabilitiesShares = (() => {
       if (result.canceled) return;
       VW.toast.show(`已导出到 ${result.filePath}`);
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -84,7 +84,7 @@ VW.views.capabilitiesShares = (() => {
       VW.modal.open('share-modal');
       await VW.capCtx.refreshShares();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -97,7 +97,7 @@ VW.views.capabilitiesShares = (() => {
         await VW.api.copyText(currentShare.code);
         VW.toast.show('分享码已复制');
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
     document.getElementById('share-visibility-toggle').addEventListener('change', async (event) => {
@@ -107,7 +107,7 @@ VW.views.capabilitiesShares = (() => {
         VW.toast.show(event.target.checked ? '已设为公开' : '已设为仅自己可见');
         await VW.capCtx.refreshShares();
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
     document.getElementById('share-export-btn').addEventListener('click', () => {
@@ -122,7 +122,7 @@ VW.views.capabilitiesShares = (() => {
         VW.toast.show('已取消分享');
         await VW.capCtx.refreshShares();
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
 
@@ -154,7 +154,7 @@ VW.views.capabilitiesShares = (() => {
         importBtn.disabled = true;
         hint.textContent = '分享码为本机资源包引用；跨设备请使用「导出为 JSON」后传文件导入。';
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
 
@@ -191,7 +191,7 @@ VW.views.capabilitiesShares = (() => {
           VW.toast.show('已取消分享');
         }
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
       return undefined;
     });

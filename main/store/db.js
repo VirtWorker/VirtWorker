@@ -16,6 +16,8 @@ const COLLECTIONS = [
   'workers',
   'groups',
   'tasks',
+  /** 任务时间线（v2 起从 tasks 内嵌字段拆出，见 schema.js 迁移说明） */
+  'taskevents',
   'automations',
   'capabilities',
   'chunks',
@@ -91,13 +93,20 @@ function loadItems(name) {
     sawFile = true;
     const payload = tryRead(candidate);
     if (!payload) continue;
-    const result = schema.readCollection(payload);
-    if (result.ok) return result.items;
+    // v1 → v2 跨集合迁移：tasks 的内嵌 events 必须在 schema 剥离前提取（否则时间线丢失）
+    let legacyEvents = null;
+    if (name === 'tasks' && Number(payload.schemaVersion) < 2 && Array.isArray(payload.items)) {
+      legacyEvents = payload.items.flatMap((task) =>
+        Array.isArray(task?.events) ? task.events.map((event) => ({ ...event })) : []
+      );
+    }
+    const result = schema.readCollection(payload, name);
+    if (result.ok) return { items: result.items, legacyEvents };
     console.error(`[store] ${path.basename(candidate)} 不可用:`, result.reason);
   }
   // 文件存在但全部不可读：以空集合启动不阻塞应用，但必须让用户知情（静默丢数据不可接受）
   if (sawFile) notifyStorageIssue(`${name}.json 及其备份均无法读取，已以空数据启动`);
-  return [];
+  return { items: [], legacyEvents: null };
 }
 
 function loadSettings() {
@@ -205,7 +214,27 @@ function flush() {
 function init(dir) {
   baseDir = dir;
   fs.mkdirSync(baseDir, { recursive: true });
-  COLLECTIONS.forEach((name) => cache.set(name, loadItems(name)));
+  let legacyEvents = null;
+  COLLECTIONS.forEach((name) => {
+    const loaded = loadItems(name);
+    if (name === 'tasks' && Array.isArray(loaded.legacyEvents)) {
+      // v1 文件：无论是否有时间线都要把剥离后的 tasks 落盘为 v2 结构
+      legacyEvents = loaded.legacyEvents;
+      persist('tasks', loaded.items);
+    }
+    cache.set(name, loaded.items);
+  });
+  if (legacyEvents) {
+    // v1 → v2 迁移：提取出的时间线并入 taskevents（按 id 去重保证幂等；追加序即时间序）
+    const existing = cache.get('taskevents') || [];
+    const knownIds = new Set(existing.map((event) => event.id));
+    const additions = legacyEvents.filter((event) => !knownIds.has(event.id));
+    if (additions.length) {
+      const merged = [...existing, ...additions];
+      cache.set('taskevents', merged);
+      persist('taskevents', merged);
+    }
+  }
   settings = loadSettings();
 }
 
@@ -228,6 +257,52 @@ function insert(name, item) {
   cache.set(name, items);
   persist(name, items);
   return clone(item);
+}
+
+/** 追加（O(1)，不复制数组）：高频写入如任务时间线；与 insert 语义相同但无返回拷贝 */
+function append(name, item) {
+  const items = cache.get(name) || [];
+  items.push(item);
+  cache.set(name, items);
+  persist(name, items);
+  return item;
+}
+
+/** 批量插入（如知识库索引重建），只写一次盘；逐条 insert 是 O(N²) */
+function insertMany(name, newItems) {
+  if (!Array.isArray(newItems) || !newItems.length) return [];
+  const items = [...(cache.get(name) || []), ...newItems];
+  cache.set(name, items);
+  persist(name, items);
+  return newItems.map((item) => clone(item));
+}
+
+/** 集合条数（浅读取，不克隆条目） */
+function count(name) {
+  return (cache.get(name) || []).length;
+}
+
+/** 按条件读取（只克隆命中项）：热路径避免整集合深拷贝 */
+function query(name, predicate) {
+  return (cache.get(name) || [])
+    .filter((item) => predicate(item))
+    .map((item) => clone(item));
+}
+
+/** 保留集合中匹配 predicate 的最后 keep 条（如任务时间线上限），其余删除；返回删除数 */
+function keepLast(name, predicate, keep) {
+  if (!Number.isInteger(keep) || keep < 0) return 0;
+  const items = cache.get(name) || [];
+  const matching = [];
+  items.forEach((item, index) => {
+    if (predicate(item)) matching.push(index);
+  });
+  if (matching.length <= keep) return 0;
+  const removeSet = new Set(matching.slice(0, matching.length - keep));
+  const kept = items.filter((_, index) => !removeSet.has(index));
+  cache.set(name, kept);
+  persist(name, kept);
+  return removeSet.size;
 }
 
 function update(name, id, patch) {
@@ -277,6 +352,11 @@ module.exports = {
   all,
   find,
   insert,
+  insertMany,
+  append,
+  query,
+  count,
+  keepLast,
   update,
   remove,
   removeWhere,

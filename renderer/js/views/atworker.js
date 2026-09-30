@@ -35,7 +35,7 @@ VW.views.atworker = (() => {
       if (seq !== refreshSeq) return;
       store.set({ chatBindingList: filtered.items, chatBindings: all.items, chatStats: stats });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -46,7 +46,7 @@ VW.views.atworker = (() => {
       if (seq !== refreshSeq) return;
       store.set({ chatConnections: connections });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -206,7 +206,7 @@ VW.views.atworker = (() => {
       await refreshConnections();
       renderConnections();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -241,7 +241,7 @@ VW.views.atworker = (() => {
       renderConnections();
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -255,7 +255,7 @@ VW.views.atworker = (() => {
       renderConnections();
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -328,7 +328,7 @@ VW.views.atworker = (() => {
         chats = result.chats;
         reason = result.reason;
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     }
     wizard.chats = chats;
@@ -433,7 +433,7 @@ VW.views.atworker = (() => {
       VW.modal.close('chat-wizard-modal');
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -482,7 +482,7 @@ VW.views.atworker = (() => {
     try {
       items = (await VW.api.chat.listRequests({})).items;
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
     if (seq !== requestSeq) return;
     const list = document.getElementById('chat-request-list');
@@ -576,7 +576,7 @@ VW.views.atworker = (() => {
         VW.toast.show('已拒绝该申请');
         await Promise.all([renderRequests(), refresh()]);
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
       return;
     }
@@ -590,7 +590,7 @@ VW.views.atworker = (() => {
         VW.toast.show('已开通 @Worker');
         await Promise.all([renderRequests(), refresh()]);
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     }
   }
@@ -625,7 +625,7 @@ VW.views.atworker = (() => {
       VW.modal.close('chat-binding-modal');
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -657,7 +657,7 @@ VW.views.atworker = (() => {
     try {
       chats = (await VW.api.chat.listChats(connectionId)).chats;
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
     store.state.chatBindings
       .filter((item) => item.connectionId === connectionId)
@@ -697,7 +697,7 @@ VW.views.atworker = (() => {
       VW.modal.close('chat-simulate-modal');
       await refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -714,7 +714,7 @@ VW.views.atworker = (() => {
         await refresh();
       })
       .catch(async (error) => {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
         await refresh(); // 失败时回滚界面开关状态
       });
   }
@@ -733,7 +733,7 @@ VW.views.atworker = (() => {
         VW.toast.show('已解绑');
         await refresh();
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     }
     return undefined;

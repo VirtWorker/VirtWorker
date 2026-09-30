@@ -23,8 +23,9 @@ VW.views.dashboard = (() => {
     const { task: filters, statsPeriod } = store.state.filters;
     const seq = ++refreshSeq;
     try {
-      const [periodTasks, stats, filtered] = await Promise.all([
-        VW.api.task.list({ period: statsPeriod }),
+      // 队列表由主进程一次算完（21）：不再拉全量周期任务后自行过滤
+      const [queue, stats, filtered] = await Promise.all([
+        VW.api.task.queue({ period: statsPeriod }),
         VW.api.task.stats({ period: statsPeriod }),
         VW.api.task.list(filters)
       ]);
@@ -32,13 +33,10 @@ VW.views.dashboard = (() => {
       store.set({
         stats,
         tasks: filtered.items,
-        queue: {
-          action: periodTasks.items.filter((task) => task.status === 'need_action'),
-          result: periodTasks.items.filter((task) => task.status === 'succeeded' && !task.resultAckedAt)
-        }
+        queue
       });
     } catch (error) {
-      if (!options.silent) VW.toast.show(error.message);
+      if (!options.silent) VW.toast.fromError(error);
       console.error('[dashboard] 任务数据刷新失败:', error);
     }
   }
@@ -292,7 +290,7 @@ VW.views.dashboard = (() => {
       if (VW.modal.isOpen('task-detail-modal')) await openDetail(task.id);
       await refresh({ silent: true });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -303,7 +301,7 @@ VW.views.dashboard = (() => {
       if (VW.modal.isOpen('task-detail-modal')) await openDetail(id);
       await refresh({ silent: true });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -315,7 +313,7 @@ VW.views.dashboard = (() => {
       VW.modal.close('task-detail-modal');
       await refresh({ silent: true });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -355,7 +353,7 @@ VW.views.dashboard = (() => {
       renderDetail();
       VW.modal.open('task-detail-modal');
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -469,7 +467,7 @@ VW.views.dashboard = (() => {
         VW.toast.show(`任务「${task.title}」已创建`);
         await refresh({ silent: true });
       })
-      .catch((error) => VW.toast.show(error.message));
+      .catch((error) => VW.toast.fromError(error));
   }
 
   // ==================== 初始化 ====================

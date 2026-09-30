@@ -160,6 +160,8 @@ function register() {
   // 任务体系
   handle('task:list', (query) => taskService.list(query));
   handle('task:stats', ({ period } = {}) => taskService.stats(period));
+  /** 看板队列表：需要操作 / 待查收结果在主进程一次算完，渲染层不再拉全量周期任务自行过滤 */
+  handle('task:queue', ({ period } = {}) => taskService.queue(period));
   handle('task:create', (payload) => taskService.create(payload));
   handle('task:detail', ({ id } = {}) => taskService.detail(id));
   handle('task:cancel', ({ id, reason } = {}) => taskService.cancel(id, reason));

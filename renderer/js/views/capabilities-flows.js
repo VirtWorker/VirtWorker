@@ -152,7 +152,7 @@ VW.views.capabilitiesFlows = (() => {
       VW.modal.close('flow-modal');
       await VW.capCtx.refresh();
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -214,7 +214,7 @@ VW.views.capabilitiesFlows = (() => {
           await VW.capCtx.refresh();
           VW.toast.show('流程已删除');
         } catch (error) {
-          VW.toast.show(error.message);
+          VW.toast.fromError(error);
         }
       }
       return undefined;

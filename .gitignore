@@ -28,9 +28,7 @@ $RECYCLE.BIN/
 
 # 其他
 .trae/
-docs/
 tmp/
-test/
-tests/
-build/
-electron-builder.yml
+
+# 覆盖率报告产物
+coverage/

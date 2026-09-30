@@ -94,7 +94,7 @@ function stats() {
     connector: countBy('connector'),
     authorizedConnector: items.filter((item) => item.type === 'connector' && item.status === 'authorized').length,
     knowledge: countBy('knowledge'),
-    chunkTotal: db.all('chunks').length,
+    chunkTotal: db.count('chunks'),
     encrypted: vault.isEncryptionAvailable()
   };
 }
@@ -146,7 +146,10 @@ function installSkill(skillId) {
 
 function uninstall(id) {
   const capability = getOrThrow(id);
-  if (capability.type === 'knowledge') db.removeWhere('chunks', (chunk) => chunk.capabilityId === id);
+  if (capability.type === 'knowledge') {
+    db.removeWhere('chunks', (chunk) => chunk.capabilityId === id);
+    invalidateChunkIndex();
+  }
   db.remove('capabilities', id);
   detachFromWorkers(id);
   bus.emit('capability:removed', { id, type: capability.type });
@@ -324,7 +327,8 @@ function indexDirectory(capabilityId, dir) {
   });
 
   db.removeWhere('chunks', (chunk) => chunk.capabilityId === capabilityId);
-  chunks.forEach((chunk) => db.insert('chunks', chunk));
+  db.insertMany('chunks', chunks); // 批量写盘：逐条 insert 在数千片段时是 O(N²)
+  invalidateChunkIndex();
   return { fileCount: files.length, chunkCount: chunks.length, dir };
 }
 
@@ -352,6 +356,7 @@ function createKnowledge(params = {}) {
     source = indexDirectory(capability.id, dir);
   } catch (error) {
     db.removeWhere('chunks', (chunk) => chunk.capabilityId === capability.id);
+    invalidateChunkIndex();
     throw error;
   }
   const next = { ...capability, source, updatedAt: nowIso() };
@@ -392,9 +397,8 @@ function searchKnowledge(capabilityId, keyword, limit = 5) {
   const tokens = tokenize(query);
   if (!tokens.length) return [];
 
-  return db
-    .all('chunks')
-    .filter((chunk) => chunk.capabilityId === capabilityId)
+  const chunks = getChunkIndex().get(capabilityId) || [];
+  return chunks
     .map((chunk) => {
       const lower = chunk.text.toLowerCase();
       const score = tokens.reduce((total, token) => (lower.includes(token) ? total + Math.max(1, token.length - 1) : total), 0);
@@ -410,6 +414,25 @@ function searchKnowledge(capabilityId, keyword, limit = 5) {
       score: hit.score,
       snippet: makeSnippet(hit.chunk.text, tokens)
     }));
+}
+
+/** chunks 内存索引：capabilityId → 片段数组。任何 chunks 变更后必须 invalidateChunkIndex()。
+ *  检索热路径（任务每步一次）用它替代 db.all('chunks') 的整集合深拷贝。 */
+let chunkIndex = null;
+
+function invalidateChunkIndex() {
+  chunkIndex = null;
+}
+
+function getChunkIndex() {
+  if (!chunkIndex) {
+    chunkIndex = new Map();
+    db.all('chunks').forEach((chunk) => {
+      if (!chunkIndex.has(chunk.capabilityId)) chunkIndex.set(chunk.capabilityId, []);
+      chunkIndex.get(chunk.capabilityId).push(chunk);
+    });
+  }
+  return chunkIndex;
 }
 
 /** Worker 已挂载的能力分组（执行器注入用） */

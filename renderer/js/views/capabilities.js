@@ -53,7 +53,7 @@ VW.views.capabilities = (() => {
         store.set({ capabilityStats: stats, flows: flows.items, shares, shareStats });
         render();
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       } finally {
         inflight = null;
       }
@@ -67,7 +67,7 @@ VW.views.capabilities = (() => {
       const [shares, shareStats] = await Promise.all([VW.api.share.list(), VW.api.share.stats()]);
       store.set({ shares, shareStats });
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -294,7 +294,7 @@ VW.views.capabilities = (() => {
       render();
       VW.toast.show('能力挂载已更新');
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -319,7 +319,7 @@ VW.views.capabilities = (() => {
       await refresh();
       VW.toast.show('授权已保存');
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -368,7 +368,7 @@ VW.views.capabilities = (() => {
           openMount();
         }
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
   }
@@ -391,7 +391,7 @@ VW.views.capabilities = (() => {
           VW.toast.show('已撤销授权');
         }
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
       return undefined;
     });

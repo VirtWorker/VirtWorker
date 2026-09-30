@@ -71,6 +71,7 @@ VW.api = (() => {
     task: {
       list: (query) => call(bridge?.task?.list, query),
       stats: (query) => call(bridge?.task?.stats, query),
+      queue: (query) => call(bridge?.task?.queue, query),
       create: (payload) => call(bridge?.task?.create, payload),
       detail: (id) => call(bridge?.task?.detail, id),
       cancel: (id, reason) => call(bridge?.task?.cancel, id, reason),

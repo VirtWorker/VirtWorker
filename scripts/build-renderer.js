@@ -45,7 +45,8 @@ function concat() {
 async function build(watch) {
   const options = {
     minify: !watch,
-    sourcemap: true,
+    // 生产构建不产出 sourcemap：避免 .map（含全部源码）随安装包分发；开发 watch 保留便于调试
+    sourcemap: Boolean(watch),
     legalComments: 'none',
     target: ['chrome120'],
     format: 'iife',
@@ -59,20 +60,39 @@ async function build(watch) {
       outfile: OUT,
       write: true
     });
-    // 监听源文件变化：任一文件更新即重新拼接
-    const rebuild = async () => {
-      try {
-        await ctx.rebuild();
-        console.log('[build] 渲染层已重新打包');
-      } catch (error) {
-        console.error('[build] 打包失败:', error.message);
-      }
+    // 监听源文件变化：监听所在目录（新文件/重命名也能触发），防抖合并一次保存的多次事件
+    let pending = null;
+    const scheduleRebuild = () => {
+      clearTimeout(pending);
+      pending = setTimeout(async () => {
+        try {
+          await ctx.rebuild();
+          console.log('[build] 渲染层已重新打包');
+        } catch (error) {
+          console.error('[build] 打包失败:', error.message);
+        }
+      }, 100);
     };
-    FILES.forEach((file) => {
-      fs.watchFile(path.join(RENDERER, file), { interval: 300 }, rebuild);
+    const dirs = new Set(FILES.map((file) => path.dirname(path.join(RENDERER, file))));
+    const watchers = [...dirs].map((dir) => {
+      try {
+        return fs.watch(dir, { persistent: false }, scheduleRebuild);
+      } catch (error) {
+        console.error('[build] 目录监听失败:', dir, error.message);
+        return null;
+      }
     });
-    await rebuild();
-    console.log('[build] 监听模式已启动');
+    try {
+      await ctx.rebuild();
+    } catch (error) {
+      console.error('[build] 打包失败:', error.message);
+    }
+    console.log('[build] 监听模式已启动（Ctrl+C 退出）');
+    const stopWatching = () => watchers.forEach((watcher) => watcher?.close());
+    process.on('SIGINT', () => {
+      stopWatching();
+      process.exit(0);
+    });
     return;
   }
 

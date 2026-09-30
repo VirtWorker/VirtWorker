@@ -33,7 +33,7 @@ VW.views.shell = (() => {
       const { active } = await VW.api.executor.activate(name);
       VW.toast.show(active === 'mock' ? '已切换为模拟执行（Mock）' : `执行器已切换为「${active}」`);
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
       await refreshExecutorSelect();
     }
   }
@@ -53,7 +53,7 @@ VW.views.shell = (() => {
         ? `当前有 ${preview.removable} 条已查收的历史任务超出保留期`
         : `没有超出保留期（${preview.retention} 天）的任务`;
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -105,7 +105,7 @@ VW.views.shell = (() => {
         else VW.toast.show(`API 端点启动失败：${server.error || '端口不可用'}`);
       }
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -115,7 +115,7 @@ VW.views.shell = (() => {
       VW.toast.show(result.removed ? `已清理 ${result.removed} 条历史任务` : '没有需要清理的任务');
       await Promise.all([refreshDataStats(), VW.views.dashboard.refresh({ silent: true })]);
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 
@@ -131,7 +131,7 @@ VW.views.shell = (() => {
         const result = await VW.api.app.openDataDir();
         if (!result.opened) VW.toast.show(result.error || '打开目录失败');
       } catch (error) {
-        VW.toast.show(error.message);
+        VW.toast.fromError(error);
       }
     });
   }
@@ -149,7 +149,7 @@ VW.views.shell = (() => {
       });
       VW.modal.open('history-modal');
     } catch (error) {
-      VW.toast.show(error.message);
+      VW.toast.fromError(error);
     }
   }
 

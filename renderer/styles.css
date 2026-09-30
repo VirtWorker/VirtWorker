@@ -1353,6 +1353,35 @@ input[type="radio"]:focus-visible {
   max-width: 560px;
   animation: toast-in .2s ease;
   transition: opacity .2s ease, transform .2s ease;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toast.toast-warn {
+  background: rgba(154, 106, 16, .95);
+}
+
+.toast.toast-error {
+  background: rgba(158, 36, 36, .95);
+}
+
+.toast-close {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: .75;
+}
+
+.toast-close:hover,
+.toast-close:focus-visible {
+  opacity: 1;
+  background: rgba(255, 255, 255, .15);
 }
 
 .toast.toast-hide {

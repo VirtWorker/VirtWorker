@@ -18,6 +18,15 @@
       page.classList.toggle('active', page.id === `page-${name}`);
     });
     store.merge('ui', { page: name });
+    // 事件路由按页面门控（22）的配套：进入页面时拉取最新数据，离开期间错过的事件无需补发。
+    // capabilities 自带 ui 订阅懒加载；workers 数据侧边栏与派发下拉共用，切页时一并刷新
+    const viewKey = name === 'autonomous' ? 'automations' : name;
+    if (viewKey !== 'capabilities' && viewKey !== 'workers' && typeof VW.views[viewKey]?.refresh === 'function') {
+      VW.views[viewKey].refresh();
+    }
+    if (name !== 'workers') {
+      VW.views.workers.refreshAll();
+    }
   }
 
   function bindNavigation() {
@@ -139,10 +148,24 @@
 
   // ==================== 主进程事件 ====================
 
+  /** 同前缀事件的合并刷新（22）：事件风暴（如任务每步更新、IM 消息连发）只触发一次拉取 */
+  const routeTimers = new Map();
+  function routeSoon(key, fn, wait = 150) {
+    if (routeTimers.has(key)) return;
+    routeTimers.set(
+      key,
+      setTimeout(() => {
+        routeTimers.delete(key);
+        fn();
+      }, wait)
+    );
+  }
+
   function subscribeEvents() {
     VW.api.onEvent(({ type, payload }) => {
       if (!type) return;
 
+      // 任务事件保持全页生效：导航角标与统计依赖 stats，且 refreshSoon 已自带 120ms 合并
       if (type === 'task:created' || type === 'task:updated') {
         VW.views.dashboard.refreshSoon();
         if (payload?.id) VW.views.dashboard.syncDetail(payload.id);
@@ -167,28 +190,32 @@
         return;
       }
 
+      // 以下前缀按当前页面门控：隐藏页面的全量刷新（能力页一次 7 个 IPC）是最大浪费源；
+      // 切回页面时 switchPage 会重新拉取，离开期间错过的事件无需补发
+      const page = store.state.ui.page;
+
       if (type.startsWith('share:')) {
-        VW.views.capabilities.refreshShares();
+        if (page === 'capabilities') routeSoon('share', () => VW.views.capabilities.refreshShares());
         return;
       }
 
       if (type.startsWith('automation:')) {
-        VW.views.automations.refresh();
+        if (page === 'autonomous') routeSoon('automation', () => VW.views.automations.refresh());
         return;
       }
 
       if (type.startsWith('chat:')) {
-        VW.views.atworker.refresh();
+        if (page === 'atworker') routeSoon('chat', () => VW.views.atworker.refresh());
         return;
       }
 
       if (type.startsWith('capability:') || type.startsWith('flow:')) {
-        VW.views.capabilities.refresh();
+        if (page === 'capabilities') routeSoon('capability', () => VW.views.capabilities.refresh());
         return;
       }
 
       if (type.startsWith('worker:') || type.startsWith('group:')) {
-        VW.views.workers.refreshAll();
+        if (page === 'workers') routeSoon('worker', () => VW.views.workers.refreshAll());
       }
     });
   }

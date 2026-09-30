@@ -15,7 +15,8 @@
     "watch:renderer": "node scripts/build-renderer.js --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint main preload renderer scripts",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint main preload renderer scripts tests",
     "rebuild": "electron-rebuild",
     "prebuild": "node scripts/build-renderer.js",
     "build": "electron-builder --win",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@vitest/coverage-v8": "^5.0.3",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.28.2",

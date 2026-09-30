@@ -51,8 +51,18 @@ function publicTask(task) {
 }
 
 function appendEvent(task, type, message, extra = {}) {
-  task.events.push({ id: createId('ev'), taskId: task.id, type, message, ...extra, at: nowIso() });
-  if (task.events.length > MAX_EVENTS) task.events = task.events.slice(-MAX_EVENTS);
+  // v2：时间线存独立 taskevents 集合（任务对象不再内嵌，读路径不再克隆大数组）
+  db.append('taskevents', { id: createId('ev'), taskId: task.id, type, message, ...extra, at: nowIso() });
+}
+
+/** 任务时间线上限：终态收口时修剪（执行中单任务事件量远小于该值，无需逐步检查） */
+function pruneTaskEvents(id) {
+  db.keepLast('taskevents', (event) => event.taskId === id, MAX_EVENTS);
+}
+
+/** 读取任务时间线（detail 组装用；追加序即时间序） */
+function listEvents(id) {
+  return db.query('taskevents', (event) => event.taskId === id);
 }
 
 function publish(task, eventType) {
@@ -187,8 +197,7 @@ function create(params = {}) {
     createdAt: nowIso(),
     startedAt: null,
     updatedAt: nowIso(),
-    finishedAt: null,
-    events: []
+    finishedAt: null
   };
 
   appendEvent(task, 'created', `任务已创建（${trigger.label}）`);
@@ -226,8 +235,29 @@ function list(filter = {}) {
   }
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const limited = filter.limit ? items.slice(0, filter.limit) : items;
-  return { items: limited.map(publicTask), total: items.length };
+  // 分页（蓝图 task:list 契约中的 page/pageSize）：pageSize 上限 200，防止一次下发全量列表
+  const page = Number.isInteger(filter.page) && filter.page > 0 ? filter.page : null;
+  const pageSize = Number.isInteger(filter.pageSize) && filter.pageSize > 0 ? Math.min(200, filter.pageSize) : null;
+  let limited;
+  let pagination = {};
+  if (page && pageSize) {
+    const start = (page - 1) * pageSize;
+    limited = items.slice(start, start + pageSize);
+    pagination = { page, pageSize, totalPages: Math.ceil(items.length / pageSize) };
+  } else {
+    limited = filter.limit ? items.slice(0, filter.limit) : items;
+  }
+  return { items: limited.map(publicTask), total: items.length, ...pagination };
+}
+
+/** 看板队列表：需要操作 / 待查收结果（与 list/stats 共用同一时间过滤，主进程一次算完，
+ *  避免渲染层拉全量周期任务后自行过滤） */
+function queue(period = 'month') {
+  const items = db.all('tasks').filter((task) => isWithinPeriod(task.createdAt, period));
+  return {
+    action: items.filter((task) => task.status === STATUS.needAction).map(publicTask),
+    result: items.filter((task) => task.status === STATUS.succeeded && !task.resultAckedAt).map(publicTask)
+  };
 }
 
 /** 看板统计口径（与 list 共用同一时间过滤，保证数字与列表一致） */
@@ -245,7 +275,8 @@ function stats(period = 'month') {
 
 function detail(id) {
   const task = getOrThrow(id);
-  return { task, actionRequest: task.actionRequest };
+  // 时间线按需组装（tasks 集合已不含 events）
+  return { task: { ...task, events: listEvents(id) }, actionRequest: task.actionRequest };
 }
 
 // ==================== 用户操作 ====================
@@ -261,6 +292,7 @@ function cancel(id, reason) {
     t.error = null;
     appendEvent(t, 'status_changed', reason ? `任务已取消：${reason}` : '任务已取消', { from, to: STATUS.canceled });
   });
+  pruneTaskEvents(id);
   publish(next, 'task:updated');
   bus.command('task:canceled', id);
   return publicTask(next);
@@ -409,6 +441,7 @@ function succeed(id, result) {
     t.finishedAt = nowIso();
     appendEvent(t, 'result_ready', '任务已完成，结果待查收');
   });
+  pruneTaskEvents(id);
   publish(next, 'task:updated');
   bus.emit('app:notice', {
     level: 'success',
@@ -427,6 +460,7 @@ function failTask(id, error) {
     t.finishedAt = nowIso();
     appendEvent(t, 'failed', `执行失败：${t.error.message}`, { from, to: STATUS.failed });
   });
+  pruneTaskEvents(id);
   publish(next, 'task:updated');
   notifyFinished(next);
   return publicTask(next);
@@ -466,7 +500,9 @@ function expiredTasks(days = 90, now = Date.now()) {
 /** 清理过期任务（连带其时间线），应用启动与设置中心手动触发都会调用 */
 function purgeExpired(days = 90, now = Date.now()) {
   const { retention, items } = expiredTasks(days, now);
+  const removedIds = new Set(items.map((task) => task.id));
   items.forEach((task) => db.remove('tasks', task.id));
+  if (removedIds.size) db.removeWhere('taskevents', (event) => removedIds.has(event.taskId));
   items.forEach((task) => bus.emit('task:removed', { id: task.id }));
   return { removed: items.length, retention };
 }
@@ -484,6 +520,7 @@ module.exports = {
   TRIGGER_LABEL,
   create,
   list,
+  queue,
   stats,
   detail,
   cancel,
