@@ -26,6 +26,13 @@ VW.store = (() => {
     /** 分享记录（公开项目） */
     shares: [],
     shareStats: { total: 0, publicCount: 0, importTotal: 0 },
+    /** @Worker（会话接入）：IM 连接 / 聊天绑定 / 统计 */
+    chatConnections: [],
+    /** 全量绑定（模型筛选选项、模拟消息预选用） */
+    chatBindings: [],
+    /** 当前筛选条件下的绑定（表格渲染） */
+    chatBindingList: [],
+    chatStats: { connections: 0, bindings: 0, enabled: 0, pendingRequests: 0 },
     /** 能力与资源统计（入口卡片计数） */
     capabilityStats: { skill: 0, connector: 0, authorizedConnector: 0, knowledge: 0, chunkTotal: 0, total: 0, nodeTotal: 0, usable: 0 },
     settings: {
@@ -42,7 +49,8 @@ VW.store = (() => {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
       statsPeriod: 'month',
       worker: { keyword: '', status: '在线', role: '', env: '', sort: '' },
-      automation: { executorId: '', triggerType: '', status: '', sort: '最近创建' }
+      automation: { executorId: '', triggerType: '', status: '', sort: '最近创建' },
+      atworker: { keyword: '', chatType: '', model: '', status: '' }
     },
     ui: {
       page: 'dashboard',

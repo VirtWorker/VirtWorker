@@ -117,6 +117,26 @@ contextBridge.exposeInMainWorld('virtworker', {
     importPayload: (payload) => invoke('share:import-payload', payload)
   },
 
+  /** @Worker（会话接入）：IM 连接 / 接入申请 / 聊天绑定 / 模拟入站消息 */
+  chat: {
+    platforms: () => invoke('chat:platforms'),
+    stats: () => invoke('chat:stats'),
+    listConnections: () => invoke('chat:connection-list'),
+    createConnection: (payload) => invoke('chat:connection-create', payload),
+    updateConnection: (id, patch) => invoke('chat:connection-update', { id, patch }),
+    removeConnection: (id) => invoke('chat:connection-remove', { id }),
+    listChats: (connectionId) => invoke('chat:chats', { connectionId }),
+    listRequests: (query) => invoke('chat:request-list', query),
+    approveRequest: (id, payload) => invoke('chat:request-approve', { id, ...payload }),
+    rejectRequest: (id) => invoke('chat:request-reject', { id }),
+    listBindings: (query) => invoke('chat:binding-list', query),
+    createBinding: (payload) => invoke('chat:binding-create', payload),
+    updateBinding: (id, patch) => invoke('chat:binding-update', { id, patch }),
+    toggleBinding: (id, enabled) => invoke('chat:binding-toggle', { id, enabled }),
+    removeBinding: (id) => invoke('chat:binding-remove', { id }),
+    simulateInbound: (payload) => invoke('chat:simulate-inbound', payload)
+  },
+
   /** 订阅主进程事件；返回取消订阅函数 */
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

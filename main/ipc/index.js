@@ -15,6 +15,7 @@ const automationService = require('../services/automation-service');
 const capabilityService = require('../services/capability-service');
 const flowService = require('../services/flow-service');
 const shareService = require('../services/share-service');
+const chatService = require('../services/chat-service');
 const httpServer = require('../runtime/http-server');
 const dirGrant = require('../runtime/dir-grant');
 const { fail } = require('../util/errors');
@@ -112,6 +113,9 @@ function register() {
       flows: flowService.list().items,
       shares: shareService.list(),
       shareStats: shareService.stats(),
+      chatConnections: chatService.listConnections(),
+      chatBindings: chatService.listBindings().items,
+      chatStats: chatService.stats(),
       settings,
       runtime: { apiServer: httpServer.getStatus() }
     };
@@ -220,6 +224,27 @@ function register() {
   handle('share:export', ({ resourceType, resourceId } = {}) => shareService.buildPayload(resourceType, resourceId));
   /** 直接导入资源包内容（文件导入路径） */
   handle('share:import-payload', (payload) => shareService.importPayload(payload));
+
+  // @Worker（会话接入）
+  handle('chat:platforms', () => chatService.platformCatalog());
+  handle('chat:stats', () => chatService.stats());
+  handle('chat:connection-list', () => chatService.listConnections());
+  handle('chat:connection-create', (payload) => chatService.createConnection(payload));
+  handle('chat:connection-update', ({ id, patch } = {}) => chatService.updateConnection(id, patch));
+  handle('chat:connection-remove', ({ id } = {}) => chatService.removeConnection(id));
+  handle('chat:chats', ({ connectionId } = {}) => chatService.listChats(connectionId));
+  handle('chat:request-list', (query) => chatService.listRequests(query));
+  handle('chat:request-approve', ({ id, workerId, workspace, model } = {}) =>
+    chatService.approveRequest(id, { workerId, workspace, model })
+  );
+  handle('chat:request-reject', ({ id } = {}) => chatService.rejectRequest(id));
+  handle('chat:binding-list', (query) => chatService.listBindings(query));
+  handle('chat:binding-create', (payload) => chatService.createBinding(payload));
+  handle('chat:binding-update', ({ id, patch } = {}) => chatService.updateBinding(id, patch));
+  handle('chat:binding-toggle', ({ id, enabled } = {}) => chatService.toggleBinding(id, enabled));
+  handle('chat:binding-remove', ({ id } = {}) => chatService.removeBinding(id));
+  /** 模拟 IM 入站消息（mock 适配器演示链路；真实平台适配器接入后同样汇入 chat-service.ingest） */
+  handle('chat:simulate-inbound', (payload) => chatService.ingest(payload));
 
   // 文件对话框与本地维护
   handle('app:save-file', async ({ suggestedName, content } = {}) => {

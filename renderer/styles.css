@@ -2374,6 +2374,68 @@ input[type="radio"]:focus-visible {
   .page-header { flex-direction: column; align-items: flex-start; }
 }
 
+/* ==================== @Worker：开通向导 ==================== */
+
+.wizard-steps { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+
+.wizard-step {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; color: var(--text-3);
+}
+.wizard-step i {
+  font-style: normal; width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--chip-gray); color: var(--text-2); font-size: 12px;
+}
+.wizard-step.active { color: var(--text); font-weight: 500; }
+.wizard-step.active i { background: var(--accent); color: var(--on-accent); }
+.wizard-step.done { color: var(--text-2); }
+.wizard-step.done i { background: var(--accent-light); color: var(--accent); }
+
+.wizard-panel { display: flex; flex-direction: column; gap: 10px; }
+
+.wizard-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.wizard-option:hover { background: var(--hover-gray); }
+.wizard-option.selected { border-color: var(--accent); background: var(--accent-light); }
+.wizard-option-title { font-size: 14px; font-weight: 500; }
+
+.wizard-divider {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text-3); font-size: 12px; margin: 6px 0 2px;
+}
+.wizard-divider::before,
+.wizard-divider::after { content: ''; flex: 1; height: 1px; background: var(--border-light); }
+
+/* ==================== @Worker：IM 连接 / 接入申请 ==================== */
+
+.connection-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+}
+.connection-item + .connection-item { margin-top: 10px; }
+.connection-name { font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.connection-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.connection-cred { font-size: 12px; color: var(--text-3); }
+
+.request-item {
+  padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+}
+.request-item + .request-item { margin-top: 10px; }
+.request-item.resolved { opacity: 0.75; }
+.request-head { display: flex; align-items: center; gap: 10px; }
+.request-chat { font-size: 14px; font-weight: 500; }
+.request-meta { margin-top: 6px; font-size: 12.5px; color: var(--text-3); }
+.request-message {
+  margin-top: 10px; padding: 8px 12px; border-radius: 8px;
+  background: var(--panel-gray); color: var(--text-2); font-size: 13px;
+}
+.request-form { margin-top: 12px; border-top: 1px dashed var(--border-light); padding-top: 12px; }
+.request-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
 /* ==================== 滚动条 ==================== */
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }

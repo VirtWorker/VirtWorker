@@ -167,6 +167,11 @@
         return;
       }
 
+      if (type.startsWith('chat:')) {
+        VW.views.atworker.refresh();
+        return;
+      }
+
       if (type.startsWith('capability:') || type.startsWith('flow:')) {
         VW.views.capabilities.refresh();
         return;
@@ -224,6 +229,10 @@
         flows: data.flows,
         shares: data.shares,
         shareStats: data.shareStats,
+        chatConnections: data.chatConnections,
+        chatBindings: data.chatBindings,
+        chatBindingList: data.chatBindings,
+        chatStats: data.chatStats,
         settings: data.settings
       });
       store.setFilters({ statsPeriod: data.settings.period || 'month' });
@@ -293,6 +302,7 @@
     VW.views.workers.init();
     VW.views.dashboard.init();
     VW.views.automations.init();
+    VW.views.atworker.init();
     VW.views.shell.init();
 
     store.on(['workers', 'groups', 'ui'], renderSidebar);

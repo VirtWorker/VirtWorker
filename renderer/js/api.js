@@ -113,6 +113,26 @@ VW.api = (() => {
       detail: (id) => call(bridge?.flow?.detail, id)
     },
 
+    /** @Worker（会话接入） */
+    chat: {
+      platforms: () => call(bridge?.chat?.platforms),
+      stats: () => call(bridge?.chat?.stats),
+      listConnections: () => call(bridge?.chat?.listConnections),
+      createConnection: (payload) => call(bridge?.chat?.createConnection, payload),
+      updateConnection: (id, patch) => call(bridge?.chat?.updateConnection, id, patch),
+      removeConnection: (id) => call(bridge?.chat?.removeConnection, id),
+      listChats: (connectionId) => call(bridge?.chat?.listChats, connectionId),
+      listRequests: (query) => call(bridge?.chat?.listRequests, query),
+      approveRequest: (id, payload) => call(bridge?.chat?.approveRequest, id, payload),
+      rejectRequest: (id) => call(bridge?.chat?.rejectRequest, id),
+      listBindings: (query) => call(bridge?.chat?.listBindings, query),
+      createBinding: (payload) => call(bridge?.chat?.createBinding, payload),
+      updateBinding: (id, patch) => call(bridge?.chat?.updateBinding, id, patch),
+      toggleBinding: (id, enabled) => call(bridge?.chat?.toggleBinding, id, enabled),
+      removeBinding: (id) => call(bridge?.chat?.removeBinding, id),
+      simulateInbound: (payload) => call(bridge?.chat?.simulateInbound, payload)
+    },
+
     /** 订阅主进程事件，返回取消订阅函数 */
     onEvent: (handler) => (bridge?.onEvent ? bridge.onEvent(handler) : () => {})
   };

@@ -31,6 +31,7 @@ const FILES = [
   'js/views/workers.js',
   'js/views/dashboard.js',
   'js/views/automations.js',
+  'js/views/atworker.js',
   'js/views/shell.js',
   'renderer.js'
 ];

@@ -12,7 +12,19 @@ const path = require('node:path');
 const schema = require('./schema');
 const { fail } = require('../util/errors');
 
-const COLLECTIONS = ['workers', 'groups', 'tasks', 'automations', 'capabilities', 'chunks', 'flows', 'shares'];
+const COLLECTIONS = [
+  'workers',
+  'groups',
+  'tasks',
+  'automations',
+  'capabilities',
+  'chunks',
+  'flows',
+  'shares',
+  'chatconnections',
+  'chatrequests',
+  'chatbindings'
+];
 
 /** 合并写入窗口（毫秒）：任务执行高频更新时显著减少全量重写次数 */
 const WRITE_COALESCE_MS = 100;
