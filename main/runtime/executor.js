@@ -9,6 +9,7 @@
  * - runStep(task, step, ctx)         执行一个步骤 → { log, citations }（真实实现可 async 调 LLM）
  * - maybeAction(task, step, ctx)     是否需要请求用户操作 → actionRequest | null
  * - buildResult(task, worker)        汇总执行结果 → Result
+ * - stepTimeoutMs?()                 单步执行超时（毫秒，可选；缺省 120s，超时任务按失败收口）
  *
  * ctx 上下文：
  * - actionUsed: boolean              本任务是否已注入过用户操作

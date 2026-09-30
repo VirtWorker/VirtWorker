@@ -160,7 +160,13 @@ function start() {
     });
   });
 
+  // 收紧请求超时：本端点只服务本机脚本调用，慢速/挂起的连接不应长期占用
+  server.requestTimeout = 30 * 1000;
+  server.headersTimeout = 10 * 1000;
+
   server.on('error', (error) => {
+    // 句柄置空：启动失败（如端口占用）后 start() 才能被再次调用，否则永久 no-op 无法自愈
+    server = null;
     status = {
       running: false,
       port,
@@ -178,7 +184,11 @@ function start() {
 }
 
 function stop() {
-  if (server) server.close();
+  if (server) {
+    server.close();
+    // 立即断开 keep-alive 等残留连接，避免 close 回调被慢客户端拖延（阻塞重启与退出）
+    server.closeAllConnections?.();
+  }
   server = null;
   status = { running: false, port: null, error: null };
 }

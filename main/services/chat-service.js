@@ -293,6 +293,14 @@ function removeBinding(id) {
   return { id };
 }
 
+/** 级联：删除 Worker 时清理其聊天绑定（worker-service.removeWorker 调用），
+ *  否则悬空 workerId 会让该聊天的每条入站消息在建任务时撞 NOT_FOUND */
+function removeBindingsByWorker(workerId) {
+  const removed = db.removeWhere('chatbindings', (item) => item.workerId === workerId);
+  if (removed.removed) publish('chat:binding-removed', { workerId, cascade: removed.removed });
+  return removed.removed;
+}
+
 /** 列表查询（与 automation-service.list 同约定）：空 filter 返回全量装饰结果 */
 function listBindings(filter = {}) {
   let items = allBindings().map(decorateBinding);
@@ -485,6 +493,7 @@ module.exports = {
   updateBinding,
   toggleBinding,
   removeBinding,
+  removeBindingsByWorker,
   listRequests,
   approveRequest,
   rejectRequest,

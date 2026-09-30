@@ -1,9 +1,9 @@
 /**
  * JSON 集合存储（仅主进程使用）
- * - 内存缓存 + 原子写（*.tmp → rename），写入前保留一份 *.bak
- * - 读取失败或版本过高时回退备份，再失败则以空集合启动，不阻塞应用
+ * - 内存缓存 + 原子写（*.tmp → fsync → rename），写入前轮换保留两代备份（*.bak / *.bak2）
+ * - 读取失败或版本过高时回退备份，全部失败则以空集合启动，不阻塞应用但会发出告警
  * - 写入节流：变更先落缓存，100ms 内的多次写合并为一次磁盘写入；
- *   进程退出前必须 flush()，保证不丢数据（缓存始终是读取的唯一来源）
+ *   写盘失败自动定时重试并通知（setNotify），进程退出前必须 flush()（缓存始终是读取的唯一来源）
  * - 对外只暴露集合级接口，不体现实现细节，便于后续替换为 SQLite
  */
 
@@ -28,6 +28,12 @@ const COLLECTIONS = [
 
 /** 合并写入窗口（毫秒）：任务执行高频更新时显著减少全量重写次数 */
 const WRITE_COALESCE_MS = 100;
+/** 写盘失败后的自动重试间隔 */
+const FLUSH_RETRY_MS = 5 * 1000;
+/** 持续失败时用户告警的限频间隔（避免通知刷屏） */
+const FLUSH_NOTIFY_INTERVAL_MS = 5 * 60 * 1000;
+/** notify 注册前产生的告警缓存上限 */
+const MAX_PENDING_NOTICES = 20;
 
 let baseDir = '';
 const cache = new Map();
@@ -35,6 +41,32 @@ let settings = {};
 /** 待落盘的集合：name → items 快照 */
 const dirty = new Map();
 let flushTimer = null;
+let flushRetryTimer = null;
+let lastFlushNotifyAt = 0;
+/** 存储异常对外通知回调（main.js 注入，经事件总线转发渲染层）；注册前的告警先入队 */
+let notifyFn = null;
+const pendingNotices = [];
+
+function setNotify(fn) {
+  notifyFn = typeof fn === 'function' ? fn : null;
+}
+
+/** 取走并清空缓存的告警（窗口就绪后由 main.js 补发，确保启动阶段的问题用户可见） */
+function drainNotices() {
+  return pendingNotices.splice(0, pendingNotices.length);
+}
+
+function notifyStorageIssue(message) {
+  const notice = { level: 'error', title: '数据存储异常', message };
+  if (notifyFn) {
+    try {
+      notifyFn(notice);
+    } catch (error) {
+      // 通知失败不影响存储主流程
+    }
+  }
+  if (pendingNotices.length < MAX_PENDING_NOTICES) pendingNotices.push(notice);
+}
 
 function fileOf(name) {
   return path.join(baseDir, `${name}.json`);
@@ -53,31 +85,38 @@ function tryRead(file) {
 
 function loadItems(name) {
   const file = fileOf(name);
-  for (const candidate of [file, `${file}.bak`]) {
+  let sawFile = false;
+  for (const candidate of [file, `${file}.bak`, `${file}.bak2`]) {
     if (!fs.existsSync(candidate)) continue;
+    sawFile = true;
     const payload = tryRead(candidate);
     if (!payload) continue;
     const result = schema.readCollection(payload);
     if (result.ok) return result.items;
     console.error(`[store] ${path.basename(candidate)} 不可用:`, result.reason);
   }
+  // 文件存在但全部不可读：以空集合启动不阻塞应用，但必须让用户知情（静默丢数据不可接受）
+  if (sawFile) notifyStorageIssue(`${name}.json 及其备份均无法读取，已以空数据启动`);
   return [];
 }
 
 function loadSettings() {
   const file = fileOf('settings');
-  for (const candidate of [file, `${file}.bak`]) {
+  let sawFile = false;
+  for (const candidate of [file, `${file}.bak`, `${file}.bak2`]) {
     if (!fs.existsSync(candidate)) continue;
+    sawFile = true;
     const payload = tryRead(candidate);
     if (!payload) continue;
     const result = schema.readSettings(payload);
     if (result.ok) return result.items;
     console.error(`[store] ${path.basename(candidate)} 不可用:`, result.reason);
   }
+  if (sawFile) notifyStorageIssue('settings.json 及其备份均无法读取，已恢复默认设置');
   return {};
 }
 
-/** 真正落盘单个集合：临时文件 → 备份旧文件 → rename 替换 */
+/** 真正落盘单个集合：临时文件 → fsync → 备份轮换（保留两代）→ rename 原子替换 */
 function writeCollection(name, items) {
   const file = fileOf(name);
   const tmp = `${file}.tmp`;
@@ -87,7 +126,18 @@ function writeCollection(name, items) {
     2
   );
   fs.writeFileSync(tmp, payload, 'utf8');
-  if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`);
+  // 断电防护：rename 前把 tmp 刷入磁盘，避免"目录项已替换、数据仍在页缓存"产生的空洞文件
+  const fd = fs.openSync(tmp, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // 备份轮换：.bak 为上一代、.bak2 为上上代，避免唯一备份恰在覆盖瞬间损坏后无档可回
+  const bak = `${file}.bak`;
+  const bak2 = `${file}.bak2`;
+  if (fs.existsSync(bak)) fs.copyFileSync(bak, bak2);
+  if (fs.existsSync(file)) fs.copyFileSync(file, bak);
   fs.renameSync(tmp, file);
 }
 
@@ -110,19 +160,45 @@ function scheduleFlush() {
   flushTimer.unref?.();
 }
 
-/** 立即把所有脏集合落盘；失败的集合保留待下次重试。进程退出前必须调用。 */
+/**
+ * 立即把所有脏集合落盘；失败的集合保留在 dirty 中并自动定时重试。
+ * 进程退出前必须调用（before-quit）；持续失败时按限频节奏通知用户。
+ */
 function flush() {
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
+  if (flushRetryTimer) {
+    clearTimeout(flushRetryTimer);
+    flushRetryTimer = null;
+  }
+  let firstError = null;
   for (const [name, items] of [...dirty.entries()]) {
     try {
       writeCollection(name, items);
       dirty.delete(name);
     } catch (error) {
-      console.error(`[store] 写入 ${name}.json 失败，将在下次刷新重试：${error.message}`);
+      if (!firstError) firstError = error;
+      console.error(`[store] 写入 ${name}.json 失败：${error.message}`);
     }
+  }
+  if (firstError) {
+    // 失败集合自动重试：不依赖下一次写操作或退出时机，避免数据长期滞留内存
+    if (!flushRetryTimer) {
+      flushRetryTimer = setTimeout(() => {
+        flushRetryTimer = null;
+        flush();
+      }, FLUSH_RETRY_MS);
+      flushRetryTimer.unref?.();
+    }
+    const now = Date.now();
+    if (now - lastFlushNotifyAt > FLUSH_NOTIFY_INTERVAL_MS) {
+      lastFlushNotifyAt = now;
+      notifyStorageIssue(`数据写入磁盘失败（${firstError.message || '未知原因'}），应用将持续自动重试，请检查磁盘空间与权限`);
+    }
+  } else {
+    lastFlushNotifyAt = 0;
   }
 }
 
@@ -196,4 +272,18 @@ function setSettings(patch) {
   return clone(settings);
 }
 
-module.exports = { init, all, find, insert, update, remove, removeWhere, getSettings, setSettings, flush, COLLECTIONS };
+module.exports = {
+  init,
+  all,
+  find,
+  insert,
+  update,
+  remove,
+  removeWhere,
+  getSettings,
+  setSettings,
+  flush,
+  setNotify,
+  drainNotices,
+  COLLECTIONS
+};

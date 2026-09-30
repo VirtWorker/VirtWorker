@@ -6,7 +6,9 @@
  *
  * 并发与离线：
  * - 同时执行的任务数受 MAX_CONCURRENT 限制，超出的排队等待槽位释放；
- * - 执行者离线的任务不占槽位，按指数退避重试，Worker 恢复在线时立即重试。
+ * - 执行者离线的任务不占槽位，按指数退避重试，Worker 恢复在线时立即重试；
+ * - 单步执行带超时兜底（STEP_TIMEOUT_MS，可被执行器 stepTimeoutMs() 覆盖），
+ *   执行异常/超时的任务立即释放槽位并落为失败，不会出现槽位泄漏锁死运行时。
  */
 
 const db = require('../store/db');
@@ -31,6 +33,8 @@ const MAX_CONCURRENT = 5;
 /** 离线重试：指数退避（30s 起步，最长 10 分钟） */
 const RETRY_BASE_MS = 30 * 1000;
 const RETRY_MAX_MS = 10 * 60 * 1000;
+/** 单步执行默认超时：执行器可通过 stepTimeoutMs() 覆盖（真实 LLM 执行器建议按请求特征设定） */
+const STEP_TIMEOUT_MS = 120 * 1000;
 
 const waiting = new Set(); // 等待并发槽位的任务（保持插入顺序，先到先派发）
 const retryTimers = new Map(); // taskId → 离线重试定时器
@@ -76,6 +80,26 @@ function drainWaiting() {
     const next = waiting.values().next().value;
     waiting.delete(next);
     dispatch(next);
+  }
+}
+
+/** 释放任务占用的并发槽位与全部中间态（派发失败 / 执行异常 / 超时 / 取消的公共清理路径） */
+function release(taskId) {
+  const ctx = contexts.get(taskId);
+  if (ctx?.timer) clearTimeout(ctx.timer);
+  contexts.delete(taskId);
+  waiting.delete(taskId);
+  clearTimer(retryTimers, taskId);
+  retryAttempts.delete(taskId);
+  drainWaiting(); // 槽位已释放，立即派发排队任务
+}
+
+/** 失败落库：终态守卫可能拒绝改写（如取消与异常竞争），只记录不外抛 */
+function safeFailTask(taskId, error) {
+  try {
+    taskService.failTask(taskId, error);
+  } catch (failError) {
+    console.error(`[runtime] 任务 ${taskId} 失败落库异常:`, failError.message);
   }
 }
 
@@ -127,17 +151,8 @@ function dispatch(taskId) {
     dispatchUnsafe(taskId);
   } catch (error) {
     console.error(`[runtime] 任务 ${taskId} 派发失败:`, error);
-    // 清理派发中间态：markRunning 前已占用并发槽位，异常时必须释放，否则槽位泄漏
-    waiting.delete(taskId);
-    clearTimer(retryTimers, taskId);
-    retryAttempts.delete(taskId);
-    contexts.delete(taskId);
-    try {
-      taskService.failTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '派发失败' });
-    } catch (failError) {
-      // 任务已被并发删除等极端情况：仅记录，不向上抛
-      console.error(`[runtime] 任务 ${taskId} 失败落库异常:`, failError);
-    }
+    release(taskId); // markRunning 前已占用并发槽位，异常时必须释放，否则槽位泄漏
+    safeFailTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '派发失败' });
   }
 }
 
@@ -203,6 +218,31 @@ function sleep(ms, signal) {
 }
 
 /**
+ * 带超时保护的单步执行：真实执行器（LLM 网络调用）挂起时若不设防，
+ * 任务将永久卡在 running 并占用并发槽位。超时是兜底失败，不改变取消语义。
+ */
+async function runStepWithTimeout(executor, task, step, ctx) {
+  const declared = typeof executor.stepTimeoutMs === 'function' ? Number(executor.stepTimeoutMs()) : 0;
+  const timeoutMs = declared > 0 ? declared : STEP_TIMEOUT_MS;
+  let timer;
+  try {
+    return await Promise.race([
+      executor.runStep(task, step, { signal: ctx.controller.signal }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(`步骤执行超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已中止`);
+          error.code = 'STEP_TIMEOUT';
+          reject(error);
+        }, timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * 执行循环：串行推进未完成步骤。
  * 每步 await 执行器（支持真实 LLM 异步）；需要用户操作时暂停并等待 resume。
  * pumping 守卫保证同一任务任意时刻只有一个循环在跑。
@@ -238,13 +278,25 @@ async function pump(taskId) {
         return;
       }
 
-      const outcome = await executor.runStep(fresh, step, { signal: ctx.controller.signal });
+      const outcome = await runStepWithTimeout(executor, fresh, step, ctx);
+      // runStep（异步执行时为挂起点）期间任务可能已被取消/暂停：非 running 态不得再写入步骤数据
+      const afterRun = taskService.getTask(taskId);
+      if (!afterRun || afterRun.status !== taskService.STATUS.running) return;
       taskService.completeStep(taskId, step.step, outcome.log, outcome.citations);
     }
   } catch (error) {
-    if (error.message === 'aborted') return; // 任务取消，静默退出
+    if (error?.code === 'STEP_TIMEOUT') {
+      ctx.controller.abort(); // 通知执行器中止挂起的请求（真实执行器应中断网络调用）
+      console.error(`[runtime] 任务 ${taskId} ${error.message}`);
+      release(taskId);
+      safeFailTask(taskId, { code: 'STEP_TIMEOUT', message: error.message });
+      return;
+    }
+    // 取消识别以 abort 信号为准（不同执行器的 abort 错误文案各异）；取消时 stop() 已完成清理
+    if (error.message === 'aborted' || ctx.controller.signal.aborted) return;
     console.error(`[runtime] 任务 ${taskId} 执行异常:`, error);
-    taskService.failTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '执行失败' });
+    release(taskId); // 异常路径必须释放并发槽位，否则失败任务累积会锁死运行时
+    safeFailTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '执行失败' });
   } finally {
     const current = contexts.get(taskId);
     if (current) current.pumping = false;
@@ -271,14 +323,9 @@ function finish(taskId) {
 }
 
 function stop(taskId) {
-  waiting.delete(taskId);
-  clearTimer(retryTimers, taskId);
-  retryAttempts.delete(taskId);
   const ctx = contexts.get(taskId);
-  if (ctx?.timer) clearTimeout(ctx.timer);
   if (ctx?.controller) ctx.controller.abort(); // 中断进行中的异步步骤
-  contexts.delete(taskId);
-  drainWaiting();
+  release(taskId);
 }
 
 module.exports = { start, dispatch, stop, shutdown, MAX_CONCURRENT };

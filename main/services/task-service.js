@@ -59,9 +59,17 @@ function publish(task, eventType) {
   bus.emit(eventType, publicTask(task));
 }
 
-/** 读-改-写：所有状态变更都经此，保证 updatedAt 与持久化一致 */
-function mutate(id, updater) {
+/**
+ * 读-改-写：所有状态变更都经此，保证 updatedAt 与持久化一致。
+ * 终态守卫：已结束（succeeded/failed/canceled）的任务拒绝一切后续变更（仅查收 ack 豁免），
+ * 防止取消/失败后被挂起的运行时回调把任务改写成另一终态（如 canceled → failed）
+ * 或向终态任务追加步骤数据，污染看板口径与审计时间线。
+ */
+function mutate(id, updater, { allowFinished = false } = {}) {
   const task = getOrThrow(id);
+  if (!allowFinished && FINISHED_STATUS.includes(task.status)) {
+    throw fail.invalidState(`任务已结束（${task.status}），不能再变更状态`);
+  }
   updater(task);
   task.updatedAt = nowIso();
   db.update('tasks', id, task);
@@ -262,10 +270,14 @@ function ack(id) {
   if (task.status !== STATUS.succeeded) throw fail.invalidState('仅已完成的任务可以查收');
   if (task.resultAckedAt) return publicTask(task);
 
-  const next = mutate(id, (t) => {
-    t.resultAckedAt = nowIso();
-    appendEvent(t, 'acked', '结果已查收');
-  });
+  const next = mutate(
+    id,
+    (t) => {
+      t.resultAckedAt = nowIso();
+      appendEvent(t, 'acked', '结果已查收');
+    },
+    { allowFinished: true } // ack 是唯一允许作用于终态任务的变更
+  );
   publish(next, 'task:updated');
   return publicTask(next);
 }

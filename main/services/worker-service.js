@@ -7,6 +7,7 @@ const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const flowService = require('./flow-service');
 const automationService = require('./automation-service');
+const chatService = require('./chat-service');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
@@ -190,9 +191,12 @@ function removeWorker(id) {
     });
   });
 
+  // 级联：清理该 Worker 的聊天绑定，避免 @Worker 入站消息命中悬空 workerId 后每条消息都报错
+  const removedBindings = chatService.removeBindingsByWorker(id);
+
   db.remove('workers', id);
   bus.emit('worker:removed', { id });
-  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id) };
+  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id), removedBindings };
 }
 
 // ==================== Group ====================
@@ -280,9 +284,27 @@ function removeGroup(id) {
   const group = db.find('groups', id);
   if (!group) throw fail.notFound('Group 不存在');
   group.memberIds.forEach((memberId) => detachGroup(memberId, id));
+
+  // 级联：停用执行者绑定该 Group 的自动任务（与 removeWorker 对称）。
+  // 否则调度器每次触发都会因执行者缺失而失败，interval 模式下还会反复重试刷屏
+  const staleAutomations = automationService
+    .listAll()
+    .filter(
+      (automation) =>
+        automation.enabled && automation.executor.type === 'group' && automation.executor.id === id
+    );
+  staleAutomations.forEach((automation) => {
+    automationService.update(automation.id, { enabled: false });
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: `自动任务「${automation.name}」已停用`,
+      body: '其执行者 Group 已被删除，请重新指定执行者后再启用'
+    });
+  });
+
   db.remove('groups', id);
   bus.emit('group:removed', { id });
-  return { id };
+  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id) };
 }
 
 function attachGroup(workerId, groupId) {

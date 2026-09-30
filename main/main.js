@@ -9,11 +9,15 @@ const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
 const taskService = require('./services/task-service');
 const logger = require('./util/logger');
+const bus = require('./runtime/event-bus');
 
 // 尽早接管全局异常并镜像 console，让启动阶段的错误也能落盘
 logger.init(path.join(app.getPath('userData'), 'logs'));
 logger.mirrorConsole();
 logger.installGlobalHandlers();
+
+// 存储异常经事件总线广播为应用通知（IPC 层转发到窗口）；窗口就绪前产生的告警由 db 缓存、稍后补发
+db.setNotify((notice) => bus.emit('app:notice', notice));
 
 /**
  * 主进程入口：负责窗口创建、应用生命周期管理、领域服务装配与全局安全设置。
@@ -97,6 +101,8 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+    // 补发窗口就绪前产生的存储告警（如数据文件损坏回退），确保用户可见
+    db.drainNotices().forEach((notice) => bus.emit('app:notice', notice));
     // 仅在显式传入 --devtools 时自动打开开发者工具，避免遮挡主窗口
     if (process.argv.includes('--devtools')) {
       mainWindow?.webContents.openDevTools({ mode: 'detach' });
