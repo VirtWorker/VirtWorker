@@ -276,7 +276,6 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th style="width:36px"><input type="checkbox" disabled /></th>
                 <th>聊天</th><th>IM 连接</th><th>Worker</th><th>工作目录</th><th>模型 <span class="th-help">?</span></th><th>聊天状态</th><th>启用</th><th>操作</th>
               </tr>
             </thead>
@@ -570,11 +569,11 @@
     </main>
   </div>
 
-  <!-- ==================== 新建 Worker 弹窗 ==================== -->
+  <!-- ==================== 新建/编辑 Worker 弹窗 ==================== -->
   <div class="modal-mask hidden" id="worker-modal">
     <div class="modal">
       <div class="modal-header">
-        <h3>新建 Worker</h3>
+        <h3 id="worker-modal-title">新建 Worker</h3>
         <button class="icon-btn" id="worker-modal-close">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -606,17 +605,17 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" id="worker-modal-cancel">取消</button>
-          <button type="submit" class="btn btn-primary">创建</button>
+          <button type="submit" class="btn btn-primary" id="worker-form-submit">创建</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- ==================== 新建 Group 弹窗 ==================== -->
+  <!-- ==================== 新建/编辑 Group 弹窗 ==================== -->
   <div class="modal-mask hidden" id="group-modal">
     <div class="modal">
       <div class="modal-header">
-        <h3>新建 Group</h3>
+        <h3 id="group-modal-title">新建 Group</h3>
         <button class="icon-btn" id="group-modal-close">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -636,7 +635,7 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" id="group-modal-cancel">取消</button>
-          <button type="submit" class="btn btn-primary">创建</button>
+          <button type="submit" class="btn btn-primary" id="group-form-submit">创建</button>
         </div>
       </form>
     </div>
@@ -1023,9 +1022,13 @@
       <div class="task-detail">
         <div class="detail-section">
           <div class="detail-label">执行器</div>
+          <div class="settings-row">
+            <span>执行模式</span>
+            <select id="setting-executor"></select>
+            <span class="form-hint">选择后立即生效；真实大模型执行器接入后在此切换</span>
+          </div>
           <p class="form-hint">
-            当前为<b>模拟执行（Mock）</b>：不调用外部模型，按角色步骤推进并真实注入已挂载的 Skill / 连接器 / 知识库。
-            接入真实大模型（OpenAI 兼容端点）将在下一步实施，届时在此切换。
+            当前内置<b>模拟执行（Mock）</b>：不调用外部模型，按角色步骤推进并真实注入已挂载的 Skill / 连接器 / 知识库。
           </p>
           <label class="checkbox-row">
             <input type="checkbox" id="setting-random-action" />
@@ -1126,6 +1129,37 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" id="chat-connection-cancel">取消</button>
           <button type="submit" class="btn btn-primary">创建连接</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== @Worker：编辑 IM 连接（改名 / 凭据轮换） ==================== -->
+  <div class="modal-mask hidden" id="chat-conn-edit-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>编辑 IM 连接</h3>
+        <button class="icon-btn" id="chat-conn-edit-modal-close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="chat-conn-edit-form">
+        <div class="form-item">
+          <label class="form-label">平台</label>
+          <p class="form-hint" id="chat-conn-edit-platform"></p>
+        </div>
+        <div class="form-item">
+          <label class="form-label required">连接名称</label>
+          <input type="text" id="chat-conn-edit-name" placeholder="连接名称" required maxlength="40" />
+        </div>
+        <div class="form-item">
+          <label class="form-label">访问凭据</label>
+          <input type="password" id="chat-conn-edit-secret" placeholder="留空表示不更换；填写则轮换为新凭据" maxlength="2048" />
+          <p class="form-hint" id="chat-conn-edit-mask"></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" id="chat-conn-edit-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
         </div>
       </form>
     </div>

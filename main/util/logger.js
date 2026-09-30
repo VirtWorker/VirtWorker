@@ -11,8 +11,35 @@ const path = require('node:path');
 const MAX_BYTES = 2 * 1024 * 1024; // 单文件 2MB
 const KEEP = 3; // main.log → main.log.1 → main.log.2 → main.log.3
 
+/** 日志级别：环境变量 VIRTWORKER_LOG_LEVEL 控制（debug/info/warn/error），低于阈值的不落盘 */
+const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, fatal: 50 };
+const DEFAULT_LEVEL = 'info';
+/** 敏感字段名黑名单：命中即掩码，防止未来任何服务把凭据挂进 error/日志对象造成泄漏 */
+const SENSITIVE_KEY_RE = /(token|secret|password|credential|authorization|api[-_]?key)/i;
+const MASK_DEPTH = 4;
+
 let logFile = '';
 let bytesWritten = 0;
+
+function threshold() {
+  const raw = String(process.env.VIRTWORKER_LOG_LEVEL || DEFAULT_LEVEL).toLowerCase();
+  return LEVELS[raw] ?? LEVELS[DEFAULT_LEVEL];
+}
+
+/** 深拷贝并掩码敏感字段（限深限量，避免超大对象拖慢日志写入） */
+function maskSensitive(value, depth = 0) {
+  if (value instanceof Error) return value;
+  if (depth > MASK_DEPTH) return '[…]';
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => maskSensitive(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      out[key] = SENSITIVE_KEY_RE.test(key) ? '***' : maskSensitive(item, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
 
 /** 由 main.js 在 app ready 后调用，指定日志目录 */
 function init(dir) {
@@ -46,7 +73,7 @@ function format(level, args) {
       if (arg instanceof Error) return arg.stack || arg.message;
       if (typeof arg === 'object') {
         try {
-          return JSON.stringify(arg);
+          return JSON.stringify(maskSensitive(arg));
         } catch (error) {
           return String(arg);
         }
@@ -57,9 +84,12 @@ function format(level, args) {
   return `[${time}] [${level}] ${text}\n`;
 }
 
-/** 同步追加写：日志量小、可靠性优先，避免异步流与进程退出的竞态 */
+/** 同步追加写：日志量小、可靠性优先，避免异步流与进程退出的竞态；低于阈值的级别不落盘 */
 function write(level, args) {
   if (!logFile) return;
+  // mirrorConsole 传大写（INFO/ERROR），installGlobalHandlers 传 FATAL，统一按小写查表
+  const levelValue = LEVELS[String(level).toLowerCase()] ?? LEVELS.info;
+  if (levelValue < threshold()) return;
   try {
     const line = format(level, args);
     if (bytesWritten + Buffer.byteLength(line) > MAX_BYTES) rotate();
@@ -76,15 +106,16 @@ function close() {
 
 /**
  * 镜像 console 输出到日志文件：既有代码的 console.log/warn/error 自动落盘，
- * 无需逐处改造；原始输出仍会显示在终端（开发时可见）。
+ * 无需逐处改造；原始输出仍会显示在终端（开发时可见）。debug 仅在调低阈值时落盘。
  */
 function mirrorConsole() {
-  const methods = ['log', 'info', 'warn', 'error'];
-  methods.forEach((method) => {
-    const original = console[method].bind(console);
+  const methods = { debug: 'DEBUG', log: 'INFO', info: 'INFO', warn: 'WARN', error: 'ERROR' };
+  Object.entries(methods).forEach(([method, level]) => {
+    const original = console[method]?.bind(console);
+    if (!original) return;
     console[method] = (...args) => {
       original(...args);
-      write(method.toUpperCase(), args);
+      write(level, args);
     };
   });
 }

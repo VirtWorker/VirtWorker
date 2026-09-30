@@ -13,8 +13,10 @@
  *
  * ctx 上下文：
  * - actionUsed: boolean              本任务是否已注入过用户操作
- * - randomAction: boolean            是否允许概率性操作注入
  * - signal: AbortSignal              任务取消时中止；真实 LLM 执行器应据此中断进行中的请求
+ *
+ * 执行器私有配置（如 Mock 的 mockRandomAction）由执行器自行读取设置，运行时不感知。
+ * 运行时在派发时锁定执行器：同一任务的全部步骤由同一执行器完成，中途切换只影响新任务。
  *
  * 替换真实执行器：实现同一契约后 register() 并 setActive()，无需改动运行时。
  */
@@ -54,7 +56,11 @@ function getActive() {
 
 function listNames() {
   return [...executors.keys()];
-
 }
 
-module.exports = { register, setActive, getActive, listNames };
+/** 当前生效执行器的名称（设置页展示与 IPC 下发用） */
+function getActiveName() {
+  return activeName;
+}
+
+module.exports = { register, setActive, getActive, listNames, getActiveName };

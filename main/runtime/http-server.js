@@ -123,7 +123,8 @@ async function handle(req, res) {
       return failRequest(res, 400, 'INVALID_STATE', '该自动任务不是 API 触发类型');
     }
     if (!automation.enabled) return failRequest(res, 400, 'INVALID_STATE', '该自动任务已停用');
-    if (!tokenMatches(automation.trigger.api?.token, readToken(req))) {
+    // Token 在服务层解密（保险箱密文或旧版明文），定长比较防时序侧信道
+    if (!tokenMatches(automationService.revealApiToken(automation), readToken(req))) {
       return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
     }
 

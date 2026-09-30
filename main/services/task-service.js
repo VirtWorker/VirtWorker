@@ -91,8 +91,9 @@ function normalizeTrigger(trigger) {
   return {
     type,
     refId: trigger?.refId ?? null,
-    /** 事件触发链深度：钳制到非负区间（负值会让调度器的链深度上限永久失效） */
-    depth: Number.isInteger(trigger?.depth) ? Math.min(10, Math.max(0, trigger.depth)) : 0,
+    /** 事件触发链深度：钳制到与 runtime/scheduler 的 MAX_CHAIN_DEPTH(3) 一致
+     *  （调度器是链式触发的唯一执行点，超过 3 的深度本来就会被其拒绝，这里统一口径避免误导） */
+    depth: Number.isInteger(trigger?.depth) ? Math.min(3, Math.max(0, trigger.depth)) : 0,
     label: TRIGGER_LABEL[type]
   };
 }

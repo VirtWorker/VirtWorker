@@ -6,6 +6,8 @@
  *
  * 并发与离线：
  * - 同时执行的任务数受 MAX_CONCURRENT 限制，超出的排队等待槽位释放；
+ * - need_action 暂停态不占槽位（人工操作可能耗时数小时），恢复时重新参与并发检查；
+ * - 等待队列按任务优先级派发（urgent > high > normal > low），同级先到先执行；
  * - 执行者离线的任务不占槽位，按指数退避重试，Worker 恢复在线时立即重试；
  * - 单步执行带超时兜底（STEP_TIMEOUT_MS，可被执行器 stepTimeoutMs() 覆盖），
  *   执行异常/超时的任务立即释放槽位并落为失败，不会出现槽位泄漏锁死运行时。
@@ -20,8 +22,8 @@ const flowService = require('../services/flow-service');
 
 /**
  * taskId → 执行上下文（仅保存瞬时状态，不持久化）。
- * 处于 contexts 中的任务占用一个并发槽位（含暂停态，语义为"已被运行时接管"）。
- * - timer: 兼容保留（当前用 sleep 的 AbortSignal 中断，未使用 timer 字段）
+ * 处于 contexts 中的任务占用一个并发槽位；need_action 暂停会释放槽位，恢复时重建。
+ * - executor: 派发时锁定的执行器（同一任务中途不会被切换，避免出现半 Mock 半 LLM 的任务）
  * - actionUsed: 本任务是否已注入过用户操作
  * - controller: AbortController，任务取消时中止进行中的异步步骤
  * - pumping: 串行守卫，防止 resume/重入导致同一任务并行执行
@@ -35,8 +37,10 @@ const RETRY_BASE_MS = 30 * 1000;
 const RETRY_MAX_MS = 10 * 60 * 1000;
 /** 单步执行默认超时：执行器可通过 stepTimeoutMs() 覆盖（真实 LLM 执行器建议按请求特征设定） */
 const STEP_TIMEOUT_MS = 120 * 1000;
+/** 任务优先级 → 派发顺序（值越小越先派发），与 task-service 的 priority 枚举对应 */
+const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 
-const waiting = new Set(); // 等待并发槽位的任务（保持插入顺序，先到先派发）
+const waiting = new Set(); // 等待并发槽位的任务（含暂停恢复的 running 任务）；派发顺序见 drainWaiting
 const retryTimers = new Map(); // taskId → 离线重试定时器
 const retryAttempts = new Map(); // taskId → 已重试次数（控制退避与事件去重）
 
@@ -74,13 +78,33 @@ function clearTimer(map, key) {
   map.delete(key);
 }
 
-/** 槽位释放后排空等待队列 */
+/** 槽位释放后排空等待队列：按优先级派发（urgent > high > normal > low），同级先到先执行 */
 function drainWaiting() {
   while (waiting.size && contexts.size < MAX_CONCURRENT) {
-    const next = waiting.values().next().value;
-    waiting.delete(next);
+    const next = takeNextWaiting();
+    if (!next) return;
     dispatch(next);
   }
+}
+
+/** 取出等待队列中最应派发的任务（顺带清理已结束/暂停的失效条目） */
+function takeNextWaiting() {
+  let best = null;
+  for (const taskId of [...waiting]) {
+    const task = taskService.getTask(taskId);
+    const eligible =
+      task && (task.status === taskService.STATUS.queued || task.status === taskService.STATUS.running);
+    if (!eligible) {
+      waiting.delete(taskId); // 排队期间已被取消/结束的任务不再占队
+      continue;
+    }
+    const rank = PRIORITY_RANK[task.priority] ?? PRIORITY_RANK.normal;
+    if (!best || rank < best.rank || (rank === best.rank && task.createdAt < best.createdAt)) {
+      best = { id: taskId, rank, createdAt: task.createdAt };
+    }
+  }
+  if (best) waiting.delete(best.id);
+  return best ? best.id : null;
 }
 
 /** 释放任务占用的并发槽位与全部中间态（派发失败 / 执行异常 / 超时 / 取消的公共清理路径） */
@@ -103,14 +127,13 @@ function safeFailTask(taskId, error) {
   }
 }
 
-/** 启动恢复：排队中的重新派发；执行中的从当前未完成步骤继续（重启不丢任务） */
+/** 启动恢复：排队与执行中的任务统一走 dispatch 重新派发——
+ *  并发上限与执行者在线检查和正常路径完全一致（不再绕过），
+ *  执行进度从第一个未完成步骤继续，重启不丢任务 */
 function recover() {
   db.all('tasks').forEach((task) => {
-    if (task.status === taskService.STATUS.queued) {
+    if (task.status === taskService.STATUS.queued || task.status === taskService.STATUS.running) {
       dispatch(task.id);
-    } else if (task.status === taskService.STATUS.running) {
-      contexts.set(task.id, createContext({ actionUsed: Boolean(task.actionRequest?.answer) }));
-      pump(task.id);
     }
   });
 }
@@ -158,9 +181,15 @@ function dispatch(taskId) {
 
 function dispatchUnsafe(taskId) {
   const task = taskService.getTask(taskId);
-  if (!task || task.status !== taskService.STATUS.queued) return;
+  if (!task) return;
+  // running 状态的重新接管（启动恢复 / 暂停后排队）：从第一个未完成步骤继续
+  if (task.status === taskService.STATUS.running) {
+    resumeRunning(taskId, task);
+    return;
+  }
+  if (task.status !== taskService.STATUS.queued) return;
 
-  const executor = executorRegistry.getActive();
+  const executor = executorRegistry.getActive(); // 派发时锁定执行器，任务中途不再更换
   const execution = resolveExecution(task);
   if (execution.kind === 'invalid') {
     taskService.failTask(taskId, { code: 'VALIDATION_FAILED', message: execution.reason });
@@ -175,13 +204,36 @@ function dispatchUnsafe(taskId) {
     return;
   }
 
-  contexts.set(taskId, createContext());
+  contexts.set(taskId, createContext({ executor }));
   const isFlow = execution.kind === 'flow';
   const steps = isFlow ? executor.buildFlowSteps(task, execution.plan) : executor.buildSteps(task, execution.worker);
   const message = isFlow
     ? `已按 WorkerFlow「${execution.plan.flow.name}」启动，共 ${steps.length} 个节点`
     : `已派发给「${execution.worker.name}」`;
   taskService.markRunning(taskId, steps, message);
+  pump(taskId);
+}
+
+/** running 任务的重新接管：与正常派发共用执行者检查与并发上限（恢复语义不再绕过任何检查） */
+function resumeRunning(taskId, task) {
+  if (contexts.has(taskId)) return; // 正在执行中
+  const execution = resolveExecution(task);
+  if (execution.kind === 'invalid') {
+    taskService.failTask(taskId, { code: 'VALIDATION_FAILED', message: execution.reason });
+    return;
+  }
+  if (execution.kind === 'offline') {
+    scheduleRetry(taskId, execution.name);
+    return;
+  }
+  if (contexts.size >= MAX_CONCURRENT) {
+    waiting.add(taskId);
+    return;
+  }
+  contexts.set(
+    taskId,
+    createContext({ executor: executorRegistry.getActive(), actionUsed: Boolean(task.actionRequest?.answer) })
+  );
   pump(taskId);
 }
 
@@ -251,12 +303,13 @@ async function pump(taskId) {
   const ctx = contexts.get(taskId);
   if (!ctx || ctx.pumping) return;
   ctx.pumping = true;
+  const executor = ctx.executor || executorRegistry.getActive(); // 全程使用派发时锁定的执行器
 
   try {
     while (true) {
-      const executor = executorRegistry.getActive();
       const task = taskService.getTask(taskId);
-      if (!task || task.status !== taskService.STATUS.running) return; // 已结束/暂停/被取消
+      if (!task) return release(taskId); // 任务已被删除：必须释放槽位
+      if (task.status !== taskService.STATUS.running) return; // 暂停/取消：槽位已由 requestAction/stop 释放
 
       const step = task.steps.find((item) => item.status !== 'done');
       if (!step) return finish(taskId);
@@ -265,23 +318,23 @@ async function pump(taskId) {
       await sleep(executor.stepDelay(), ctx.controller.signal);
 
       const fresh = taskService.getTask(taskId);
-      if (!fresh || fresh.status !== taskService.STATUS.running) return;
+      if (!fresh) return release(taskId);
+      if (fresh.status !== taskService.STATUS.running) return;
 
-      const action = executor.maybeAction(fresh, step, {
-        actionUsed: ctx.actionUsed,
-        randomAction: db.getSettings().mockRandomAction !== false
-      });
+      const action = executor.maybeAction(fresh, step, { actionUsed: ctx.actionUsed });
 
       if (action) {
         ctx.actionUsed = true;
         taskService.requestAction(taskId, action); // 进入暂停态，等待 task:resumed
+        release(taskId); // 暂停态释放并发槽位：人工操作可能耗时数小时，不应阻塞其他任务派发
         return;
       }
 
       const outcome = await runStepWithTimeout(executor, fresh, step, ctx);
       // runStep（异步执行时为挂起点）期间任务可能已被取消/暂停：非 running 态不得再写入步骤数据
       const afterRun = taskService.getTask(taskId);
-      if (!afterRun || afterRun.status !== taskService.STATUS.running) return;
+      if (!afterRun) return release(taskId);
+      if (afterRun.status !== taskService.STATUS.running) return;
       taskService.completeStep(taskId, step.step, outcome.log, outcome.citations);
     }
   } catch (error) {
@@ -303,9 +356,15 @@ async function pump(taskId) {
   }
 }
 
+/** 暂停任务恢复：槽位在暂停时已释放，统一复用 dispatch 路径（并发检查 / 执行者检查 / 等待队列全部一致） */
 function resume(taskId) {
-  if (!contexts.has(taskId)) contexts.set(taskId, createContext({ actionUsed: true }));
-  pump(taskId);
+  const task = taskService.getTask(taskId);
+  if (!task || task.status !== taskService.STATUS.running) return;
+  if (contexts.has(taskId)) {
+    pump(taskId);
+    return;
+  }
+  dispatch(taskId);
 }
 
 function finish(taskId) {
@@ -317,7 +376,7 @@ function finish(taskId) {
 
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.running) return;
-  const executor = executorRegistry.getActive();
+  const executor = ctx.executor || executorRegistry.getActive();
   const worker = task.assignee.type === 'flow' ? null : workerService.resolveExecutorWorker(task.assignee);
   taskService.succeed(taskId, executor.buildResult(task, worker));
 }

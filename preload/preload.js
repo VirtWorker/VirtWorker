@@ -63,7 +63,15 @@ contextBridge.exposeInMainWorld('virtworker', {
     toggle: (id, enabled) => invoke('automation:toggle', { id, enabled }),
     remove: (id) => invoke('automation:remove', { id }),
     detail: (id) => invoke('automation:detail', { id }),
-    runtime: () => invoke('automation:runtime')
+    runtime: () => invoke('automation:runtime'),
+    regenToken: (id) => invoke('automation:regen-token', { id }),
+    copyInvocation: (id) => invoke('automation:copy-invocation', { id })
+  },
+
+  /** 执行器模式（设置中心）：Mock / 真实执行器切换 */
+  executor: {
+    list: () => invoke('executor:list'),
+    activate: (name) => invoke('executor:activate', { name })
   },
 
   /** 能力与资源：技能 / 连接器 / 知识库 / 挂载 */

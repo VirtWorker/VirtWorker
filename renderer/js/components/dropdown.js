@@ -17,10 +17,11 @@ VW.dropdown = (() => {
   const escapeHtml = VW.util.escapeHtml;
 
   function closeAll() {
-    if (!openDropdown) return;
+    if (!openDropdown) return false;
     openDropdown.classList.remove('open');
     openDropdown.querySelector('.dropdown-trigger')?.setAttribute('aria-expanded', 'false');
     openDropdown = null;
+    return true;
   }
 
   function enhance(select) {
@@ -151,12 +152,13 @@ VW.dropdown = (() => {
     return Boolean(openDropdown);
   }
 
-  // 点击组件外部收起；Esc 关闭
+  // 点击组件外部收起；Esc 关闭（本监听注册早于 modal，关闭成功时阻止事件继续传播，
+  // 避免同一个 Esc 把下拉与弹窗一并关掉——Esc 应先关下拉、再关弹窗）
   document.addEventListener('click', (event) => {
     if (openDropdown && !openDropdown.contains(event.target)) closeAll();
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeAll();
+    if (event.key === 'Escape' && closeAll()) event.stopImmediatePropagation();
   });
 
   return { enhanceAll, refresh, isOpen, closeAll };

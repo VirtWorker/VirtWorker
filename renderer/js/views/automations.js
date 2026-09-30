@@ -17,13 +17,18 @@ VW.views.automations = (() => {
 
   // ==================== 数据 ====================
 
+  /** 请求版本号：过期响应不覆盖新状态 */
+  let refreshSeq = 0;
+
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
       const [list, stats, runtime] = await Promise.all([
         VW.api.automation.list(store.state.filters.automation),
         VW.api.automation.stats(),
         VW.api.automation.runtime()
       ]);
+      if (seq !== refreshSeq) return;
       store.set({ automations: list.items, automationStats: stats, apiServer: runtime.apiServer });
     } catch (error) {
       VW.toast.show(error.message);
@@ -60,7 +65,6 @@ VW.views.automations = (() => {
     const port = store.state.apiServer.port || '';
     const showEndpoint = automation.trigger.type === 'api' && automation.endpoint;
     const endpoint = showEndpoint ? `http://127.0.0.1:${port}${automation.endpoint}` : '';
-    const token = automation.trigger.api?.token || '';
 
     return `
       <div class="automation-card" data-id="${automation.id}">
@@ -93,8 +97,9 @@ VW.views.automations = (() => {
             showEndpoint
               ? `<div class="automation-endpoint">
                    <code>POST ${endpoint}</code>
-                   <code class="token-code">Token: ${escapeHtml(token)}</code>
-                   <button class="mini-btn" data-act="copy" data-endpoint="${escapeHtml(endpoint)}" data-token="${escapeHtml(token)}">复制调用命令</button>
+                   <code class="token-code">Token: ${escapeHtml(automation.tokenMask || '••••')}</code>
+                   <button class="mini-btn" data-act="copy">复制调用命令</button>
+                   <button class="mini-btn" data-act="regen-token">重新生成 Token</button>
                  </div>`
               : ''
           }
@@ -367,10 +372,21 @@ VW.views.automations = (() => {
         return undefined;
       }
       if (button.dataset.act === 'copy') {
-        const command = `curl -X POST ${button.dataset.endpoint} -H "X-VirtWorker-Token: ${button.dataset.token}" -H "Content-Type: application/json" -d "{\\"goal\\":\\"\\"}"`;
+        // 调用命令在主进程组装（明文 Token 不下发渲染层），直接写入系统剪贴板
         try {
-          await VW.api.copyText(command);
+          await VW.api.automation.copyInvocation(id);
           VW.toast.show('调用命令已复制到剪贴板');
+        } catch (error) {
+          VW.toast.show(error.message);
+        }
+        return undefined;
+      }
+      if (button.dataset.act === 'regen-token') {
+        if (!window.confirm('确认重新生成 API Token？旧 Token 将立即失效，已分发的调用命令需要更新。')) return undefined;
+        try {
+          await VW.api.automation.regenToken(id);
+          VW.toast.show('已生成新 Token，请重新复制调用命令');
+          await refresh();
         } catch (error) {
           VW.toast.show(error.message);
         }

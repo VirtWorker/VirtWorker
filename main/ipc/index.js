@@ -18,6 +18,7 @@ const shareService = require('../services/share-service');
 const chatService = require('../services/chat-service');
 const httpServer = require('../runtime/http-server');
 const dirGrant = require('../runtime/dir-grant');
+const executorRegistry = require('../runtime/executor');
 const { fail } = require('../util/errors');
 
 const API_VERSION = 1;
@@ -174,6 +175,26 @@ function register() {
   handle('automation:remove', ({ id } = {}) => automationService.remove(id));
   handle('automation:detail', ({ id } = {}) => automationService.detail(id));
   handle('automation:runtime', () => ({ apiServer: httpServer.getStatus() }));
+  /** 重新生成 API Token（旧 Token 立即失效） */
+  handle('automation:regen-token', ({ id } = {}) => automationService.regenerateToken(id));
+  /** 调用命令（含明文 Token）在主进程组装并直接写入剪贴板，明文 Token 不下发渲染层 */
+  handle('automation:copy-invocation', ({ id } = {}) => {
+    const automation = automationService.listAll().find((item) => item.id === id);
+    if (!automation) throw fail.notFound('自动任务不存在');
+    if (automation.trigger.type !== 'api') throw fail.invalidState('仅 API 触发的自动任务可以复制调用命令');
+    const token = automationService.revealApiToken(automation);
+    const port = httpServer.getStatus().port || db.getSettings().apiPort;
+    const command = `curl -X POST http://127.0.0.1:${port}/automations/${automation.id}/run -H "X-VirtWorker-Token: ${token}" -H "Content-Type: application/json" -d "{\\"goal\\":\\"\\"}"`;
+    clipboard.writeText(command);
+    return { copied: true, tokenMask: automation.trigger.api?.token?.mask || '' };
+  });
+
+  // 执行器模式（设置中心）：Mock / 真实执行器切换；真实执行器注册后即可在此切换
+  handle('executor:list', () => ({ names: executorRegistry.listNames(), active: executorRegistry.getActiveName() }));
+  handle('executor:activate', ({ name } = {}) => {
+    executorRegistry.setActive(String(name || ''));
+    return { names: executorRegistry.listNames(), active: executorRegistry.getActiveName() };
+  });
 
   // 能力与资源
   handle('capability:list', (query) => capabilityService.list(query));

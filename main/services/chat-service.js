@@ -108,7 +108,9 @@ function decorateBinding(binding) {
     ...binding,
     connectionName: connection ? connection.name : '（连接已删除）',
     workerName: worker ? worker.name : '（Worker 已删除）',
-    chatTypeLabel: CHAT_TYPE_LABEL[binding.chatType] || binding.chatType
+    chatTypeLabel: CHAT_TYPE_LABEL[binding.chatType] || binding.chatType,
+    /** 健康态结构化输出：渲染层不再依赖「（已删除）」文案反推 */
+    healthy: Boolean(connection && worker)
   };
 }
 
@@ -179,6 +181,16 @@ function updateConnection(id, patch = {}) {
       throw fail.conflict(`已存在同名连接「${name}」`);
     }
     next.name = name;
+  }
+  // 凭据轮换：仅在提供非空新凭据时更换（换 Token 不必删连接重建，避免丢失全部聊天绑定）
+  const secret = String(patch.secret ?? '').trim();
+  if (secret) {
+    const platform = PLATFORM_CATALOG.find((item) => item.key === connection.platform);
+    if (!platform?.requiresCredential) throw fail.validation('该平台无需访问凭据');
+    if (secret.length > 2048) throw fail.validation('凭据长度超出限制');
+    const sealed = vault.seal(secret);
+    next.credential = { sealed, mask: vault.mask(secret), mode: sealed.mode };
+    if (sealed.mode !== 'encrypted') console.warn('[chat] 系统密钥链不可用，凭据将以 base64 形式保存');
   }
   next.updatedAt = nowIso();
   db.update('chatconnections', id, next);
@@ -339,7 +351,10 @@ function upsertPendingRequest({ connectionId, chat, sender, text }) {
   if (existing) {
     const next = { ...existing, chatName: chat.chatName, sender, message: text, updatedAt: nowIso() };
     db.update('chatrequests', existing.id, next);
-    return decorateRequest(next);
+    const decorated = decorateRequest(next);
+    // 更新已存在的挂起申请同样广播，否则审批列表停留在首次内容
+    publish('chat:request-updated', decorated);
+    return decorated;
   }
   const request = {
     id: createId('car'),

@@ -11,13 +11,17 @@ VW.views.workers = (() => {
   const PLUS_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
-  /** 按筛选条件刷新列表 */
+  /** 按筛选条件刷新列表（请求版本号：过期响应不覆盖新状态） */
+  let refreshSeq = 0;
+
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
       const [workerList, groups] = await Promise.all([
         VW.api.worker.list(store.state.filters.worker),
         VW.api.group.list()
       ]);
+      if (seq !== refreshSeq) return;
       store.set({ workerList, groups });
     } catch (error) {
       VW.toast.show(error.message);
@@ -26,12 +30,14 @@ VW.views.workers = (() => {
 
   /** 全量刷新：新建/删除后同步侧边栏、任务派发下拉等全量数据 */
   async function refreshAll() {
+    const seq = ++refreshSeq;
     try {
       const [workers, workerList, groups] = await Promise.all([
         VW.api.worker.list(),
         VW.api.worker.list(store.state.filters.worker),
         VW.api.group.list()
       ]);
+      if (seq !== refreshSeq) return;
       store.set({ workers, workerList, groups });
     } catch (error) {
       VW.toast.show(error.message);
@@ -86,11 +92,15 @@ VW.views.workers = (() => {
             <span class="badge">可协同</span>
             <div class="worker-card-actions">
               <button class="mini-btn" data-act="start">新建任务</button>
+              <button class="mini-btn" data-act="edit-group">编辑</button>
+              <button class="mini-btn" data-act="remove-group">删除</button>
             </div>
           </div>`;
         card.querySelector('[data-act="start"]').addEventListener('click', () =>
           VW.views.dashboard.openCreateTask(group.id)
         );
+        card.querySelector('[data-act="edit-group"]').addEventListener('click', () => openGroupModal(group));
+        card.querySelector('[data-act="remove-group"]').addEventListener('click', () => removeGroup(group));
         grid.appendChild(card);
       });
       return;
@@ -128,6 +138,8 @@ VW.views.workers = (() => {
             <button class="mini-btn" data-act="start">开始任务</button>
             <button class="mini-btn" data-act="mount">能力挂载${worker.capabilityCount ? ` (${worker.capabilityCount})` : ''}</button>
             <button class="mini-btn" data-act="share">分享</button>
+            <button class="mini-btn" data-act="edit">编辑</button>
+            <button class="mini-btn" data-act="remove">删除</button>
           </div>
         </div>`;
       card.querySelector('[data-act="start"]').addEventListener('click', () =>
@@ -139,49 +151,117 @@ VW.views.workers = (() => {
       card.querySelector('[data-act="share"]').addEventListener('click', () =>
         VW.views.capabilities.openShare('worker', worker.id)
       );
+      card.querySelector('[data-act="edit"]').addEventListener('click', () => openWorkerModal(worker));
+      card.querySelector('[data-act="remove"]').addEventListener('click', () => removeWorker(worker));
       grid.appendChild(card);
     });
   }
 
-  // ==================== 新建 Worker ====================
+  // ==================== 编辑 / 删除 Worker 与 Group ====================
+
+  /** 当前编辑对象 id；为空表示新建 */
+  let editingWorkerId = null;
+  let editingGroupId = null;
+
+  function openWorkerModal(worker) {
+    editingWorkerId = worker ? worker.id : null;
+    const form = document.getElementById('worker-form');
+    form.reset();
+    document.getElementById('worker-modal-title').textContent = worker ? '编辑 Worker' : '新建 Worker';
+    document.getElementById('worker-form-submit').textContent = worker ? '保存' : '创建';
+    if (worker) {
+      form.name.value = worker.name;
+      form.role.value = worker.role;
+      form.querySelector(`input[name="env"][value="${worker.env === 'local' ? '本地' : '云端'}"]`).checked = true;
+      form.desc.value = worker.desc || '';
+    }
+    VW.modal.open('worker-modal');
+  }
+
+  async function removeWorker(worker) {
+    if (!worker) return;
+    if (
+      !window.confirm(
+        `确认删除 Worker「${worker.name}」？\n其名下聊天绑定会一并清理，执行者指向它的自动任务将被停用。`
+      )
+    )
+      return;
+    try {
+      const result = await VW.api.worker.remove(worker.id);
+      const notes = [];
+      if (result.disabledAutomations?.length) notes.push(`${result.disabledAutomations.length} 个自动任务已停用`);
+      if (result.removedBindings) notes.push(`${result.removedBindings} 条聊天绑定已清理`);
+      VW.toast.show(`Worker「${worker.name}」已删除${notes.length ? `（${notes.join('，')}）` : ''}`);
+      await refreshAll();
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  async function removeGroup(group) {
+    if (!window.confirm(`确认删除 Group「${group.name}」？执行者指向它的自动任务将被停用，成员 Worker 不受影响。`)) return;
+    try {
+      const result = await VW.api.group.remove(group.id);
+      const disabled = result.disabledAutomations?.length || 0;
+      VW.toast.show(`Group「${group.name}」已删除${disabled ? `（${disabled} 个自动任务已停用）` : ''}`);
+      await refreshAll();
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  // ==================== 新建 / 编辑 Worker ====================
 
   function submitWorker(event) {
     event.preventDefault();
     const form = event.target;
-    VW.api.worker
-      .create({
-        name: form.name.value,
-        role: form.role.value,
-        env: form.env.value,
-        desc: form.desc.value
-      })
+    const payload = {
+      name: form.name.value,
+      role: form.role.value,
+      env: form.env.value,
+      desc: form.desc.value
+    };
+    const request = editingWorkerId
+      ? VW.api.worker.update(editingWorkerId, payload)
+      : VW.api.worker.create(payload);
+    request
       .then(async (worker) => {
         VW.modal.close('worker-modal');
         await refreshAll();
-        VW.toast.show(`数字员工「${worker.name}」创建成功`);
+        VW.toast.show(editingWorkerId ? `Worker「${worker.name}」已保存` : `数字员工「${worker.name}」创建成功`);
       })
       .catch((error) => VW.toast.show(error.message));
   }
 
-  // ==================== 新建 Group ====================
+  // ==================== 新建 / 编辑 Group ====================
 
-  function openGroupModal() {
+  function openGroupModal(group) {
+    editingGroupId = group ? group.id : null;
     const form = document.getElementById('group-form');
     form.reset();
+    document.getElementById('group-modal-title').textContent = group ? '编辑 Group' : '新建 Group';
+    document.getElementById('group-form-submit').textContent = group ? '保存' : '创建';
     const list = document.getElementById('group-member-list');
-    list.innerHTML = store.state.workers.length
-      ? store.state.workers
-          .map(
-            (worker) => `
+    if (!store.state.workers.length) {
+      list.innerHTML = '<p class="empty-desc">还没有 Worker，可先创建 Worker 再编组。</p>';
+    } else {
+      const memberIds = new Set(group ? group.members.map((member) => member.id) : []);
+      list.innerHTML = store.state.workers
+        .map(
+          (worker) => `
         <label class="member-option">
-          <input type="checkbox" value="${worker.id}" />
+          <input type="checkbox" value="${worker.id}" ${memberIds.has(worker.id) ? 'checked' : ''} />
           <span class="avatar avatar-sm" style="background:${VW.util.safeStyle(worker.avatarColor, '#eef0f2')}">${escapeHtml(worker.name.slice(0, 1))}</span>
           <span class="member-name">${escapeHtml(worker.name)}</span>
           <span class="member-role">${escapeHtml(worker.role)}</span>
         </label>`
-          )
-          .join('')
-      : '<p class="empty-desc">还没有 Worker，可先创建 Worker 再编组。</p>';
+        )
+        .join('');
+    }
+    if (group) {
+      form.name.value = group.name;
+      form.desc.value = group.desc || '';
+    }
     VW.modal.open('group-modal');
   }
 
@@ -189,12 +269,13 @@ VW.views.workers = (() => {
     event.preventDefault();
     const form = event.target;
     const memberIds = Array.from(form.querySelectorAll('#group-member-list input:checked')).map((input) => input.value);
-    VW.api.group
-      .create({ name: form.name.value, desc: form.desc.value, memberIds })
+    const payload = { name: form.name.value, desc: form.desc.value, memberIds };
+    const request = editingGroupId ? VW.api.group.update(editingGroupId, payload) : VW.api.group.create(payload);
+    request
       .then(async (group) => {
         VW.modal.close('group-modal');
         await refreshAll();
-        VW.toast.show(`Group「${group.name}」创建成功`);
+        VW.toast.show(editingGroupId ? `Group「${group.name}」已保存` : `Group「${group.name}」创建成功`);
       })
       .catch((error) => VW.toast.show(error.message));
   }
@@ -234,21 +315,12 @@ VW.views.workers = (() => {
     bindFilter('worker-filter-env', 'env');
     bindFilter('worker-filter-sort', 'sort');
 
-    // 新建入口
-    document.getElementById('new-worker-btn').addEventListener('click', () => {
-      document.getElementById('worker-form').reset();
-      VW.modal.open('worker-modal');
-    });
-    document.getElementById('quick-new-worker').addEventListener('click', () => {
-      document.getElementById('worker-form').reset();
-      VW.modal.open('worker-modal');
-    });
+    // 新建入口（统一经 openWorkerModal 清空编辑态）
+    document.getElementById('new-worker-btn').addEventListener('click', () => openWorkerModal(null));
+    document.getElementById('quick-new-worker').addEventListener('click', () => openWorkerModal(null));
     document.getElementById('worker-empty-action').addEventListener('click', () => {
-      if (store.state.ui.manageSeg === 'group') openGroupModal();
-      else {
-        document.getElementById('worker-form').reset();
-        VW.modal.open('worker-modal');
-      }
+      if (store.state.ui.manageSeg === 'group') openGroupModal(null);
+      else openWorkerModal(null);
     });
 
     document.getElementById('worker-form').addEventListener('submit', submitWorker);

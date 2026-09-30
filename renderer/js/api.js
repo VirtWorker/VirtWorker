@@ -86,7 +86,15 @@ VW.api = (() => {
       toggle: (id, enabled) => call(bridge?.automation?.toggle, id, enabled),
       remove: (id) => call(bridge?.automation?.remove, id),
       detail: (id) => call(bridge?.automation?.detail, id),
-      runtime: () => call(bridge?.automation?.runtime)
+      runtime: () => call(bridge?.automation?.runtime),
+      regenToken: (id) => call(bridge?.automation?.regenToken, id),
+      copyInvocation: (id) => call(bridge?.automation?.copyInvocation, id)
+    },
+
+    /** 执行器模式（设置中心）：Mock / 真实执行器切换 */
+    executor: {
+      list: () => call(bridge?.executor?.list),
+      activate: (name) => call(bridge?.executor?.activate, name)
     },
 
     capability: {

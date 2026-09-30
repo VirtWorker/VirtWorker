@@ -7,27 +7,36 @@ window.VW = window.VW || {};
 VW.views = VW.views || {};
 
 VW.views.shell = (() => {
-  const { formatTime, assigneeLabel, historyListHtml } = VW.util;
+  const { escapeHtml, formatTime, assigneeLabel, historyListHtml } = VW.util;
   const store = VW.store;
 
-  /** 系统通知：仅在设置开启时发送，失败静默降级为应用内提示 */
-  function notify(title, body) {
-    if (!store.state.settings.notify) return;
+  // ==================== 设置中心 ====================
+
+  /** 执行器模式：拉取注册中心并填充选择框（真实 LLM 执行器注册后此处即可切换） */
+  async function refreshExecutorSelect() {
+    const select = document.getElementById('setting-executor');
+    if (!select) return;
     try {
-      if (typeof Notification === 'undefined') return;
-      if (Notification.permission === 'granted') {
-        new Notification(title, { body });
-      } else if (Notification.permission !== 'denied') {
-        Notification.requestPermission().then((permission) => {
-          if (permission === 'granted') new Notification(title, { body });
-        });
-      }
+      const { names, active } = await VW.api.executor.list();
+      select.innerHTML = names
+        .map((name) => `<option value="${escapeHtml(name)}">${name === 'mock' ? '模拟执行（Mock）' : escapeHtml(name)}</option>`)
+        .join('');
+      select.value = names.includes(active) ? active : names[0] || '';
+      VW.dropdown.refresh(select);
     } catch (error) {
-      console.warn('[shell] 系统通知发送失败:', error.message);
+      console.warn('[shell] 执行器列表加载失败:', error.message);
     }
   }
 
-  // ==================== 设置中心 ====================
+  async function activateExecutor(name) {
+    try {
+      const { active } = await VW.api.executor.activate(name);
+      VW.toast.show(active === 'mock' ? '已切换为模拟执行（Mock）' : `执行器已切换为「${active}」`);
+    } catch (error) {
+      VW.toast.show(error.message);
+      await refreshExecutorSelect();
+    }
+  }
 
   function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -60,7 +69,7 @@ VW.views.shell = (() => {
       ? `运行中：http://127.0.0.1:${store.state.apiServer.port}`
       : `未启动${store.state.apiServer.error ? `：${store.state.apiServer.error}` : ''}`;
     VW.modal.open('settings-modal');
-    await refreshDataStats();
+    await Promise.all([refreshDataStats(), refreshExecutorSelect()]);
   }
 
   async function saveSettings() {
@@ -115,6 +124,7 @@ VW.views.shell = (() => {
     document.getElementById('settings-modal-close').addEventListener('click', () => VW.modal.close('settings-modal'));
     document.getElementById('settings-modal-cancel').addEventListener('click', () => VW.modal.close('settings-modal'));
     document.getElementById('settings-modal-save').addEventListener('click', saveSettings);
+    document.getElementById('setting-executor').addEventListener('change', (event) => activateExecutor(event.target.value));
     document.getElementById('purge-tasks-btn').addEventListener('click', purgeTasks);
     document.getElementById('open-data-dir-btn').addEventListener('click', async () => {
       try {
@@ -161,5 +171,5 @@ VW.views.shell = (() => {
     bindHistory();
   }
 
-  return { init, notify, openSettings, openHistory };
+  return { init, openSettings, openHistory };
 })();

@@ -34,13 +34,12 @@ VW.modal = (() => {
     const target = el(id);
     if (!target || target.classList.contains('hidden')) return;
     target.classList.add('hidden');
-    // 从栈中弹出该弹窗（含其上层），把焦点还给打开前的元素
-    let entry = null;
-    while (openStack.length) {
-      entry = openStack.pop();
-      if (entry.id === target.id) break;
-    }
-    if (entry?.trigger && document.contains(entry.trigger)) entry.trigger.focus();
+    // 只移除该弹窗自己的栈条目：交叉关闭时不能误伤其上层弹窗的焦点还原记录
+    const index = openStack.findIndex((entry) => entry.id === target.id);
+    const entry = index >= 0 ? openStack.splice(index, 1)[0] : null;
+    // 仅当关闭的是栈顶时才还原焦点（关闭中间层时上层弹窗仍持有焦点语义）
+    const top = openStack[openStack.length - 1];
+    if (!top && entry?.trigger && document.contains(entry.trigger)) entry.trigger.focus();
   }
 
   function isOpen(id) {

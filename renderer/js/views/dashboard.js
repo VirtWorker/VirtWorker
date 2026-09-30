@@ -16,14 +16,19 @@ VW.views.dashboard = (() => {
 
   // ==================== 数据 ====================
 
+  /** 请求版本号：快速切换筛选时，后返回的过期响应不得覆盖新状态 */
+  let refreshSeq = 0;
+
   async function refresh(options = {}) {
     const { task: filters, statsPeriod } = store.state.filters;
+    const seq = ++refreshSeq;
     try {
       const [periodTasks, stats, filtered] = await Promise.all([
         VW.api.task.list({ period: statsPeriod }),
         VW.api.task.stats({ period: statsPeriod }),
         VW.api.task.list(filters)
       ]);
+      if (seq !== refreshSeq) return; // 已有更新的刷新请求，丢弃本次结果
       store.set({
         stats,
         tasks: filtered.items,
@@ -611,5 +616,13 @@ VW.views.dashboard = (() => {
     openDetail(taskId);
   }
 
-  return { init, refresh, refreshSoon, openCreateTask, openDetail, syncDetail, renderAssigneeFilter };
+  /** 任务被删除时若详情弹窗正展示它，直接关闭（而不是弹「任务不存在」错误） */
+  function closeDetail(taskId) {
+    if (detailState && detailState.task.id === taskId) {
+      detailState = null;
+      VW.modal.close('task-detail-modal');
+    }
+  }
+
+  return { init, refresh, refreshSoon, openCreateTask, openDetail, syncDetail, closeDetail, renderAssigneeFilter };
 })();

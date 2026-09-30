@@ -310,13 +310,18 @@ function removeGroup(id) {
 function attachGroup(workerId, groupId) {
   const worker = getWorker(workerId);
   if (!worker || worker.groupIds.includes(groupId)) return;
-  db.update('workers', workerId, { ...worker, groupIds: [...worker.groupIds, groupId] });
+  const next = db.update('workers', workerId, { ...worker, groupIds: [...worker.groupIds, groupId] });
+  bus.emit('worker:updated', decorateWorker(next));
 }
 
 function detachGroup(workerId, groupId) {
   const worker = getWorker(workerId);
   if (!worker) return;
-  db.update('workers', workerId, { ...worker, groupIds: worker.groupIds.filter((gid) => gid !== groupId) });
+  const next = db.update('workers', workerId, {
+    ...worker,
+    groupIds: worker.groupIds.filter((gid) => gid !== groupId)
+  });
+  bus.emit('worker:updated', decorateWorker(next));
 }
 
 /** 取执行者对应的 Worker 实体（Group 归一到组长/首个成员），供运行时派发使用 */

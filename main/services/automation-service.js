@@ -8,6 +8,7 @@
 const { randomBytes } = require('node:crypto');
 const db = require('../store/db');
 const bus = require('../runtime/event-bus');
+const vault = require('../util/secret-vault');
 const taskService = require('./task-service');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
@@ -145,7 +146,38 @@ function normalizeTrigger(input = {}) {
     return { type, event: { source, assigneeId } };
   }
 
-  return { type, api: { token: input.api?.token || `vw_${randomBytes(12).toString('hex')}` } };
+  return { type, api: { token: buildApiCredential(input.api?.token) } };
+}
+
+/** API Token：seal 后落盘（与 IM/连接器凭据同一保险箱标准，不再明文）。
+ *  已是加密对象（编辑保留旧 Token）原样透传；兼容读取迁移前的明文字符串。 */
+function buildApiCredential(existing) {
+  if (existing && typeof existing === 'object' && existing.sealed) return existing;
+  const plain = typeof existing === 'string' && existing ? existing : `vw_${randomBytes(12).toString('hex')}`;
+  const sealed = vault.seal(plain);
+  return { sealed, mask: vault.mask(plain), mode: sealed.mode };
+}
+
+/** 取明文 Token（仅供主进程校验与复制到剪贴板，绝不下发渲染层）；兼容旧版明文数据 */
+function revealApiToken(automation) {
+  const token = automation?.trigger?.api?.token;
+  if (!token) return '';
+  if (typeof token === 'string') return token;
+  return vault.open(token.sealed);
+}
+
+/** 重新生成 API Token：旧 Token 立即失效（泄漏后的换锁入口） */
+function regenerateToken(id) {
+  const automation = getOrThrow(id);
+  if (automation.trigger.type !== 'api') throw fail.invalidState('仅 API 触发的自动任务可以重新生成 Token');
+  const next = {
+    ...automation,
+    trigger: { ...automation.trigger, api: { token: buildApiCredential(null) } },
+    updatedAt: nowIso()
+  };
+  db.update('automations', id, next);
+  publish(next, 'automation:updated');
+  return decorate(next);
 }
 
 /** 归一化任务输入模板 */
@@ -172,12 +204,25 @@ function getOrThrow(id) {
 }
 
 function decorate(automation) {
+  const isApi = automation.trigger.type === 'api';
+  // API Token 的密文/明文都不下发渲染层，只给掩码（复制调用命令经专用通道在主进程完成）
+  const trigger = isApi
+    ? {
+        ...automation.trigger,
+        api: {
+          mask: automation.trigger.api?.token?.mask || '',
+          mode: automation.trigger.api?.token?.mode || ''
+        }
+      }
+    : automation.trigger;
   return {
     ...automation,
+    trigger,
     triggerLabel: TRIGGER_LABEL[automation.trigger.type],
     triggerText: describeTrigger(automation.trigger),
+    tokenMask: isApi ? automation.trigger.api?.token?.mask || '' : '',
     /** 端点信息只在 API 触发时下发给界面，便于用户复制 */
-    endpoint: automation.trigger.type === 'api' ? `/automations/${automation.id}/run` : null
+    endpoint: isApi ? `/automations/${automation.id}/run` : null
   };
 }
 
@@ -310,6 +355,13 @@ function remove(id) {
 function markFired(id, taskId, meta = {}) {
   const automation = getOrThrow(id);
   const isOnce = automation.trigger.type === 'schedule' && automation.trigger.schedule.mode === 'once';
+  // interval 从「计划触发时刻」起算下次时间，避免每次顺延导致周期逐渐漂移；
+  // hourly/daily/weekly 锚定墙上时钟无漂移，保持从当前时刻起算
+  const previousDue = automation.nextRunAt ? new Date(automation.nextRunAt) : null;
+  const base =
+    automation.trigger.schedule?.mode === 'interval' && previousDue && !Number.isNaN(previousDue.getTime())
+      ? previousDue
+      : undefined;
   const next = {
     ...automation,
     lastRunAt: nowIso(),
@@ -317,7 +369,7 @@ function markFired(id, taskId, meta = {}) {
     lastRunReason: meta.reason || null,
     runCount: (automation.runCount || 0) + 1,
     enabled: isOnce ? false : automation.enabled, // 仅一次的自动任务触发后自动停用
-    nextRunAt: isOnce ? null : computeNextRun(automation.trigger),
+    nextRunAt: isOnce ? null : computeNextRun(automation.trigger, base),
     updatedAt: nowIso()
   };
   db.update('automations', id, next);
@@ -329,6 +381,20 @@ function markFired(id, taskId, meta = {}) {
 function advanceSchedule(id) {
   const automation = getOrThrow(id);
   const next = { ...automation, nextRunAt: computeNextRun(automation.trigger), updatedAt: nowIso() };
+  // 「仅一次」已过期且补跑关闭时不再有下次触发：自动停用，避免"启用中却永不触发"的死配置
+  if (
+    next.enabled &&
+    !next.nextRunAt &&
+    next.trigger.type === 'schedule' &&
+    next.trigger.schedule?.mode === 'once'
+  ) {
+    next.enabled = false;
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: `自动任务「${automation.name}」已停用`,
+      body: '触发时间已过且补跑未开启，不再调度'
+    });
+  }
   db.update('automations', id, next);
   bus.emit('automation:updated', decorate(next));
   return decorate(next);
@@ -380,5 +446,7 @@ module.exports = {
   advanceSchedule,
   dueSchedules,
   earliestNextRun,
-  listEnabledByEvent
+  listEnabledByEvent,
+  regenerateToken,
+  revealApiToken
 };

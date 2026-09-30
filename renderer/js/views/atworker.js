@@ -21,13 +21,18 @@ VW.views.atworker = (() => {
 
   // ==================== 数据 ====================
 
+  /** 请求版本号：过期响应不覆盖新状态 */
+  let refreshSeq = 0;
+
   async function refresh() {
+    const seq = ++refreshSeq;
     try {
       const [filtered, all, stats] = await Promise.all([
         VW.api.chat.listBindings(store.state.filters.atworker),
         VW.api.chat.listBindings({}),
         VW.api.chat.stats()
       ]);
+      if (seq !== refreshSeq) return;
       store.set({ chatBindingList: filtered.items, chatBindings: all.items, chatStats: stats });
     } catch (error) {
       VW.toast.show(error.message);
@@ -35,8 +40,11 @@ VW.views.atworker = (() => {
   }
 
   async function refreshConnections() {
+    const seq = ++refreshSeq;
     try {
-      store.set({ chatConnections: await VW.api.chat.listConnections() });
+      const connections = await VW.api.chat.listConnections();
+      if (seq !== refreshSeq) return;
+      store.set({ chatConnections: connections });
     } catch (error) {
       VW.toast.show(error.message);
     }
@@ -73,10 +81,10 @@ VW.views.atworker = (() => {
   }
 
   function rowHtml(item) {
-    const healthy = item.connectionName !== '（连接已删除）' && item.workerName !== '（Worker 已删除）';
+    // 健康态由主进程结构化下发（连接与 Worker 均存在），渲染层不再靠文案反推
+    const healthy = Boolean(item.healthy);
     return `
       <tr data-id="${item.id}">
-        <td><input type="checkbox" disabled /></td>
         <td>
           <div>${escapeHtml(item.chatName)}</div>
           <span class="meta-chip">${escapeHtml(item.chatTypeLabel)}</span>
@@ -169,7 +177,10 @@ VW.views.atworker = (() => {
             ${connection.credentialMask ? `<span class="connection-cred">凭据 ${escapeHtml(connection.credentialMask)}${connection.encrypted ? '' : '（未加密存储）'}</span>` : ''}
           </div>
         </div>
-        <button class="mini-btn" data-act="remove-connection">删除</button>
+        <div class="worker-card-actions">
+          <button class="mini-btn" data-act="edit-connection">编辑</button>
+          <button class="mini-btn" data-act="remove-connection">删除</button>
+        </div>
       </div>`
       )
       .join('');
@@ -194,6 +205,41 @@ VW.views.atworker = (() => {
       syncSecretVisibility();
       await refreshConnections();
       renderConnections();
+    } catch (error) {
+      VW.toast.show(error.message);
+    }
+  }
+
+  // ==================== 编辑 / 凭据轮换连接 ====================
+
+  let editingConnectionId = null;
+
+  function openConnectionEdit(id) {
+    const connection = store.state.chatConnections.find((item) => item.id === id);
+    if (!connection) return;
+    editingConnectionId = id;
+    document.getElementById('chat-conn-edit-platform').textContent = connection.platformLabel;
+    document.getElementById('chat-conn-edit-name').value = connection.name;
+    document.getElementById('chat-conn-edit-secret').value = '';
+    document.getElementById('chat-conn-edit-mask').textContent = connection.credentialMask
+      ? `当前凭据：${connection.credentialMask}${connection.encrypted ? '' : '（未加密存储）'}`
+      : '该平台无需访问凭据';
+    VW.modal.open('chat-conn-edit-modal');
+  }
+
+  async function submitConnectionEdit(event) {
+    event.preventDefault();
+    if (!editingConnectionId) return;
+    try {
+      const patch = { name: document.getElementById('chat-conn-edit-name').value };
+      const secret = document.getElementById('chat-conn-edit-secret').value;
+      if (secret) patch.secret = secret; // 留空表示不更换凭据
+      const connection = await VW.api.chat.updateConnection(editingConnectionId, patch);
+      VW.toast.show(`连接「${connection.name}」已保存`);
+      VW.modal.close('chat-conn-edit-modal');
+      await refreshConnections();
+      renderConnections();
+      await refresh();
     } catch (error) {
       VW.toast.show(error.message);
     }
@@ -393,18 +439,52 @@ VW.views.atworker = (() => {
 
   // ==================== 接入申请 ====================
 
+  /** 申请弹窗渲染版本号：事件密集到达时只保留最新一次渲染 */
+  let requestSeq = 0;
+
   async function openRequests() {
     await renderRequests();
     VW.modal.open('chat-requests-modal');
   }
 
+  /** 保留弹窗中已填写的审批表单（实时刷新重渲染时不丢用户输入） */
+  function collectRequestFormState() {
+    const saved = {};
+    document.querySelectorAll('#chat-request-list .request-item[data-id]').forEach((item) => {
+      saved[item.dataset.id] = {
+        workerId: item.querySelector('.request-worker')?.value || '',
+        workspace: item.querySelector('.request-workspace')?.value || '',
+        model: item.querySelector('.request-model')?.value || ''
+      };
+    });
+    return saved;
+  }
+
+  function restoreRequestFormState(saved) {
+    if (!saved) return;
+    document.querySelectorAll('#chat-request-list .request-item[data-id]').forEach((item) => {
+      const state = saved[item.dataset.id];
+      if (!state) return;
+      const select = item.querySelector('.request-worker');
+      if (select && [...select.options].some((option) => option.value === state.workerId)) select.value = state.workerId;
+      const workspace = item.querySelector('.request-workspace');
+      if (workspace) workspace.value = state.workspace;
+      const model = item.querySelector('.request-model');
+      if (model) model.value = state.model;
+    });
+  }
+
   async function renderRequests() {
+    const seq = ++requestSeq;
+    // 新申请到达（chat:request-updated）时弹窗若已打开也实时刷新，审批人不漏处理
+    const formState = VW.modal.isOpen('chat-requests-modal') ? collectRequestFormState() : null;
     let items = [];
     try {
       items = (await VW.api.chat.listRequests({})).items;
     } catch (error) {
       VW.toast.show(error.message);
     }
+    if (seq !== requestSeq) return;
     const list = document.getElementById('chat-request-list');
     const empty = document.getElementById('chat-request-empty');
     if (!items.length) {
@@ -469,6 +549,8 @@ VW.views.atworker = (() => {
       const select = item.querySelector('.request-worker');
       fillWorkerSelectById(select);
     });
+    // 实时刷新后还原用户已填写的审批表单
+    restoreRequestFormState(formState);
   }
 
   /** 为动态创建的 select 填充 Worker 选项（组件内局部使用） */
@@ -674,6 +756,7 @@ VW.views.atworker = (() => {
 
     // 弹窗关闭
     bindModal('chat-connection-modal', ['chat-connection-modal-close', 'chat-connection-cancel']);
+    bindModal('chat-conn-edit-modal', ['chat-conn-edit-modal-close', 'chat-conn-edit-cancel']);
     bindModal('chat-wizard-modal', ['chat-wizard-modal-close']);
     bindModal('chat-requests-modal', ['chat-requests-modal-close', 'chat-requests-ok']);
     bindModal('chat-binding-modal', ['chat-binding-modal-close', 'chat-binding-cancel']);
@@ -681,6 +764,7 @@ VW.views.atworker = (() => {
 
     // 表单
     document.getElementById('chat-connection-form').addEventListener('submit', submitConnection);
+    document.getElementById('chat-conn-edit-form').addEventListener('submit', submitConnectionEdit);
     document.getElementById('chat-connection-platform').addEventListener('change', syncSecretVisibility);
     document.getElementById('chat-wizard-next').addEventListener('click', wizardNext);
     document.getElementById('chat-wizard-prev').addEventListener('click', () => {
@@ -693,8 +777,11 @@ VW.views.atworker = (() => {
 
     // 列表操作（事件委托）
     document.getElementById('chat-connection-list').addEventListener('click', (event) => {
-      const button = event.target.closest('[data-act="remove-connection"]');
-      if (button) removeConnection(button.closest('.connection-item').dataset.id);
+      const button = event.target.closest('[data-act]');
+      if (!button) return;
+      const id = button.closest('.connection-item').dataset.id;
+      if (button.dataset.act === 'remove-connection') removeConnection(id);
+      if (button.dataset.act === 'edit-connection') openConnectionEdit(id);
     });
     document.getElementById('chat-request-list').addEventListener('click', onRequestAction);
 
@@ -724,6 +811,10 @@ VW.views.atworker = (() => {
     });
 
     store.on(['chatBindingList', 'chatBindings', 'chatStats'], render);
+    // 审批弹窗打开期间收到新申请/申请更新（角标变化）时实时重渲染列表，审批人不漏处理
+    store.on('chatStats', () => {
+      if (VW.modal.isOpen('chat-requests-modal')) renderRequests();
+    });
     // 向导/连接弹窗打开期间连接数据变化（如从向导内新建连接）时同步刷新对应列表
     store.on('chatConnections', () => {
       if (VW.modal.isOpen('chat-wizard-modal') && wizard.step === 1) renderWizardConnections();

@@ -5,6 +5,7 @@
  *           （知识库命中片段会被引用）。后续以同样的接口替换为真实 LLM 执行器。
  */
 
+const db = require('../store/db');
 const workerService = require('../services/worker-service');
 const capabilityService = require('../services/capability-service');
 
@@ -182,6 +183,7 @@ function anchorOf(task, pattern) {
 /**
  * 判断当前步骤是否需要请求用户操作。
  * 首批每个任务最多注入一次，保证链路可预测；规则优先于概率。
+ * 兜底概率的自有配置（mockRandomAction）由本执行器自行读取设置，运行时不感知执行器私有配置。
  */
 function maybeAction(task, step, ctx) {
   if (ctx.actionUsed) return null;
@@ -193,7 +195,7 @@ function maybeAction(task, step, ctx) {
 
   // 兜底概率注入：可在设置中关闭，避免自动化测试不稳定
   const isSecondToLast = step.step === task.steps.length - 1;
-  if (ctx.randomAction && isSecondToLast && Math.random() < 0.15) return inputRequest();
+  if (db.getSettings().mockRandomAction !== false && isSecondToLast && Math.random() < 0.15) return inputRequest();
   return null;
 }
 

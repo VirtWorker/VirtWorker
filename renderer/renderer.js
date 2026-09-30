@@ -106,9 +106,13 @@
         store.merge('ui', { sidebarSearch: '' });
       }
     });
-    searchInput.addEventListener('input', (event) => {
-      store.merge('ui', { sidebarSearch: event.target.value });
-    });
+    // 防抖：每次击键只更新一次状态（ui 切片订阅者含多个视图的全量重渲染，逐键触发代价高）
+    searchInput.addEventListener(
+      'input',
+      VW.util.debounce((event) => {
+        store.merge('ui', { sidebarSearch: event.target.value });
+      }, 200)
+    );
 
     // 点击列表项跳转到 Worker 管理页
     const panel = document.querySelector('.sidebar-worker-panel');
@@ -139,15 +143,21 @@
     VW.api.onEvent(({ type, payload }) => {
       if (!type) return;
 
-      if (type === 'task:created' || type === 'task:updated' || type === 'task:removed') {
+      if (type === 'task:created' || type === 'task:updated') {
         VW.views.dashboard.refreshSoon();
         if (payload?.id) VW.views.dashboard.syncDetail(payload.id);
         return;
       }
 
+      if (type === 'task:removed') {
+        VW.views.dashboard.refreshSoon();
+        // 被删任务正是当前打开的详情时直接关弹窗，而不是让它弹出「任务不存在」错误
+        if (payload?.id) VW.views.dashboard.closeDetail(payload.id);
+        return;
+      }
+
       if (type === 'app:notice') {
         VW.toast.show(`${payload.title}${payload.body ? `：${payload.body}` : ''}`);
-        VW.views.shell.notify(payload.title, payload.body || '');
         return;
       }
 

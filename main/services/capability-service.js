@@ -12,6 +12,7 @@ const path = require('node:path');
 const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const vault = require('../util/secret-vault');
+const workerService = require('./worker-service');
 const { SKILL_CATALOG } = require('../data/skill-catalog');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
@@ -440,18 +441,14 @@ function searchForWorker(workerId, query, limit = 3) {
   return hits.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-/** 能力被删除时从所有 Worker 上摘除，避免悬空引用 */
+/** 能力被删除时从所有 Worker 上摘除，避免悬空引用（走 worker-service 统一校验、落库与事件广播） */
 function detachFromWorkers(capabilityId) {
   db.all('workers')
     .filter((worker) => (worker.capabilityIds || []).includes(capabilityId))
     .forEach((worker) => {
-      const next = {
-        ...worker,
-        capabilityIds: worker.capabilityIds.filter((id) => id !== capabilityId),
-        updatedAt: nowIso()
-      };
-      db.update('workers', worker.id, next);
-      bus.emit('worker:updated', next);
+      workerService.updateWorker(worker.id, {
+        capabilityIds: worker.capabilityIds.filter((id) => id !== capabilityId)
+      });
     });
 }
 

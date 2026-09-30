@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
 const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
@@ -25,6 +25,9 @@ db.setNotify((notice) => bus.emit('app:notice', notice));
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
+/** 渲染进程连续崩溃计数（自动恢复上限，防止无限重启循环） */
+let renderCrashCount = 0;
+const MAX_RENDER_CRASH_RECOVERY = 3;
 
 /** 单实例锁：避免重复启动多个应用实例（Windows 桌面应用常规实践） */
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -136,6 +139,23 @@ function createWindow() {
     console.error('[main] 页面加载失败:', errorCode, errorDescription);
   });
 
+  // 渲染进程崩溃自动恢复：白屏不再需要用户手动重启；连续崩溃超上限后停止自动恢复
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    console.error('[main] 渲染进程异常退出:', details.reason, `exitCode=${details.exitCode}`);
+    renderCrashCount += 1;
+    if (renderCrashCount > MAX_RENDER_CRASH_RECOVERY) {
+      console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，请重启应用');
+      return;
+    }
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    }, 1000);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    renderCrashCount = 0; // 正常加载成功即重置计数
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -154,11 +174,39 @@ ipcMain.handle('app:ping', (_event, message) => {
   return `pong: ${String(message ?? '')}`;
 });
 
+/**
+ * 系统通知（蓝图 4.6）：app:notice 经主进程 Notification 推送，受 notify 设置开关控制。
+ * - 窗口聚焦时用户看得到应用内提示，不再重复打扰；最小化/失焦才发系统通知；
+ * - 主进程统一发送比渲染层 Web Notification 可靠（Windows 需 AppUserModelID），
+ *   且渲染进程崩溃时通知链路依然存活；点击通知聚焦窗口。
+ */
+function wireSystemNotifications() {
+  if (!Notification?.isSupported?.()) return;
+  bus.on(({ type, payload }) => {
+    if (type !== 'app:notice' || !payload?.title) return;
+    if (db.getSettings().notify === false) return;
+    const win = mainWindow;
+    if (win && !win.isDestroyed() && !win.isMinimized() && win.isFocused()) return;
+
+    const notification = new Notification({ title: String(payload.title), body: String(payload.body || '') });
+    notification.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    });
+    notification.show();
+  });
+}
+
 app.whenReady().then(() => {
   // 第二实例：requestSingleInstanceLock 已失败且 quit 已发起，直接返回，
   // 避免在退出完成前执行 bootstrapServices 写数据目录
   if (!hasSingleInstanceLock) return;
+  // Windows 通知必须设置 AppUserModelID（与 electron-builder 的 appId 保持一致）才能弹出
+  app.setAppUserModelId('com.virtworker.app');
   bootstrapServices();
+  wireSystemNotifications();
   createWindow();
 
   app.on('activate', () => {
