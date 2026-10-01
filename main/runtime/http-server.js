@@ -16,6 +16,8 @@ const automationService = require('../services/automation-service');
 const scheduler = require('./scheduler');
 
 const DEFAULT_PORT = 17891;
+/** 重启后对端连接池的感知宽限（毫秒）：见 restart() 内注释 */
+const RESTART_GRACE_MS = 30;
 const MAX_BODY_BYTES = 64 * 1024;
 
 let server = null;
@@ -161,7 +163,7 @@ async function handle(req, res) {
     }
     if (!automation.enabled) return failRequest(res, 400, 'INVALID_STATE', '该自动任务已停用');
 
-    let body = {};
+    let body;
     try {
       body = await readBody(req);
     } catch (error) {
@@ -183,10 +185,25 @@ async function handle(req, res) {
   return failRequest(res, 404, 'NOT_FOUND', '接口不存在');
 }
 
-function start() {
-  if (server) return getStatus();
+/**
+ * 启动本地触发端点。可选 onSettled(status)：监听成功或 error 事件状态收敛时一次性回调，
+ * 供 restart() 事件驱动等待（此前 20ms 轮询 + 1.5s 兜底双路径已被其取代，PERF-6）。
+ */
+function start(onSettled) {
+  if (server) {
+    // 已在运行：对 restart 语义而言即刻收敛，直接回传当前状态
+    const current = getStatus();
+    onSettled?.(current);
+    return current;
+  }
   const port = Number(db.getSettings().apiPort) || DEFAULT_PORT;
   recordAuthSuccess(); // 端点（重）启动时复位认证限速状态
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    onSettled?.(getStatus());
+  };
 
   server = http.createServer((req, res) => {
     handle(req, res).catch((error) => {
@@ -208,11 +225,13 @@ function start() {
       error: error.code === 'EADDRINUSE' ? `端口 ${port} 已被占用` : error.message
     };
     console.error('[api] 本地触发端点启动失败:', status.error);
+    settle();
   });
 
   server.listen(port, '127.0.0.1', () => {
     status = { running: true, port, error: null };
     console.log(`[api] 本地触发端点已就绪: http://127.0.0.1:${port}`);
+    settle();
   });
 
   return getStatus();
@@ -230,24 +249,21 @@ function stop() {
 
 /**
  * 端口变更后重启（settings 修改 apiPort 时调用）：等旧监听真正关闭后再按新端口启动，避免 EADDRINUSE。
- * Promise 在新端口监听成功或失败（状态收敛）后 resolve，调用方可据此判断重启结果；
- * start() 同步返回时 listen/error 回调尚未触发，直接读取状态会误判。
+ * Promise 在新端口监听成功或失败（状态收敛）后 resolve——start(onSettled) 由 listen/error 事件
+ * 直接驱动收敛，不再轮询状态；调用方可据此判断重启结果。
  */
 function restart() {
   return new Promise((resolve) => {
-    let started = false;
+    let begun = false;
     const begin = () => {
-      if (started) return;
-      started = true;
-      status = { running: false, port: null, error: null }; // 清零，避免轮询读到旧状态误判已收敛
-      start();
-      // 成功时 listen 回调置 running，失败时 error 事件置 port/error，轮询等待二者之一
-      const deadline = Date.now() + 1500;
-      const poll = () => {
-        if (status.running || status.port !== null || Date.now() > deadline) return resolve(getStatus());
-        setTimeout(poll, 20);
-      };
-      poll();
+      if (begun) return;
+      begun = true;
+      start((finalStatus) => {
+        // 对端感知宽限（PERF-6）：服务端状态虽已收敛，但旧 keep-alive 连接的销毁通知
+        // 需到达调用方连接池后，新请求才不会命中已被销毁的复用 socket（ECONNRESET）。
+        // 旧实现的 20ms 轮询间隔意外提供了该缓冲，事件驱动后必须显式保留。
+        setTimeout(() => resolve(finalStatus), RESTART_GRACE_MS).unref?.();
+      });
     };
     if (!server) return begin();
     const closing = server;

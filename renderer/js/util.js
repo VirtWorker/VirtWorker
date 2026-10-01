@@ -6,11 +6,16 @@ window.VW = window.VW || {};
 
 VW.util = (() => {
   function escapeHtml(value) {
-    const div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    // textContent→innerHTML 只转义 & < >，不转义引号；本函数大量用于双引号属性内
-    // （如 value="${escapeHtml(...)}"），必须补齐引号转义，否则输入 " 即可逃逸属性注入事件
-    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // 纯字符串替换（PERF-6）：此前经 textContent→innerHTML 的 DOM 往返，
+    // 列表渲染单帧可达上千次 DOM 创建。替换链语义与其一致：
+    // 先转义 & 防二次转义，引号必须补齐——本函数大量用于双引号属性内（value="${...}"），
+    // 不转义引号则输入 " 即可逃逸属性注入事件（B-4）
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   /**

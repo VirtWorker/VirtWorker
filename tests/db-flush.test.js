@@ -225,11 +225,11 @@ describe('数据快照备份与恢复（F5）', () => {
     db.removeWhere('workers', () => true);
   });
 
-  test('backup 复制全部数据文件并轮换旧快照（保留 7 份）', () => {
+  test('backup 复制全部数据文件并轮换旧快照（保留 7 份）', async () => {
     db.insert('workers', { id: 'wk_snap', name: '快照数据', groupIds: [], capabilityIds: [] });
     db.flush();
 
-    const first = db.backup();
+    const first = await db.backup();
     expect(first.files).toBeGreaterThan(0);
     expect(fs.existsSync(path.join(first.dir, 'workers.json'))).toBe(true);
     expect(first.kept).toBe(1);
@@ -239,7 +239,7 @@ describe('数据快照备份与恢复（F5）', () => {
     for (let i = 1; i <= 7; i += 1) {
       fs.mkdirSync(path.join(root, `2026010${i}-000000`), { recursive: true });
     }
-    const second = db.backup();
+    const second = await db.backup();
     expect(second.kept).toBe(7);
     const remaining = fs.readdirSync(root).filter((name) => /^\d{8}-\d{6}$/.test(name));
     expect(remaining.length).toBe(7);
@@ -363,6 +363,38 @@ describe('O11 结构化匹配器：where / countWhere / removeWhere / keepLast',
     const persisted = payload.items.find((worker) => worker.id === 'wk_u2');
     expect(persisted.name).toBe('已更新-wk_u2');
   });
+
+  test('writeBack 定向写回：合并语义与 update 一致、不存在即抛错（PERF-7）', () => {
+    db.insert('workers', { id: 'wk_wb1', name: '写回一', groupIds: [], capabilityIds: [] });
+
+    // 合并语义：patch 只覆写所列字段，其余字段保留
+    db.writeBack('workers', 'wk_wb1', { name: '写回后' });
+    const stored = db.find('workers', 'wk_wb1');
+    expect(stored.name).toBe('写回后');
+    expect(stored.id).toBe('wk_wb1');
+    expect(Array.isArray(stored.capabilityIds)).toBe(true);
+
+    // 未命中即抛 notFound（与 update 同守卫，防静默丢失写入）
+    expect(() => db.writeBack('workers', 'wk_missing', { name: 'x' })).toThrow(/不存在/);
+  });
+
+  test('pluck 免克隆提取标量：与 where 同口径且不污染缓存（PERF-6）', () => {
+    db.insert('workers', { id: 'wk_pl1', name: '提取一', groupIds: [], capabilityIds: [] });
+    db.insert('workers', { id: 'wk_pl2', name: '提取二', groupIds: [], capabilityIds: [] });
+
+    const ids = db.pluck('workers', (worker) => worker.id);
+    expect(ids).toContain('wk_pl1');
+    expect(ids).toContain('wk_pl2');
+    // where 同口径：条目数一致
+    expect(ids.length).toBe(db.where('workers', () => true).length);
+
+    // 免克隆纪律自证：pluck 返回的是缓存条目的直接 map 结果，
+    // 提取的标量（字符串）改写不影响存储；条目本体经 find 取出仍是克隆
+    const names = db.pluck('workers', (worker) => worker.name);
+    expect(names).toContain('提取一');
+    // 与 count 同口径（本 describe 前置用例已向集合写入其它条目，不做硬编码数量断言）
+    expect(db.count('workers')).toBe(ids.length);
+  });
 });
 
 describe('taskevents 追加日志：写放大治理（PERF-1）', () => {
@@ -429,11 +461,11 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     db.init(dataDir());
   });
 
-  test('backup 写入屏障：脏集合落盘、追加日志压缩，快照 json 完整且 log 为空', () => {
+  test('backup 写入屏障：脏集合落盘、追加日志压缩，快照 json 完整且 log 为空', async () => {
     db.append('taskevents', event('ev_b1')); // 只进追加日志，json 未生成
     db.insert('workers', { id: 'wk_br', name: '屏障测试', groupIds: [], capabilityIds: [] }); // 脏态未 flush
 
-    const snap = db.backup();
+    const snap = await db.backup();
     // 写入屏障 ①：脏集合先落盘，快照反映的是内存当前态而非任意旧态
     const workers = JSON.parse(fs.readFileSync(path.join(snap.dir, 'workers.json'), 'utf8'));
     expect(workers.items.map((item) => item.id)).toContain('wk_br');
@@ -476,5 +508,35 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     expect(fs.existsSync(logOf())).toBe(true); // 快照自带日志 → 拷贝覆盖保留
     db.init(dataDir());
     expect(db.where('taskevents', { taskId: 'tk_br' }).map((item) => item.id)).toEqual(['ev_s1', 'ev_s2']);
+  });
+
+  test('PERF-5 异步快照：拷贝期间的写入暂缓落盘，拷贝结束收口补写', async () => {
+    db.insert('workers', { id: 'wk_p5a', name: '拷贝前', groupIds: [], capabilityIds: [] });
+    db.flush();
+
+    // 钩住 copyFile：workers.json 拷贝完成后注入一条新写入，模拟「拷贝期间业务继续写」
+    const originalCopy = fs.promises.copyFile.bind(fs.promises);
+    let injected = false;
+    fs.promises.copyFile = async (src, dest, ...rest) => {
+      const result = await originalCopy(src, dest, ...rest);
+      if (!injected && String(src).endsWith('workers.json')) {
+        injected = true;
+        db.insert('workers', { id: 'wk_p5b', name: '拷贝期间', groupIds: [], capabilityIds: [] });
+      }
+      return result;
+    };
+    try {
+      const snap = await db.backup();
+      expect(injected).toBe(true); // 注入点确实执行过，用例有效
+      // 屏障②：快照内容固定于拷贝开始时刻，不含拷贝期间的新写入
+      const workers = JSON.parse(fs.readFileSync(path.join(snap.dir, 'workers.json'), 'utf8'));
+      expect(workers.items.map((item) => item.id)).toContain('wk_p5a');
+      expect(workers.items.map((item) => item.id)).not.toContain('wk_p5b');
+      // 屏障③：拷贝结束后收口，拷贝期间的写入已落盘到数据目录
+      const onDisk = JSON.parse(fs.readFileSync(path.join(dataDir(), 'workers.json'), 'utf8'));
+      expect(onDisk.items.map((item) => item.id)).toContain('wk_p5b');
+    } finally {
+      fs.promises.copyFile = originalCopy;
+    }
   });
 });

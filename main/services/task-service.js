@@ -87,7 +87,8 @@ function mutate(id, updater, { allowFinished = false } = {}) {
   }
   updater(task);
   task.updatedAt = nowIso();
-  db.update('tasks', id, task);
+  // writeBack（PERF-7）：mutate 自持完整草稿、不依赖返回值，省去 update 返回值的一次全任务深克隆
+  db.writeBack('tasks', id, task);
   return task;
 }
 
@@ -695,10 +696,8 @@ function ackAll(period = 'month') {
  *  taskId 已不存在的 taskevents，且无任何后续清理路径。由每日维护（含启动即跑的一次）调用。
  *  已知 taskId 需含归档集合（BUG-20）：归档任务的时间线仍然有效，不得当作孤儿清扫 */
 function purgeOrphanEvents() {
-  const knownIds = new Set([
-    ...db.query('tasks', () => true).map((task) => task.id),
-    ...db.query('tasks-archive', () => true).map((task) => task.id)
-  ]);
+  // pluck 免克隆提取 id（PERF-6）：原 db.query(()=>true) 会把两个任务集合全部深拷贝一遍
+  const knownIds = new Set([...db.pluck('tasks', (task) => task.id), ...db.pluck('tasks-archive', (task) => task.id)]);
   return db.removeWhere('taskevents', (event) => !knownIds.has(event.taskId)).removed;
 }
 

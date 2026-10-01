@@ -221,12 +221,12 @@ async function buildResult(task, worker) {
   } catch (error) {
     console.warn('[executor-llm] 结果汇报生成失败，降级为本地汇总:', error.message || error);
   }
-  if (!summary) summary = localSummary(task, capabilities, citations, answered);
+  if (!summary) summary = mock.localSummary(task, capabilities, citations, answered);
 
   return {
     summary,
     text: `本次执行由「${task.assignee?.name || worker?.name || '数字员工'}」调用大模型（${readConfig().model || '未配置'}）完成 ${task.steps.length} 个步骤。如需调整结论，可直接基于同一目标再次创建任务。`,
-    artifacts: deriveArtifacts(task, worker),
+    artifacts: mock.deriveArtifacts(task, worker),
     capabilities: {
       skills: capabilities.skills.map((item) => item.title),
       connectors: capabilities.connectors.map((item) => item.title),
@@ -234,22 +234,6 @@ async function buildResult(task, worker) {
       citations
     }
   };
-}
-
-/** 本地兜底汇总：与 mock 同款口径，从步骤日志与能力挂载推导 */
-function localSummary(task, capabilities, citations, answered) {
-  const parts = [`已围绕「${task.title}」完成 ${task.steps.length} 个步骤`];
-  if (answered) parts.push(`采纳了你提交的「${answered}」`);
-  if (capabilities.knowledge.length) parts.push(`引用了 ${capabilities.knowledge.length} 个知识库、${citations.length} 条知识片段`);
-  if (capabilities.skills.length) parts.push(`使用了 ${capabilities.skills.map((item) => item.title).join('、')}`);
-  return `${parts.join('，')}。`;
-}
-
-/** 交付物命名与 mock 同款（按角色 + 工作目录），保持看板展示一致 */
-function deriveArtifacts(task, worker) {
-  const artifacts = (mock.ARTIFACTS[worker?.role] || mock.ARTIFACTS['通用助理']).slice();
-  if (task.workspace?.cwd) artifacts.push(`说明-${task.workspace.cwd.replace(/[\\/:*?"<>|]/g, '_')}.txt`);
-  return artifacts;
 }
 
 module.exports = {

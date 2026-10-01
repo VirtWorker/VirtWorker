@@ -2,7 +2,8 @@
  * 主进程文件日志
  * 背景：发布后无法打开 DevTools，console 输出会丢失，问题不可诊断。
  * 方案：把 console 的关键输出镜像到 userData/logs/main.log，按大小轮转（保留 3 份），
- *       并接管未捕获异常/Promise 拒绝。写入失败静默降级，绝不影响主流程。
+ *       并接管未捕获异常/Promise 拒绝。info 级日志缓冲合并落盘（PERF-4），error 及以上
+ *       立即直写保证关键诊断不丢。写入失败静默降级，绝不影响主流程。
  */
 
 const fs = require('node:fs');
@@ -10,6 +11,10 @@ const path = require('node:path');
 
 const MAX_BYTES = 2 * 1024 * 1024; // 单文件 2MB
 const KEEP = 3; // main.log → main.log.1 → main.log.2 → main.log.3
+/** 缓冲落盘间隔（毫秒）：info/debug 级日志攒一批写一次，把每行一次的同步 append 摊薄 */
+const FLUSH_INTERVAL_MS = 500;
+/** 缓冲字节上限：日志洪峰时提前落盘，防止内存积压无界增长 */
+const FLUSH_MAX_PENDING_BYTES = 64 * 1024;
 
 /** 日志级别：环境变量 VIRTWORKER_LOG_LEVEL 控制（debug/info/warn/error），低于阈值的不落盘 */
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, fatal: 50 };
@@ -20,6 +25,10 @@ const MASK_DEPTH = 4;
 
 let logFile = '';
 let bytesWritten = 0;
+/** 待落盘的日志行缓冲：write() 入队，定时/超限/关闭时合并为一次 appendFileSync */
+let pending = [];
+let pendingBytes = 0;
+let flushTimer = null;
 
 function threshold() {
   const raw = String(process.env.VIRTWORKER_LOG_LEVEL || DEFAULT_LEVEL).toLowerCase();
@@ -43,6 +52,8 @@ function maskSensitive(value, depth = 0) {
 
 /** 由 main.js 在 app ready 后调用，指定日志目录 */
 function init(dir) {
+  // 切换目录前先把旧缓冲写进旧文件，避免上一个目标的日志混进新文件
+  flushSync();
   try {
     fs.mkdirSync(dir, { recursive: true });
     logFile = path.join(dir, 'main.log');
@@ -84,24 +95,59 @@ function format(level, args) {
   return `[${time}] [${level}] ${text}\n`;
 }
 
-/** 同步追加写：日志量小、可靠性优先，避免异步流与进程退出的竞态；低于阈值的级别不落盘 */
-function write(level, args) {
-  if (!logFile) return;
-  // mirrorConsole 传大写（INFO/ERROR），installGlobalHandlers 传 FATAL，统一按小写查表
-  const levelValue = LEVELS[String(level).toLowerCase()] ?? LEVELS.info;
-  if (levelValue < threshold()) return;
+/** 把缓冲一次性落盘：轮转判定按「当前大小 + 整批字节」计算，一次 appendFileSync 完成 */
+function flushSync() {
+  if (!logFile || !pending.length) return;
+  const chunk = pending.join('');
+  pending = [];
+  pendingBytes = 0;
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   try {
-    const line = format(level, args);
-    if (bytesWritten + Buffer.byteLength(line) > MAX_BYTES) rotate();
-    fs.appendFileSync(logFile, line, 'utf8');
-    bytesWritten += Buffer.byteLength(line);
+    if (bytesWritten + Buffer.byteLength(chunk) > MAX_BYTES) rotate();
+    fs.appendFileSync(logFile, chunk, 'utf8');
+    bytesWritten += Buffer.byteLength(chunk);
   } catch (error) {
     /* 日志失败不影响主流程 */
   }
 }
 
+/** 缓冲定时落盘：unref 不阻塞进程退出，退出前由 close() 兜底收口 */
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushSync();
+  }, FLUSH_INTERVAL_MS);
+  flushTimer.unref?.();
+}
+
+/**
+ * 写入策略（PERF-4）：info/debug/warn 进缓冲合并落盘，error 及以上立即同步直写——
+ * 关键诊断信息（崩溃、异常）不承受缓冲丢失风险。缓冲超限立即落盘防积压。
+ * 低于阈值的级别不落盘。
+ */
+function write(level, args) {
+  if (!logFile) return;
+  // mirrorConsole 传大写（INFO/ERROR），installGlobalHandlers 传 FATAL，统一按小写查表
+  const levelValue = LEVELS[String(level).toLowerCase()] ?? LEVELS.info;
+  if (levelValue < threshold()) return;
+  let line;
+  try {
+    line = format(level, args);
+  } catch (error) {
+    return; /* 格式化失败不阻塞主流程 */
+  }
+  pending.push(line);
+  pendingBytes += Buffer.byteLength(line);
+  if (levelValue >= LEVELS.error || pendingBytes >= FLUSH_MAX_PENDING_BYTES) flushSync();
+  else scheduleFlush();
+}
+
 function close() {
-  /* 同步写入无缓冲，保留接口供退出流程调用 */
+  flushSync();
 }
 
 /**

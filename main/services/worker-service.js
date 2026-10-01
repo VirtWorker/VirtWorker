@@ -48,7 +48,8 @@ function decorateWorker(worker) {
   };
 }
 
-function allWorkers() {
+/** 单集合全量读取，命名对齐 capability/automation/flow/share 服务的 listAll 惯例 */
+function listAll() {
   return db.all('workers');
 }
 
@@ -59,7 +60,7 @@ function getWorker(id) {
 // ==================== Worker ====================
 
 function listWorkers(filter = {}) {
-  let items = allWorkers();
+  let items = listAll();
   const keyword = String(filter.keyword ?? '').trim().toLowerCase();
   if (keyword) {
     items = items.filter((w) =>
@@ -88,7 +89,7 @@ function listWorkers(filter = {}) {
 
 function createWorker(params = {}) {
   const name = requiredText(params.name, { label: 'Worker 名称', max: 20 });
-  assertUniqueName(allWorkers(), name, { label: 'Worker' });
+  assertUniqueName(listAll(), name, { label: 'Worker' });
 
   const worker = {
     id: createId('wk'),
@@ -97,7 +98,7 @@ function createWorker(params = {}) {
     env: normalizeEnv(params.env),
     desc: optionalText(params.desc, 100),
     status: STATUS.online,
-    avatarColor: AVATAR_COLORS[allWorkers().length % AVATAR_COLORS.length],
+    avatarColor: AVATAR_COLORS[listAll().length % AVATAR_COLORS.length],
     capabilityIds: [],
     groupIds: [],
     createdAt: nowIso(),
@@ -116,7 +117,7 @@ function updateWorker(id, patch = {}) {
   const next = { ...worker };
   if (patch.name !== undefined) {
     const name = requiredText(patch.name, { label: 'Worker 名称', max: 20 });
-    assertUniqueName(allWorkers(), name, { label: 'Worker', exceptId: id });
+    assertUniqueName(listAll(), name, { label: 'Worker', exceptId: id });
     next.name = name;
   }
   if (patch.role !== undefined) next.role = assertEnum(patch.role, ROLES, { label: '角色' });

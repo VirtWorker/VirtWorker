@@ -19,9 +19,6 @@ contextBridge.exposeInMainWorld('virtworker', {
     }
   },
 
-  /** 示例：调用主进程能力（按需扩展） */
-  ping: (message) => ipcRenderer.invoke('app:ping', message),
-
   /** 应用启动数据一次性拉取 */
   bootstrap: () => invoke('app:bootstrap'),
 

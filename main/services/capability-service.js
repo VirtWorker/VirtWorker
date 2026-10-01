@@ -408,10 +408,9 @@ function searchKnowledge(capabilityId, keyword, limit = 5) {
   const tokens = tokenize(query);
   if (!tokens.length) return [];
 
-  const chunks = getChunkIndex().get(capabilityId) || [];
-  return chunks
-    .map((chunk) => {
-      const lower = chunk.text.toLowerCase();
+  const entries = getChunkIndex().get(capabilityId) || [];
+  return entries
+    .map(({ chunk, lower }) => {
       const score = tokens.reduce((total, token) => (lower.includes(token) ? total + Math.max(1, token.length - 1) : total), 0);
       return { chunk, score };
     })
@@ -440,7 +439,9 @@ function getChunkIndex() {
     chunkIndex = new Map();
     db.all('chunks').forEach((chunk) => {
       if (!chunkIndex.has(chunk.capabilityId)) chunkIndex.set(chunk.capabilityId, []);
-      chunkIndex.get(chunk.capabilityId).push(chunk);
+      // 小写文本随索引预计算（PERF-6）：检索热路径（任务每步一次）都要对每条片段 lower，
+      // 3000 片段上限下每次检索重复分配约 1MB 字符串；小写文本与索引同生命周期，失效时机一致
+      chunkIndex.get(chunk.capabilityId).push({ chunk, lower: chunk.text.toLowerCase() });
     });
   }
   return chunkIndex;

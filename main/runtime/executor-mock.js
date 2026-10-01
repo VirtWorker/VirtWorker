@@ -232,18 +232,28 @@ function answerText(request, answer) {
   return String(answer.value || '');
 }
 
-function buildResult(task, worker) {
+/** 交付物命名（按角色 + 工作目录），保持看板展示一致；llm 执行器复用同款 */
+function deriveArtifacts(task, worker) {
   const artifacts = (ARTIFACTS[worker?.role] || ARTIFACTS['通用助理']).slice();
   if (task.workspace?.cwd) artifacts.push(`说明-${task.workspace.cwd.replace(/[\\/:*?"<>|]/g, '_')}.txt`);
+  return artifacts;
+}
 
-  const capabilities = collectCapabilities(task);
-  const citations = task.steps.flatMap((step) => step.citations || []);
-  const answered = answerText(task.actionRequest, task.actionRequest?.answer);
-
+/** 本地口径汇总句：从步骤数/用户提交/知识引用/技能推导；llm 的兜底汇总复用同款 */
+function localSummary(task, capabilities, citations, answered) {
   const parts = [`已围绕「${task.title}」完成 ${task.steps.length} 个步骤`];
   if (answered) parts.push(`采纳了你提交的「${answered}」`);
   if (capabilities.knowledge.length) parts.push(`引用了 ${capabilities.knowledge.length} 个知识库、${citations.length} 条知识片段`);
   if (capabilities.skills.length) parts.push(`使用了 ${capabilities.skills.map((item) => item.title).join('、')}`);
+  return `${parts.join('，')}。`;
+}
+
+function buildResult(task, worker) {
+  const artifacts = deriveArtifacts(task, worker);
+
+  const capabilities = collectCapabilities(task);
+  const citations = task.steps.flatMap((step) => step.citations || []);
+  const answered = answerText(task.actionRequest, task.actionRequest?.answer);
 
   const capabilityLines = [];
   if (capabilities.skills.length) capabilityLines.push(`Skill：${capabilities.skills.map((item) => item.title).join('、')}`);
@@ -251,7 +261,7 @@ function buildResult(task, worker) {
   if (capabilities.knowledge.length) capabilityLines.push(`知识库：${capabilities.knowledge.map((item) => item.title).join('、')}`);
 
   return {
-    summary: `${parts.join('，')}。`,
+    summary: localSummary(task, capabilities, citations, answered),
     text: `本次执行由「${task.assignee.name}」完成，共产出 ${artifacts.length} 项交付物${
       capabilityLines.length ? `；${capabilityLines.join('；')}` : ''
     }。如需调整结论，可直接基于同一目标再次创建任务。`,
@@ -282,5 +292,8 @@ module.exports = {
   confirmRequest,
   selectionRequest,
   collectCapabilities,
-  answerText
+  answerText,
+  // 结果汇总公共件（llm 复用）：交付物命名与本地口径汇总句
+  deriveArtifacts,
+  localSummary
 };

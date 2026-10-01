@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
+const { app, BrowserWindow, shell, Notification, dialog } = require('electron');
 const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
@@ -130,7 +130,8 @@ const MAINTENANCE_START_DELAY_MS = 30 * 1000;
  * - 数据快照：.bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）
  */
 function startDailyMaintenance() {
-  const run = () => {
+  // PERF-5：db.backup() 已异步化，这里 await 等待结果但不阻塞定时器链（调用方忽略 Promise）
+  const run = async () => {
     try {
       const { archived } = taskService.archiveAged();
       if (archived) console.log(`[main] 每日维护：已归档 ${archived} 条已查收的历史任务（BUG-20 写放大治理）`);
@@ -150,7 +151,7 @@ function startDailyMaintenance() {
       console.error('[main] 每日维护：孤儿时间线清扫失败:', error.message);
     }
     try {
-      const result = db.backup();
+      const result = await db.backup();
       if (result.files) console.log(`[main] 每日维护：数据快照完成（${result.files} 个文件）→ ${result.dir}`);
     } catch (error) {
       console.error('[main] 每日维护：数据快照失败:', error.message);
@@ -305,11 +306,6 @@ app.on('second-instance', () => {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   }
-});
-
-// IPC 示例：渲染进程通过 window.vivictus.ping(...) 调用
-ipcMain.handle('app:ping', (_event, message) => {
-  return `pong: ${String(message ?? '')}`;
 });
 
 /**

@@ -80,6 +80,13 @@ let oldestDirtyAt = 0;
  * 防止空数据或过期内存状态覆盖磁盘上的完好数据。
  */
 let readOnlyReason = null;
+/**
+ * 异步快照拷贝进行中标记（PERF-5）：拷贝期间暂缓 flush 与追加日志压缩。
+ * 异步拷贝会让「内存继续变更 + 节流定时器落盘」与「读文件句柄」并发：Windows 上
+ * rename 覆盖一个正被 copyFile 读取的目标文件会 EPERM，快照内容也可能半新半旧。
+ * 期间变更只累积在内存/dirty，拷贝结束后由 backup() 统一收口落盘（内存始终是读取来源，无一致性影响）。
+ */
+let snapshotInFlight = false;
 /** 存储异常对外通知回调（main.js 注入，经事件总线转发渲染层）；注册前的告警先入队 */
 let notifyFn = null;
 const pendingNotices = [];
@@ -289,7 +296,9 @@ function appendEventsLog(item) {
   try {
     fs.appendFileSync(eventsLogFile(), `${JSON.stringify(item)}\n`, 'utf8');
     eventsLogLines += 1;
-    if (eventsLogLines >= EVENTS_LOG_COMPACT_LINES) compactEventsLog();
+    // 快照拷贝期间暂缓压缩：writeCollection 的 rename 会与拷贝读句柄冲突（见 snapshotInFlight 注释），
+    // 拷贝结束后由 backup() 收口补压缩；期间多出的日志行由回放去重兜底
+    if (eventsLogLines >= EVENTS_LOG_COMPACT_LINES && !snapshotInFlight) compactEventsLog();
   } catch (error) {
     // 追加失败（磁盘满等）：回退到全量重写路径保证事件不丢，由 flush 的重试定时器兜底
     console.error('[store] 时间线追加写失败，回退全量写:', error.message);
@@ -333,6 +342,11 @@ function scheduleFlush() {
  */
 function flush() {
   if (readOnlyReason) return;
+  // 快照拷贝期间暂缓写盘：保留定时器持续滚动，拷贝结束由 backup() 收口（见 snapshotInFlight 注释）
+  if (snapshotInFlight) {
+    scheduleFlush();
+    return;
+  }
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
@@ -518,6 +532,14 @@ function countWhere(name, condition) {
   return (cache.get(name) || []).filter(test).length;
 }
 
+/**
+ * 免克隆映射（PERF-6）：对集合缓存原位 map，不逐条深拷贝——只用于提取标量（如全部 id）。
+ * 纪律：回调绝不能返回或保留条目/其内部引用，否则外部将绕过克隆纪律直接持有可变缓存条目。
+ */
+function pluck(name, fn) {
+  return (cache.get(name) || []).map(fn);
+}
+
 /** 保留集合中匹配条件的最后 keep 条（如任务时间线上限），其余删除；返回删除数 */
 function keepLast(name, condition, keep) {
   if (!Number.isInteger(keep) || keep < 0) return 0;
@@ -546,6 +568,25 @@ function update(name, id, patch) {
   cache.set(name, items);
   persist(name, items);
   return clone(updated);
+}
+
+/**
+ * 定向写回（PERF-7）：与 update 同语义（合并 patch、O(N) 定位、单次 persist 标记），
+ * 但不做返回值深克隆——供调用方自持完整草稿的读-改-写路径（taskService.mutate）使用，
+ * 省去每次单条高频写（startStep/completeStep/recordEvent）一次全任务深克隆的浪费。
+ * 写回的缓存条目与调用方草稿共享嵌套引用，纪律与既有 update 相同：
+ * 调用方此后不得改写草稿（读取/广播/序列化不受影响）。
+ */
+function writeBack(name, id, patch) {
+  let updated = false;
+  const items = (cache.get(name) || []).map((item) => {
+    if (item.id !== id) return item;
+    updated = true;
+    return { ...item, ...patch };
+  });
+  if (!updated) throw fail.notFound('记录不存在');
+  cache.set(name, items);
+  persist(name, items);
 }
 
 /**
@@ -640,33 +681,45 @@ function rotateBackups() {
 }
 
 /**
- * 整目录快照：复制数据目录全部文件到 backups/<时间戳>/。
+ * 整目录快照：复制数据目录全部文件到 backups/<时间戳>/（异步，PERF-5——拷贝不再阻塞主进程）。
  * .bak 备份只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散；
  * 只复制不写主数据，失败仅告警，不中断调用方。
- * 写入屏障（BUG-21）：拷贝前先 flush 全部脏集合、再把 taskevents 追加日志压缩为全量 json——
- * 快照里各集合 json 即为完整状态、log 恒为空，杜绝「json 与 log 跨时刻组合不一致」。
- * 同步单线程下拷贝期间本不会有并发写入，屏障同时防御未来引入异步拷贝/子进程的情况；
+ * 写入屏障（BUG-21 + PERF-5）三段式：
+ * ① 拷贝前 flush 全部脏集合、再把 taskevents 追加日志压缩为全量 json——快照里各集合
+ *    json 即为完整状态、log 恒为空，杜绝「json 与 log 跨时刻组合不一致」；
+ * ② 拷贝期间置 snapshotInFlight 暂缓落盘/压缩，杜绝节流定时器的 rename 与拷贝读句柄
+ *    在 Windows 上冲突（EPERM），也保证快照内容不半新半旧；期间变更留在内存/dirty；
+ * ③ 拷贝结束 finally 收口：补 flush + 按需补压缩，把拷贝期间累积的变更统一落盘。
  * 只读保护下 flush/compact 自然跳过，按当前磁盘状态出快照（与既有行为一致）。
  */
-function backup() {
+async function backup() {
   if (!baseDir) return { dir: '', files: 0, kept: 0 };
-  flush();
+  flush(); // 屏障①：磁盘 == 内存
   if (!readOnlyReason && eventsLogLines > 0) compactEventsLog();
   const target = path.join(backupsRoot(), snapshotName(new Date()));
-  fs.mkdirSync(target, { recursive: true });
-  let files = 0;
-  for (const name of fs.readdirSync(baseDir)) {
-    if (name.endsWith('.tmp')) continue; // 写入未完成的临时文件不进快照
-    try {
-      const src = path.join(baseDir, name);
-      if (!fs.statSync(src).isFile()) continue;
-      fs.copyFileSync(src, path.join(target, name));
-      files += 1;
-    } catch (error) {
-      console.error(`[store] 快照跳过 ${name}:`, error.message);
+  snapshotInFlight = true; // 屏障②：拷贝期间暂缓落盘
+  try {
+    await fs.promises.mkdir(target, { recursive: true });
+    const names = await fs.promises.readdir(baseDir);
+    let files = 0;
+    for (const name of names) {
+      if (name.endsWith('.tmp')) continue; // 写入未完成的临时文件不进快照
+      try {
+        const src = path.join(baseDir, name);
+        if (!(await fs.promises.stat(src)).isFile()) continue;
+        await fs.promises.copyFile(src, path.join(target, name));
+        files += 1;
+      } catch (error) {
+        console.error(`[store] 快照跳过 ${name}:`, error.message);
+      }
     }
+    return { dir: target, files, kept: rotateBackups() };
+  } finally {
+    // 屏障③：拷贝期间累积的变更统一落盘；追加日志若在拷贝期到达压缩阈值则补压缩
+    snapshotInFlight = false;
+    flush();
+    if (!readOnlyReason && eventsLogLines >= EVENTS_LOG_COMPACT_LINES) compactEventsLog();
   }
-  return { dir: target, files, kept: rotateBackups() };
 }
 
 /** 快照列表（新→旧），供恢复入口下拉展示 */
@@ -729,8 +782,10 @@ module.exports = {
   where,
   countWhere,
   count,
+  pluck,
   keepLast,
   update,
+  writeBack,
   updateWhere,
   remove,
   removeWhere,

@@ -106,14 +106,28 @@ VW.store = (() => {
    * 超限或比较失败一律视为已变化（宁可多渲染一次，不做深度比较拖慢热路径）。
    */
   const EQUALITY_CHECK_LIMIT = 500;
+  /** 数组序列化缓存（PERF-6）：原实现每次比较对两个数组各 stringify 一遍，事件驱动刷新
+   *  下重复全量序列化 200 条含 steps 的任务对象。被替换的旧数组引用即成垃圾，WeakMap
+   *  随之回收不累积——上一轮已缓存的一方直接复用文本，双向 stringify 减半，语义不变。 */
+  const serializedArrays = new WeakMap();
+  function serializeForEqual(array) {
+    let text = serializedArrays.get(array);
+    if (text === undefined) {
+      try {
+        text = JSON.stringify(array);
+      } catch (error) {
+        text = null; // 序列化失败：与原实现一致，视为已变化
+      }
+      serializedArrays.set(array, text);
+    }
+    return text;
+  }
   function valuesEqual(a, b) {
     if (a === b) return true;
     if (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.length <= EQUALITY_CHECK_LIMIT) {
-      try {
-        return JSON.stringify(a) === JSON.stringify(b);
-      } catch (error) {
-        return false;
-      }
+      const textA = serializeForEqual(a);
+      const textB = serializeForEqual(b);
+      return textA !== null && textB !== null && textA === textB;
     }
     return false;
   }

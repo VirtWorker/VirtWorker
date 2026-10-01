@@ -77,4 +77,54 @@ describe('logger 级别与脱敏（P1-16）', () => {
     expect(content).not.toContain('abc123');
     expect(content).not.toContain('xyz789');
   });
+
+  test('error 级别落盘时敏感字段掩码', () => {
+    logger.init(dir);
+    console.error('config error', { token: 'abc123' });
+    logger.close();
+
+    const content = fs.readFileSync(path.join(dir, 'main.log'), 'utf8');
+    expect(content).toContain('***');
+    expect(content).not.toContain('abc123');
+  });
+});
+
+describe('logger 缓冲写（PERF-4）', () => {
+  test('info 级日志进缓冲：flush 前不落盘，close 后完整可见', () => {
+    const bufDir = path.join(dir, 'buffer');
+    logger.init(bufDir);
+    console.log('buffered-line-a');
+    console.log('buffered-line-b');
+    // 500ms 缓冲窗口内同步断言：尚未落盘（close 前无 await，定时器不可能触发）
+    expect(fs.existsSync(path.join(bufDir, 'main.log'))).toBe(false);
+    logger.close();
+    const content = fs.readFileSync(path.join(bufDir, 'main.log'), 'utf8');
+    expect(content).toContain('buffered-line-a');
+    expect(content).toContain('buffered-line-b');
+  });
+
+  test('error 级日志直写：无需 close 立即可见', () => {
+    const directDir = path.join(dir, 'direct');
+    logger.init(directDir);
+    console.error('direct-error-line');
+    // error 及以上绕过缓冲立即落盘，崩溃前的关键诊断不丢失
+    const content = fs.readFileSync(path.join(directDir, 'main.log'), 'utf8');
+    expect(content).toContain('direct-error-line');
+    logger.close();
+  });
+
+  test('init 切换目录前冲刷旧缓冲：旧日志进旧文件不串目录', () => {
+    const oldDir = path.join(dir, 'swap-old');
+    const newDir = path.join(dir, 'swap-new');
+    logger.init(oldDir);
+    console.log('belongs-to-old');
+    logger.init(newDir); // 此时旧缓冲必须写进 oldDir 而非 newDir
+    expect(fs.readFileSync(path.join(oldDir, 'main.log'), 'utf8')).toContain('belongs-to-old');
+    logger.close();
+    // newDir 初始化后无任何日志写入：文件不存在同样证明没有串目录
+    const newContent = fs.existsSync(path.join(newDir, 'main.log'))
+      ? fs.readFileSync(path.join(newDir, 'main.log'), 'utf8')
+      : '';
+    expect(newContent).not.toContain('belongs-to-old');
+  });
 });

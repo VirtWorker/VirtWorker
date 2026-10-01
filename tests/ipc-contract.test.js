@@ -509,7 +509,7 @@ describe('IPC 契约：task 事件转发合并节流（O17 回归防护）', () 
 });
 
 describe('IPC 契约：preload 白名单与主进程注册互为镜像（防三层管道脱节）', () => {
-  /** 从 preload.js 源码收集全部 invoke 通道（含 app:ping 直连），确保白名单唯一事实被双向校验 */
+  /** 从 preload.js 源码收集全部 invoke 通道，确保白名单唯一事实被双向校验 */
   function scanPreloadChannels() {
     const source = fs.readFileSync(fileURLToPath(new URL('../preload/preload.js', import.meta.url)), 'utf8');
     return new Set([...source.matchAll(/invoke\('([a-zA-Z0-9:_-]+)'/g)].map((match) => match[1]));
@@ -517,15 +517,13 @@ describe('IPC 契约：preload 白名单与主进程注册互为镜像（防三�
 
   test('preload 暴露的每个通道都已在主进程注册（防白名单漂移出未注册通道）', () => {
     const preloadChannels = scanPreloadChannels();
-    // app:ping 在 main.js 顶层注册（不经 ipc.register），测试环境未加载 main.js，单独放行
-    const missing = [...preloadChannels].filter((channel) => !handlers.has(channel) && channel !== 'app:ping');
+    const missing = [...preloadChannels].filter((channel) => !handlers.has(channel));
     expect(missing).toEqual([]);
   });
 
   test('主进程注册的业务通道均有 preload 入口（防"通道已通、UI 不可达"）', () => {
     const preloadChannels = scanPreloadChannels();
-    const mainChannels = new Set([...handlers.keys(), 'app:ping']);
-    const orphans = [...mainChannels].filter((channel) => !preloadChannels.has(channel));
+    const orphans = [...handlers.keys()].filter((channel) => !preloadChannels.has(channel));
     expect(orphans).toEqual([]);
   });
 });

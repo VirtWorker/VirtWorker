@@ -325,7 +325,7 @@ VW.views.workers = (() => {
         try {
           payload = JSON.parse(file.content);
         } catch (error) {
-          throw new Error('文件内容不是合法的 JSON');
+          throw new Error('文件内容不是合法的 JSON', { cause: error });
         }
         await VW.views.capabilities.importAndReport(payload);
         await refreshAll();
