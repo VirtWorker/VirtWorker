@@ -548,6 +548,30 @@ function update(name, id, patch) {
   return clone(updated);
 }
 
+/**
+ * 批量条件更新（PERF-3）：单次集合遍历 + 单次落盘标记。
+ * 逐条 db.update 是 O(N²)（每条一次全集合 map + persist 标记），批量查收等场景不可承受。
+ * updater 收到条目的克隆并就地修改（与 taskService.mutate 同款克隆纪律），
+ * 未命中条目引用保持不变；返回更新条目的克隆数组（调用方不得据此改写缓存）。
+ */
+function updateWhere(name, condition, updater) {
+  const test = conditionOf(condition);
+  const items = cache.get(name) || [];
+  const updatedItems = [];
+  const next = items.map((item) => {
+    if (!test(item)) return item;
+    const copy = clone(item);
+    updater(copy);
+    updatedItems.push(clone(copy));
+    return copy;
+  });
+  if (updatedItems.length) {
+    cache.set(name, next);
+    persist(name, next);
+  }
+  return updatedItems;
+}
+
 function remove(name, id) {
   const items = (cache.get(name) || []).filter((item) => item.id !== id);
   cache.set(name, items);
@@ -707,6 +731,7 @@ module.exports = {
   count,
   keepLast,
   update,
+  updateWhere,
   remove,
   removeWhere,
   getSettings,

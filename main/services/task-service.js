@@ -673,22 +673,22 @@ function exportTasks(filter = {}) {
   return { exportedAt: nowIso(), count: records.length, total, records };
 }
 
-/** 批量查收：周期内全部「已完成且未查收」的任务（看板「查收结果」页签的一键操作，F8） */
+/** 批量查收（F8）：周期内全部「已完成且未查收」的任务（看板「查收结果」页签的一键操作）。
+ *  单次批量更新（PERF-3）：此前逐条 ack() 为 O(N²)——每条一次全集合 map + persist 标记，
+ *  外加 keepLast 对整个 taskevents 的全量扫描；事件在 succeed 收口时已修剪过（≤200 条/任务），
+ *  批量路径无需重剪，仅追加查收事件并按任务发布 task:updated（渲染层契约不变）。 */
 function ackAll(period = 'month') {
-  const items = db.query('tasks', (task) => {
-    if (!isWithinPeriod(task.createdAt, period)) return false;
-    return task.status === STATUS.succeeded && !task.resultAckedAt;
-  });
-  let acked = 0;
-  items.forEach((task) => {
-    try {
-      ack(task.id);
-      acked += 1;
-    } catch (error) {
-      console.error(`[task] 批量查收任务 ${task.id} 失败:`, error.message || error);
+  const updated = db.updateWhere(
+    'tasks',
+    (task) => isWithinPeriod(task.createdAt, period) && task.status === STATUS.succeeded && !task.resultAckedAt,
+    (task) => {
+      task.resultAckedAt = nowIso();
+      task.updatedAt = nowIso();
+      appendEvent(task, 'acked', '结果已查收');
     }
-  });
-  return { acked };
+  );
+  updated.forEach((task) => publish(task, 'task:updated'));
+  return { acked: updated.length };
 }
 
 /** 孤儿时间线清扫（O13）：任务与其事件分属两个集合文件，删除任务的崩溃窗口可能遗留

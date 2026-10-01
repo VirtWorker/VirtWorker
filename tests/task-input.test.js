@@ -275,4 +275,24 @@ describe('taskService 列表检索与批量查收（O8/F8）', () => {
     // 进行中的任务不受影响
     expect(db.countWhere('tasks', { 'assignee.id': worker.id })).toBe(3);
   });
+
+  test('ackAll 批量路径：追加查收事件并保留任务终态字段（PERF-3）', () => {
+    const t1 = taskService.create({ goal: '批量查收一', assigneeId: worker.id });
+    const t2 = taskService.create({ goal: '批量查收二', assigneeId: worker.id });
+    taskService.succeed(t1.id, { summary: 'ok' });
+    taskService.succeed(t2.id, { summary: 'ok' });
+
+    const before = Date.now();
+    const result = taskService.ackAll('');
+    expect(result.acked).toBe(2);
+
+    for (const task of [t1, t2]) {
+      const stored = db.find('tasks', task.id);
+      expect(stored.status).toBe('succeeded'); // 终态不被改写
+      expect(new Date(stored.resultAckedAt).getTime()).toBeGreaterThanOrEqual(before);
+      const ackedEvents = db.where('taskevents', { taskId: task.id, type: 'acked' });
+      expect(ackedEvents.length).toBe(1); // 每任务恰好一条查收事件
+      expect(ackedEvents[0].message).toBe('结果已查收');
+    }
+  });
 });

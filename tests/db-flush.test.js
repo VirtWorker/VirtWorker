@@ -336,6 +336,33 @@ describe('O11 结构化匹配器：where / countWhere / removeWhere / keepLast',
     expect(db.keepLast('taskevents', { taskId: 'tk_keep' }, 2)).toBe(1);
     expect(db.where('taskevents', { taskId: 'tk_keep' }).map((event) => event.id)).toEqual(['ev_k2', 'ev_k3']);
   });
+
+  test('updateWhere 批量更新：单遍命中、克隆纪律、未命中不受影响（PERF-3）', () => {
+    db.insert('workers', { id: 'wk_u1', name: '批量一', groupIds: [], capabilityIds: [] });
+    db.insert('workers', { id: 'wk_u2', name: '批量二', groupIds: [], capabilityIds: [] });
+    db.insert('workers', { id: 'wk_u3', name: '不命中', groupIds: [], capabilityIds: [] });
+
+    const updated = db.updateWhere(
+      'workers',
+      (worker) => worker.name.startsWith('批量'),
+      (worker) => {
+        worker.name = `已更新-${worker.id}`;
+      }
+    );
+    expect(updated.map((worker) => worker.id).sort()).toEqual(['wk_u1', 'wk_u2']);
+    expect(db.find('workers', 'wk_u1').name).toBe('已更新-wk_u1');
+    expect(db.find('workers', 'wk_u3').name).toBe('不命中');
+
+    // 克隆纪律：改写返回的条目不得污染缓存
+    updated[0].name = '外部改写';
+    expect(db.find('workers', 'wk_u1').name).toBe('已更新-wk_u1');
+
+    // flush 后落盘内容一致
+    db.flush();
+    const payload = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'workers.json'), 'utf8'));
+    const persisted = payload.items.find((worker) => worker.id === 'wk_u2');
+    expect(persisted.name).toBe('已更新-wk_u2');
+  });
 });
 
 describe('taskevents 追加日志：写放大治理（PERF-1）', () => {
