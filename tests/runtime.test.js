@@ -124,6 +124,32 @@ describe('task-runtime 端到端', () => {
     executor.setActive('fast-test');
   });
 
+  test('调大并发上限后 drainWaiting 立即派发等待任务（OPT-6）', async () => {
+    const hold = { ...fastExecutor, name: 'hold2-test', stepDelay: () => 5000 };
+    executor.register(hold);
+    executor.setActive('hold2-test');
+    db.setSettings({ maxConcurrent: 1 });
+    db.removeWhere('tasks', () => true);
+
+    const worker = workerService.createWorker({ name: '扩容者' });
+    const a = taskService.create({ goal: '占槽任务', assigneeId: worker.id });
+    const b = taskService.create({ goal: '等待任务', assigneeId: worker.id });
+    await settle();
+    expect(db.find('tasks', a.id).status).toBe('running');
+    expect(db.find('tasks', b.id).status).toBe('queued'); // 槽位满，排队等待
+
+    // 模拟 settings:update 调大并发上限：IPC 层随后调用 drainWaiting，无需等待槽位释放
+    db.setSettings({ maxConcurrent: 3 });
+    runtime.drainWaiting();
+    await settle();
+    expect(db.find('tasks', b.id).status).toBe('running');
+
+    // 清理：恢复默认并发与快速执行器
+    [a, b].forEach((t) => taskService.cancel(t.id, '测试清理'));
+    db.setSettings({ maxConcurrent: 5 });
+    executor.setActive('fast-test');
+  });
+
   test('派发失败兜底：执行器构建步骤抛错时任务落为 failed 而非卡在排队中', async () => {
     const worker = workerService.createWorker({ name: '异常执行者' });
     const boom = {

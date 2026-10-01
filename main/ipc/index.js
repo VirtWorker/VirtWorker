@@ -17,6 +17,7 @@ const flowService = require('../services/flow-service');
 const shareService = require('../services/share-service');
 const chatService = require('../services/chat-service');
 const httpServer = require('../runtime/http-server');
+const runtime = require('../runtime/task-runtime');
 const dirGrant = require('../runtime/dir-grant');
 const executorRegistry = require('../runtime/executor');
 const vault = require('../util/secret-vault');
@@ -312,18 +313,23 @@ function register() {
   handle('settings:update', (patch) => {
     const before = readSettings();
     const saved = db.setSettings(sanitizeSettings(patch));
+    // 并发上限调大时立即排空等待队列（OPT-6）：滞留任务按优先级马上派发，
+    // 而不是等下一次槽位释放才排空；调小不影响在途任务，无需处理
+    if ((saved.maxConcurrent ?? 0) > (before.maxConcurrent ?? 0)) {
+      runtime.drainWaiting();
+    }
     // 端口变化时重启本地触发端点，新状态通过事件总线广播给渲染层；
     // 重启失败（如新端口被占用）则回滚端口设置并按原端口恢复服务，
     // 保证"已保存的设置"与"实际监听端口"始终一致
     if (saved.apiPort !== before.apiPort) {
-      return httpServer.restart().then(async (runtime) => {
-        if (!runtime.running) {
+      return httpServer.restart().then(async (runtimeStatus) => {
+        if (!runtimeStatus.running) {
           const rolledBack = db.setSettings({ apiPort: before.apiPort });
           const restored = await httpServer.restart();
           bus.emit('app:runtime', { apiServer: restored });
           return decorateSettings({ ...rolledBack, apiPortRollback: before.apiPort });
         }
-        bus.emit('app:runtime', { apiServer: runtime });
+        bus.emit('app:runtime', { apiServer: runtimeStatus });
         return decorateSettings(saved);
       });
     }

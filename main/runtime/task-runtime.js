@@ -567,4 +567,15 @@ function checkActionTimeouts(now = Date.now()) {
   });
 }
 
-module.exports = { start, dispatch, stop, shutdown, MAX_CONCURRENT, capacity, checkActionTimeouts };
+module.exports = {
+  start,
+  dispatch,
+  stop,
+  shutdown,
+  MAX_CONCURRENT,
+  capacity,
+  checkActionTimeouts,
+  /** 排空等待队列（OPT-6）：settings:update 调大 maxConcurrent 后由 IPC 层调用，
+   *  让滞留在等待队列的任务按优先级立即派发，而不再等下一次槽位释放才排空 */
+  drainWaiting
+};
