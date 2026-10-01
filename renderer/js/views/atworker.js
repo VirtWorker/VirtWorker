@@ -189,7 +189,8 @@ VW.views.atworker = (() => {
 
   async function submitConnection(event) {
     event.preventDefault();
-    try {
+    const form = event.target;
+    await VW.util.withSubmitting(form, async () => {
       const connection = await VW.api.chat.createConnection({
         platform: document.getElementById('chat-connection-platform').value,
         name: document.getElementById('chat-connection-name').value,
@@ -200,9 +201,7 @@ VW.views.atworker = (() => {
       syncSecretVisibility();
       await refreshConnections();
       renderConnections();
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    });
   }
 
   // ==================== 编辑 / 凭据轮换连接 ====================

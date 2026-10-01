@@ -312,15 +312,14 @@ VW.views.capabilities = (() => {
 
   async function submitConnector(event) {
     event.preventDefault();
+    const form = event.target;
     const secret = document.getElementById('connector-secret').value;
-    try {
+    await VW.util.withSubmitting(form, async () => {
       await VW.api.capability.authorize(authorizingConnectorKey, secret);
       VW.modal.close('connector-modal');
       await refresh();
       VW.toast.show('授权已保存');
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    });
   }
 
   // ==================== 事件绑定 ====================

@@ -171,6 +171,21 @@ describe('taskService.exportTasks 任务历史导出（F5）', () => {
     const payload = taskService.exportTasks({ period: '', status: 'finished' });
     expect(payload.count).toBe(0); // 刚创建的任务未结束，按「已结束」筛选导出为空
   });
+
+  test('时间线索引化：各任务仅并入自己的事件（BUG-18）', () => {
+    const taskA = taskService.create({ goal: '任务A', assigneeId: worker.id });
+    const taskB = taskService.create({ goal: '任务B', assigneeId: worker.id });
+    const payload = taskService.exportTasks({ period: '' });
+    const recordA = payload.records.find((task) => task.id === taskA.id);
+    const recordB = payload.records.find((task) => task.id === taskB.id);
+    expect(recordA.events.length).toBeGreaterThan(0);
+    expect(recordA.events.every((event) => event.taskId === taskA.id)).toBe(true);
+    expect(recordB.events.every((event) => event.taskId === taskB.id)).toBe(true);
+    // 事件与任务严格一一对应：重复导出 A 的事件数不变（索引化不会串集）
+    const countA = recordA.events.length;
+    const payload2 = taskService.exportTasks({ period: '' });
+    expect(payload2.records.find((task) => task.id === taskA.id).events.length).toBe(countA);
+  });
 });
 
 describe('taskService.retry 任务重试（F1）', () => {

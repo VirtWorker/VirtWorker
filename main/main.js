@@ -30,6 +30,10 @@ let mainWindow = null;
 /** 渲染进程连续崩溃计数（自动恢复上限，防止无限重启循环） */
 let renderCrashCount = 0;
 const MAX_RENDER_CRASH_RECOVERY = 3;
+// 页面加载成功后需稳定运行满该时长才视为"真正恢复"并重置崩溃计数（BUG-19）：
+// 若渲染层"加载成功后必崩"（GPU/坏插件），加载即重置计数会让自动恢复永不触及上限，形成无限崩溃-重启循环
+const RENDER_CRASH_STABLE_MS = 10 * 1000;
+let renderStableTimer = null;
 
 /** 单实例锁：避免重复启动多个应用实例（Windows 桌面应用常规实践） */
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -258,6 +262,11 @@ function createWindow() {
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (details.reason === 'clean-exit') return;
     console.error('[main] 渲染进程异常退出:', details.reason, `exitCode=${details.exitCode}`);
+    // 崩溃发生在稳定期判定之前：取消挂起的重置定时器，让计数继续累加
+    if (renderStableTimer) {
+      clearTimeout(renderStableTimer);
+      renderStableTimer = null;
+    }
     renderCrashCount += 1;
     if (renderCrashCount > MAX_RENDER_CRASH_RECOVERY) {
       console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，已弹系统通知告知用户');
@@ -269,7 +278,12 @@ function createWindow() {
     }, 1000);
   });
   mainWindow.webContents.on('did-finish-load', () => {
-    renderCrashCount = 0; // 正常加载成功即重置计数
+    // 延迟重置计数（BUG-19）：加载成功 ≠ 恢复成功，稳定运行满 RENDER_CRASH_STABLE_MS 才算真正恢复
+    if (renderStableTimer) clearTimeout(renderStableTimer);
+    renderStableTimer = setTimeout(() => {
+      renderStableTimer = null;
+      renderCrashCount = 0;
+    }, RENDER_CRASH_STABLE_MS);
   });
 
   mainWindow.on('closed', () => {

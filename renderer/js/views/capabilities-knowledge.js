@@ -103,7 +103,7 @@ VW.views.capabilitiesKnowledge = (() => {
   async function submitKnowledge(event) {
     event.preventDefault();
     const form = document.getElementById('knowledge-form');
-    try {
+    await VW.util.withSubmitting(form, async () => {
       const created = await VW.api.capability.createKnowledge({
         name: form.name.value,
         desc: form.desc.value,
@@ -113,9 +113,7 @@ VW.views.capabilitiesKnowledge = (() => {
       VW.modal.close('knowledge-modal');
       await VW.capCtx.refresh();
       VW.toast.show(`知识库已索引：${created.source.chunkCount} 条片段`);
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    });
   }
 
   function bind() {

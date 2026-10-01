@@ -207,24 +207,22 @@ VW.views.workers = (() => {
 
   // ==================== 新建 / 编辑 Worker ====================
 
-  function submitWorker(event) {
+  async function submitWorker(event) {
     event.preventDefault();
     const form = event.target;
-    const payload = {
-      name: form.name.value,
-      role: form.role.value,
-      desc: form.desc.value
-    };
-    const request = editingWorkerId
-      ? VW.api.worker.update(editingWorkerId, payload)
-      : VW.api.worker.create(payload);
-    request
-      .then(async (worker) => {
-        VW.modal.close('worker-modal');
-        await refreshAll();
-        VW.toast.show(editingWorkerId ? `Worker「${worker.name}」已保存` : `数字员工「${worker.name}」创建成功`);
-      })
-      .catch((error) => VW.toast.fromError(error));
+    await VW.util.withSubmitting(form, async () => {
+      const payload = {
+        name: form.name.value,
+        role: form.role.value,
+        desc: form.desc.value
+      };
+      const worker = editingWorkerId
+        ? await VW.api.worker.update(editingWorkerId, payload)
+        : await VW.api.worker.create(payload);
+      VW.modal.close('worker-modal');
+      await refreshAll();
+      VW.toast.show(editingWorkerId ? `Worker「${worker.name}」已保存` : `数字员工「${worker.name}」创建成功`);
+    });
   }
 
   // ==================== 新建 / 编辑 Group ====================
@@ -259,19 +257,17 @@ VW.views.workers = (() => {
     VW.modal.open('group-modal');
   }
 
-  function submitGroup(event) {
+  async function submitGroup(event) {
     event.preventDefault();
     const form = event.target;
-    const memberIds = Array.from(form.querySelectorAll('#group-member-list input:checked')).map((input) => input.value);
-    const payload = { name: form.name.value, desc: form.desc.value, memberIds };
-    const request = editingGroupId ? VW.api.group.update(editingGroupId, payload) : VW.api.group.create(payload);
-    request
-      .then(async (group) => {
-        VW.modal.close('group-modal');
-        await refreshAll();
-        VW.toast.show(editingGroupId ? `Group「${group.name}」已保存` : `Group「${group.name}」创建成功`);
-      })
-      .catch((error) => VW.toast.fromError(error));
+    await VW.util.withSubmitting(form, async () => {
+      const memberIds = Array.from(form.querySelectorAll('#group-member-list input:checked')).map((input) => input.value);
+      const payload = { name: form.name.value, desc: form.desc.value, memberIds };
+      const group = editingGroupId ? await VW.api.group.update(editingGroupId, payload) : await VW.api.group.create(payload);
+      VW.modal.close('group-modal');
+      await refreshAll();
+      VW.toast.show(editingGroupId ? `Group「${group.name}」已保存` : `Group「${group.name}」创建成功`);
+    });
   }
 
   // ==================== 初始化 ====================

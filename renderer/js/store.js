@@ -76,8 +76,13 @@ VW.store = (() => {
   }
 
   function notify(keys) {
+    // 同一 handler 可能订阅多个切片（如 ['queue','ui']）：收集去重后每个 handler 只执行一次（OPT-3），
+    // 避免一次 set(patch) 触发多切片变更时同个视图连续重绘 N 遍
+    const called = new Set();
     keys.forEach((key) => {
       subscribers.get(key)?.forEach((handler) => {
+        if (called.has(handler)) return;
+        called.add(handler);
         try {
           handler(state);
         } catch (error) {

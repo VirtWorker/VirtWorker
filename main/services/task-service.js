@@ -610,12 +610,19 @@ function purgeExpired(days = 90, now = Date.now()) {
 }
 
 /** 导出任务历史（含完整时间线）：与 list 共用筛选口径，供归档与外部报表。
- *  强制忽略分页参数（导出即全量口径），period 传空字符串表示导出全部历史。 */
+ *  强制忽略分页参数（导出即全量口径），period 传空字符串表示导出全部历史。
+ *  时间线一次性建 taskId 索引（BUG-18）：此前逐任务 db.where 全量遍历 taskevents 为 O(N×M)，
+ *  数万任务×数十万事件可卡死主进程数分钟，索引化后降为 O(N+M)。 */
 function exportTasks(filter = {}) {
   const { page, pageSize, ...rest } = filter;
   const { items, total } = list({ ...rest, limit: 0 });
   // tasks 集合不含时间线（v2 起拆分），导出时按 detail 口径并入
-  const records = items.map((task) => ({ ...task, events: listEvents(task.id) }));
+  const eventsById = new Map();
+  for (const event of db.all('taskevents')) {
+    if (!eventsById.has(event.taskId)) eventsById.set(event.taskId, []);
+    eventsById.get(event.taskId).push(event);
+  }
+  const records = items.map((task) => ({ ...task, events: eventsById.get(task.id) || [] }));
   return { exportedAt: nowIso(), count: records.length, total, records };
 }
 

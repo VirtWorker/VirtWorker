@@ -134,14 +134,14 @@ VW.views.capabilitiesFlows = (() => {
 
   async function submitFlow(event) {
     event.preventDefault();
-    syncNodesFromForm();
     const form = document.getElementById('flow-form');
-    if (!flowNodes.length) {
-      VW.toast.show('请至少添加一个步骤');
-      return;
-    }
-    const payload = { name: form.name.value, desc: form.desc.value, nodes: flowNodes };
-    try {
+    await VW.util.withSubmitting(form, async () => {
+      syncNodesFromForm();
+      if (!flowNodes.length) {
+        VW.toast.show('请至少添加一个步骤');
+        return;
+      }
+      const payload = { name: form.name.value, desc: form.desc.value, nodes: flowNodes };
       if (editingFlowId) {
         await VW.api.flow.update(editingFlowId, payload);
         VW.toast.show('流程已更新');
@@ -151,9 +151,7 @@ VW.views.capabilitiesFlows = (() => {
       }
       VW.modal.close('flow-modal');
       await VW.capCtx.refresh();
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    });
   }
 
   function bind() {

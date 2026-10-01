@@ -128,6 +128,26 @@ VW.util = (() => {
     }
   }
 
+  /**
+   * 表单提交在途锁（OPT-4）：await 期间再次提交直接忽略，防止双击重复创建任务/Worker 等。
+   * 以 form 元素为锁粒度，并在途时禁用提交按钮给出视觉反馈；结束（含失败）后恢复。
+   * 失败统一经 toast.fromError 提示（与 submitAction 同款约定），不向调用方抛出。
+   */
+  async function withSubmitting(form, action) {
+    if (!form || form.dataset.submitting === '1') return;
+    form.dataset.submitting = '1';
+    const submitBtn = form.querySelector('[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await action();
+    } catch (error) {
+      VW.toast.fromError(error);
+    } finally {
+      delete form.dataset.submitting;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
   return {
     escapeHtml,
     safeStyle,
@@ -139,6 +159,7 @@ VW.util = (() => {
     historyListHtml,
     renderList,
     submitAction,
+    withSubmitting,
     PRIORITY_LABEL,
     ACTION_LABEL
   };

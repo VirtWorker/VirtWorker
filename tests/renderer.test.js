@@ -59,7 +59,8 @@ describe('store：切片订阅与相等性跳过（O9）', () => {
     const seen = [];
     const off = VW.store.on(['tasks', 'stats'], () => seen.push('fired'));
     VW.store.set({ tasks: [{ id: 'tk_1' }], stats: { total: 1 } });
-    expect(seen.length).toBe(2); // 两个切片都变化：同一处理器按切片各触发一次（与既有行为一致）
+    // 两个切片都变化：多切片订阅的 handler 同一次 set 去重只执行一次（OPT-3）
+    expect(seen.length).toBe(1);
 
     seen.length = 0;
     // 内容相同（主进程克隆数据每次都是新引用）：不应触发渲染
@@ -70,6 +71,18 @@ describe('store：切片订阅与相等性跳过（O9）', () => {
     VW.store.set({ tasks: [{ id: 'tk_2' }] });
     expect(seen.length).toBe(1);
     off();
+  });
+
+  test('不同 handler 订阅同一切片各自触发；同 handler 多切片只触发一次（OPT-3 回归防护）', () => {
+    const seenA = [];
+    const seenB = [];
+    const offA = VW.store.on('tasks', () => seenA.push('a'));
+    const offB = VW.store.on(['tasks', 'workers'], () => seenB.push('b'));
+    VW.store.set({ tasks: [{ id: 'tk_x' }], workers: [{ id: 'wk_x' }] });
+    expect(seenA.length).toBe(1);
+    expect(seenB.length).toBe(1); // 此前为 2（tasks、workers 各一次），去重后为 1
+    offA();
+    offB();
   });
 
   test('merge 未变字段跳过通知（侧边栏搜索等高频 ui 合并不再触发全量重渲染）', () => {
@@ -97,6 +110,58 @@ describe('store：切片订阅与相等性跳过（O9）', () => {
     });
     const options = VW.store.assigneeOptions();
     expect(options.map((item) => item.value)).toEqual(['wk_1', 'gp_1', 'fl_1']);
+  });
+});
+
+describe('util.withSubmitting（OPT-4：表单提交在途锁）', () => {
+  function makeForm() {
+    const form = document.createElement('form');
+    const btn = document.createElement('button');
+    btn.type = 'submit';
+    form.appendChild(btn);
+    document.body.appendChild(form);
+    return { form, btn };
+  }
+
+  test('在途期间重复提交被忽略，结束后锁释放且按钮恢复', async () => {
+    const { form, btn } = makeForm();
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let runs = 0;
+
+    const first = VW.util.withSubmitting(form, async () => {
+      runs += 1;
+      await gate;
+    });
+    // 在途期间：锁生效、提交按钮禁用
+    await VW.util.withSubmitting(form, async () => {
+      runs += 1;
+    });
+    expect(runs).toBe(1); // 第二次提交被在途锁忽略
+    expect(btn.disabled).toBe(true);
+
+    release();
+    await first;
+    expect(btn.disabled).toBe(false); // 结束（含 await 链）后恢复
+
+    await VW.util.withSubmitting(form, async () => {
+      runs += 1;
+    });
+    expect(runs).toBe(2); // 锁已释放，可再次提交
+    form.remove();
+  });
+
+  test('action 抛错时锁仍释放、按钮恢复，错误经 toast.fromError 兜底', async () => {
+    const { form, btn } = makeForm();
+    const toasted = [];
+    window.VW.toast = { fromError: (error) => toasted.push(error) };
+    await VW.util.withSubmitting(form, async () => {
+      throw new Error('创建失败');
+    });
+    expect(btn.disabled).toBe(false);
+    expect(toasted.length).toBe(1);
+    expect(toasted[0].message).toBe('创建失败');
+    form.remove();
   });
 });
 

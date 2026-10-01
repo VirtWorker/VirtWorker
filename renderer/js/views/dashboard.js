@@ -572,23 +572,21 @@ VW.views.dashboard = (() => {
     VW.modal.open('task-modal');
   }
 
-  function submitCreate(event) {
+  async function submitCreate(event) {
     event.preventDefault();
     const form = event.target;
-    VW.api.task
-      .create({
+    await VW.util.withSubmitting(form, async () => {
+      const task = await VW.api.task.create({
         assigneeId: form.assigneeId.value,
         goal: form.goal.value,
         workspace: form.workspace.value,
         priority: form.priority.value,
         confirmFirst: form.confirmFirst.checked
-      })
-      .then(async (task) => {
-        VW.modal.close('task-modal');
-        VW.toast.show(`任务「${task.title}」已创建`);
-        await refresh({ silent: true });
-      })
-      .catch((error) => VW.toast.fromError(error));
+      });
+      VW.modal.close('task-modal');
+      VW.toast.show(`任务「${task.title}」已创建`);
+      await refresh({ silent: true });
+    });
   }
 
   // ==================== 初始化 ====================

@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 let encryptionAvailable = true;
+let decryptShouldThrow = false;
 const electronResolved = require.resolve('electron');
 const stubModule = new Module(electronResolved, null);
 stubModule.filename = electronResolved;
@@ -20,13 +21,17 @@ stubModule.exports = {
   safeStorage: {
     isEncryptionAvailable: () => encryptionAvailable,
     encryptString: (text) => Buffer.from(`enc:${text}`, 'utf8'),
-    // 真实 safeStorage.decryptString 返回 string，桩保持同型
-    decryptString: (buffer) => buffer.toString('utf8').replace(/^enc:/, '')
+    // 真实 safeStorage.decryptString 返回 string，桩保持同型；decryptShouldThrow 模拟 DPAPI 损坏（BUG-17）
+    decryptString: (buffer) => {
+      if (decryptShouldThrow) throw new Error('decryption failed');
+      return buffer.toString('utf8').replace(/^enc:/, '');
+    }
   }
 };
 require.cache[electronResolved] = stubModule;
 
 const vault = require('../main/util/secret-vault');
+const bus = require('../main/runtime/event-bus');
 
 describe('secret-vault 凭据保险箱', () => {
   test('safeStorage 可用时加密往返，密文不含明文', () => {
@@ -64,5 +69,48 @@ describe('secret-vault 凭据保险箱', () => {
     expect(vault.mask('abc')).toBe('••••');
     expect(vault.mask('')).toBe('');
     expect(vault.mask(null)).toBe('');
+  });
+
+  test('解密异常降级返回空串并推送一次告警，不向上抛错（BUG-17）', () => {
+    encryptionAvailable = true;
+    const sealed = vault.seal('will-fail');
+    const notices = [];
+    const off = bus.on((notice) => notices.push(notice));
+    try {
+      expect(vault.open(sealed)).toBe('will-fail'); // 先成功解密一次，确保告警状态为复位（与用例顺序无关）
+      decryptShouldThrow = true;
+      // 跨机器迁移/DPAPI 损坏：open 不抛错，返回空串让上层走「未配置」分支
+      expect(vault.open(sealed)).toBe('');
+      expect(vault.open(sealed)).toBe('');
+      const decryptNotices = notices.filter(
+        (item) => item.type === 'app:notice' && item.payload.title === '凭据解密失败'
+      );
+      expect(decryptNotices.length).toBe(1); // 高频调用只告警一次，不刷爆通知
+      expect(decryptNotices[0].payload.level).toBe('error');
+    } finally {
+      off();
+      decryptShouldThrow = false;
+    }
+  });
+
+  test('解密恢复成功后告警状态复位，再次失败会重新告警（BUG-17）', () => {
+    encryptionAvailable = true;
+    const sealed = vault.seal('round-trip');
+    const notices = [];
+    const off = bus.on((notice) => notices.push(notice));
+    try {
+      expect(vault.open(sealed)).toBe('round-trip'); // 先确保告警状态为复位（与用例顺序无关）
+      decryptShouldThrow = true;
+      expect(vault.open(sealed)).toBe(''); // 失败：告警
+      expect(vault.open(sealed)).toBe(''); // 连续失败：抑制
+      decryptShouldThrow = false;
+      expect(vault.open(sealed)).toBe('round-trip'); // 成功：复位 decryptBroken
+      decryptShouldThrow = true;
+      expect(vault.open(sealed)).toBe(''); // 再次失败：重新告警
+      expect(notices.filter((item) => item.type === 'app:notice' && item.payload.title === '凭据解密失败').length).toBe(2);
+    } finally {
+      off();
+      decryptShouldThrow = false;
+    }
   });
 });

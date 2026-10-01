@@ -14,6 +14,27 @@ const electron = (() => {
 
 const safeStorage = electron && typeof electron === 'object' ? electron.safeStorage : null;
 
+// 解密失败只告警一次，避免 http-server 认证等高频调用方把通知/日志刷爆；解密恢复成功后复位
+let decryptBroken = false;
+
+/** 解密失败告警（BUG-17）：跨机器迁移 userData 或 DPAPI 损坏时 decryptString 会抛错，
+ *  不捕获会沿调用链导致 http-server 认证 500、automation 复制命令 INTERNAL。 */
+function warnDecryptFailure(error) {
+  if (decryptBroken) return;
+  decryptBroken = true;
+  console.error('[secret-vault] 凭据解密失败（密文损坏或跨机器迁移）:', error?.message || error);
+  // 惰性 require 避免与上层模块的潜在加载环；event-bus 无依赖不会失败
+  try {
+    require('../runtime/event-bus').emit('app:notice', {
+      level: 'error',
+      title: '凭据解密失败',
+      message: '已保存的凭据无法解密（可能因系统密钥损坏或数据目录被迁移），请重新在对应功能中填写密钥。'
+    });
+  } catch (notifyError) {
+    // 总线不可用时（如纯 Node 测试环境）仅保留日志
+  }
+}
+
 function isEncryptionAvailable() {
   try {
     return Boolean(safeStorage && safeStorage.isEncryptionAvailable());
@@ -32,10 +53,19 @@ function seal(plain) {
 
 function open(sealed) {
   if (!sealed || !sealed.value) return '';
-  if (sealed.mode === 'encrypted' && safeStorage) {
-    return safeStorage.decryptString(Buffer.from(sealed.value, 'base64'));
+  try {
+    if (sealed.mode === 'encrypted' && safeStorage) {
+      const plain = safeStorage.decryptString(Buffer.from(sealed.value, 'base64'));
+      decryptBroken = false; // 解密恢复成功，允许后续失败再次告警
+      return plain;
+    }
+    return Buffer.from(sealed.value, 'base64').toString('utf8');
+  } catch (error) {
+    // 降级返回空串而非向上抛错：调用方（http-server 认证、automation 命令拼装）按"未配置"分支走，
+    // 服务保持可用；仅首次失败推送告警引导用户重新填写密钥（BUG-17）
+    warnDecryptFailure(error);
+    return '';
   }
-  return Buffer.from(sealed.value, 'base64').toString('utf8');
 }
 
 /** 仅用于界面展示的掩码，绝不回传明文 */
