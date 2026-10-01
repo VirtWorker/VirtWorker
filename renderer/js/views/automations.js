@@ -120,17 +120,12 @@ VW.views.automations = (() => {
     renderStats();
     renderApiStatus();
 
-    const list = document.getElementById('automation-list');
-    const empty = document.getElementById('automation-empty');
-    const items = store.state.automations;
-
-    if (!items.length) {
-      list.innerHTML = '';
-      empty.classList.remove('hidden');
-      return;
-    }
-    empty.classList.add('hidden');
-    list.innerHTML = items.map(cardHtml).join('');
+    VW.util.renderList({
+      container: document.getElementById('automation-list'),
+      empty: document.getElementById('automation-empty'),
+      items: store.state.automations,
+      itemHtml: cardHtml
+    });
   }
 
   /** 执行者筛选器：随 Worker/Group 数据变化重建 */

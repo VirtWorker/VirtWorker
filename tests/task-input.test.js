@@ -168,7 +168,7 @@ describe('taskService.exportTasks 任务历史导出（F5）', () => {
 
   test('导出遵循筛选口径（period / status）', () => {
     taskService.create({ goal: '筛选导出任务', assigneeId: worker.id });
-    const payload = taskService.exportTasks({ period: '', status: '已结束' });
+    const payload = taskService.exportTasks({ period: '', status: 'finished' });
     expect(payload.count).toBe(0); // 刚创建的任务未结束，按「已结束」筛选导出为空
   });
 });

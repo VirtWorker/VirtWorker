@@ -150,8 +150,9 @@ function uninstall(id) {
     db.removeWhere('chunks', { capabilityId: id });
     invalidateChunkIndex();
   }
-  db.remove('capabilities', id);
+  // 先摘除（Worker 侧校验链路仍完整）再删除能力本体，失败时能力仍在，可重试
   detachFromWorkers(id);
+  db.remove('capabilities', id);
   bus.emit('capability:removed', { id, type: capability.type });
   return { id };
 }
@@ -466,12 +467,17 @@ function searchForWorker(workerId, query, limit = 3) {
 
 /** 能力被删除时从所有 Worker 上摘除，避免悬空引用（走 worker-service 统一校验、落库与事件广播） */
 function detachFromWorkers(capabilityId) {
+  // 摘除不走 updateWorker 的全量校验（O13）：卸载是有意的移除，
+  // 不能因某个 Worker 挂载列表中存在其它悬空能力 ID 而被「所选能力中包含已卸载的项」反向阻断
   db.all('workers')
     .filter((worker) => (worker.capabilityIds || []).includes(capabilityId))
     .forEach((worker) => {
-      workerService.updateWorker(worker.id, {
-        capabilityIds: worker.capabilityIds.filter((id) => id !== capabilityId)
+      const next = db.update('workers', worker.id, {
+        ...worker,
+        capabilityIds: worker.capabilityIds.filter((id) => id !== capabilityId),
+        updatedAt: nowIso()
       });
+      bus.emit('worker:updated', workerService.decorateWorker(next));
     });
 }
 

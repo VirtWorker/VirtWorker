@@ -11,12 +11,11 @@ const bus = require('../runtime/event-bus');
 const vault = require('../util/secret-vault');
 const taskService = require('./task-service');
 const { createId } = require('../util/id');
+const { requiredText, optionalText, assertUniqueName, assertEnum } = require('../util/validate');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
 
 const TRIGGER_LABEL = { schedule: '定时', event: '事件', api: 'API' };
-/** 界面筛选/展示用（与 index.html 中的 option 文本对应） */
-const TRIGGER_FILTER = { 定时: 'schedule', 事件: 'event', API: 'api' };
 
 const SCHEDULE_MODES = {
   interval: '按间隔重复',
@@ -33,7 +32,8 @@ const EVENT_SOURCES = {
 
 const WEEKDAY_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
-const STATUS_FILTER = { 已启用: true, 已停用: false };
+/** 状态筛选枚举（O12）：IPC 契约只认存储枚举 */
+const STATUS_FILTER = { enabled: true, disabled: false };
 
 function clampInt(value, min, max, fallback) {
   const number = Number.parseInt(value, 10);
@@ -118,7 +118,10 @@ function computeNextRun(trigger, from = new Date()) {
 function normalizeTrigger(input = {}) {
   const type = TRIGGER_LABEL[input.type] ? input.type : 'schedule';
   if (type === 'schedule') {
-    const mode = SCHEDULE_MODES[input.schedule?.mode] ? input.schedule.mode : 'daily';
+    // O12：缺省视为 daily（内部默认值语义）；显式传入无效模式一律校验失败
+    const mode = input.schedule?.mode === undefined
+      ? 'daily'
+      : assertEnum(input.schedule.mode, Object.keys(SCHEDULE_MODES), { label: '定时模式' });
     const schedule = { mode };
     if (mode === 'interval') schedule.everyMinutes = clampInt(input.schedule?.everyMinutes, 1, 1440, 30);
     if (mode === 'hourly') schedule.minute = clampInt(input.schedule?.minute, 0, 59, 0);
@@ -172,6 +175,19 @@ function buildApiCredential(existing) {
   const plain = typeof existing === 'string' && existing ? existing : `vw_${randomBytes(12).toString('hex')}`;
   const sealed = vault.seal(plain);
   return { sealed, mask: vault.mask(plain), mode: sealed.mode };
+}
+
+/** 组装 API 触发的调用命令（含明文 Token，仅供主进程写剪贴板，绝不下发渲染层） */
+function buildInvocation(id, port) {
+  const automation = getOrThrow(id);
+  if (automation.trigger.type !== 'api') {
+    throw fail.invalidState('仅 API 触发的自动任务可以复制调用命令');
+  }
+  const token = revealApiToken(automation);
+  const base = Number(port) || 17891;
+  const payload = JSON.stringify({ goal: '' }).replace(/"/g, String.fromCharCode(92) + '"'); // {"goal":""} → 转义内嵌引号供 shell 使用
+  const command = `curl -X POST http://127.0.0.1:${base}/automations/${automation.id}/run -H "X-VirtWorker-Token: ${token}" -H "Content-Type: application/json" -d "${payload}"`;
+  return { command, tokenMask: automation.trigger.api?.token?.mask || '' };
 }
 
 /** 取明文 Token（仅供主进程校验与复制到剪贴板，绝不下发渲染层）；兼容旧版明文数据 */
@@ -279,18 +295,19 @@ function list(filter = {}) {
   if (keyword) {
     items = items.filter((item) => `${item.name} ${item.desc} ${item.input.goal}`.toLowerCase().includes(keyword));
   }
-  if (filter.executorId && filter.executorId !== '全部执行者') {
+  if (filter.executorId) {
     items = items.filter((item) => item.executor.id === filter.executorId);
   }
-  const triggerType = TRIGGER_FILTER[filter.triggerType] || (TRIGGER_LABEL[filter.triggerType] ? filter.triggerType : null);
+  const triggerType = TRIGGER_LABEL[filter.triggerType] ? filter.triggerType : null;
   if (triggerType) items = items.filter((item) => item.trigger.type === triggerType);
 
   const enabled = STATUS_FILTER[filter.status];
   if (enabled !== undefined) items = items.filter((item) => item.enabled === enabled);
 
-  const sort = filter.sort || '最近创建';
+  // 排序枚举（O12）：'' = 最近创建（默认），'updated' = 最近更新
+  const sortByUpdated = filter.sort === 'updated';
   items = [...items].sort((a, b) =>
-    sort === '最近更新' ? b.updatedAt.localeCompare(a.updatedAt) : b.createdAt.localeCompare(a.createdAt)
+    sortByUpdated ? b.updatedAt.localeCompare(a.updatedAt) : b.createdAt.localeCompare(a.createdAt)
   );
   return { items: items.map(decorate), total: items.length };
 }
@@ -316,10 +333,8 @@ function detail(id) {
 // ==================== 增删改 ====================
 
 function create(params = {}) {
-  const name = String(params.name ?? '').trim();
-  if (!name) throw fail.validation('请填写自动任务名称');
-  if (name.length > 40) throw fail.validation('名称最多 40 个字符');
-  if (listAll().some((item) => item.name === name)) throw fail.conflict(`已存在同名自动任务「${name}」`);
+  const name = requiredText(params.name, { label: '自动任务名称', max: 40 });
+  assertUniqueName(listAll(), name, { label: '自动任务' });
 
   const executor = taskService.resolveAssignee(params.executorId);
   const trigger = normalizeTrigger(params.trigger);
@@ -327,7 +342,7 @@ function create(params = {}) {
   const automation = {
     id: createId('at'),
     name,
-    desc: String(params.desc ?? '').trim().slice(0, 100),
+    desc: optionalText(params.desc, 100),
     enabled: params.enabled === undefined ? true : Boolean(params.enabled),
     trigger,
     executor: { type: executor.type, id: executor.id, name: executor.name },
@@ -351,14 +366,11 @@ function update(id, patch = {}) {
   const next = { ...automation };
 
   if (patch.name !== undefined) {
-    const name = String(patch.name).trim();
-    if (!name) throw fail.validation('请填写自动任务名称');
-    if (listAll().some((item) => item.id !== id && item.name === name)) {
-      throw fail.conflict(`已存在同名自动任务「${name}」`);
-    }
+    const name = requiredText(patch.name, { label: '自动任务名称', max: 40 });
+    assertUniqueName(listAll(), name, { label: '自动任务', exceptId: id });
     next.name = name;
   }
-  if (patch.desc !== undefined) next.desc = String(patch.desc).trim().slice(0, 100);
+  if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
   if (patch.input !== undefined) next.input = normalizeInput({ ...automation.input, ...patch.input });
   if (patch.notify !== undefined) next.notify = normalizeNotify({ ...automation.notify, ...patch.notify });
   if (patch.executorId !== undefined) {
@@ -544,5 +556,6 @@ module.exports = {
   earliestNextRun,
   listEnabledByEvent,
   regenerateToken,
-  revealApiToken
+  revealApiToken,
+  buildInvocation
 };

@@ -15,8 +15,10 @@ VW.modal = (() => {
     return typeof id === 'string' ? document.getElementById(id) : id;
   }
 
+  /** 栈顶弹窗：以 openStack（打开顺序）为准——DOM 顺序在叠加弹窗时不可靠（O18） */
   function topmost() {
-    return document.querySelector('.modal-mask:not(.hidden)');
+    const entry = openStack[openStack.length - 1];
+    return entry ? el(entry.id) : null;
   }
 
   function open(id) {
@@ -37,9 +39,11 @@ VW.modal = (() => {
     // 只移除该弹窗自己的栈条目：交叉关闭时不能误伤其上层弹窗的焦点还原记录
     const index = openStack.findIndex((entry) => entry.id === target.id);
     const entry = index >= 0 ? openStack.splice(index, 1)[0] : null;
-    // 仅当关闭的是栈顶时才还原焦点（关闭中间层时上层弹窗仍持有焦点语义）
-    const top = openStack[openStack.length - 1];
-    if (!top && entry?.trigger && document.contains(entry.trigger)) entry.trigger.focus();
+    // 关闭栈顶（splice 后 index === 栈长）才把焦点还原到它的触发元素；
+    // 关闭中间层时上层弹窗仍持有焦点语义，不做还原
+    if (entry && index === openStack.length && entry.trigger && document.contains(entry.trigger)) {
+      entry.trigger.focus();
+    }
   }
 
   function isOpen(id) {
@@ -59,10 +63,10 @@ VW.modal = (() => {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (VW.dropdown && VW.dropdown.isOpen()) return; // Esc 先关下拉
-      const opened = Array.from(document.querySelectorAll('.modal-mask')).filter(
-        (mask) => !mask.classList.contains('hidden')
-      );
-      if (opened.length) close(opened[opened.length - 1].id);
+      // 按打开顺序关栈顶弹窗（O18）：此前按 DOM 顺序取最后者，
+      // 叠加弹窗（如向导上打开连接弹窗）时 Esc 会关错层
+      const entry = openStack[openStack.length - 1];
+      if (entry) close(entry.id);
       return;
     }
 

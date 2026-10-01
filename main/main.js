@@ -86,6 +86,12 @@ function startDailyMaintenance() {
       console.error('[main] 每日维护：过期任务清理失败:', error.message);
     }
     try {
+      const orphans = taskService.purgeOrphanEvents();
+      if (orphans) console.log(`[main] 每日维护：清扫孤儿任务时间线 ${orphans} 条（O13）`);
+    } catch (error) {
+      console.error('[main] 每日维护：孤儿时间线清扫失败:', error.message);
+    }
+    try {
       const result = db.backup();
       if (result.files) console.log(`[main] 每日维护：数据快照完成（${result.files} 个文件）→ ${result.dir}`);
     } catch (error) {

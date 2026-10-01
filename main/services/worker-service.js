@@ -10,6 +10,7 @@ const automationService = require('./automation-service');
 const chatService = require('./chat-service');
 const taskService = require('./task-service');
 const { createId } = require('../util/id');
+const { requiredText, optionalText, assertUniqueName, assertEnum, requireArray } = require('../util/validate');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
 
@@ -25,15 +26,18 @@ const AVATAR_COLORS = [
   'linear-gradient(135deg,#9ae0e8,#22aab5)'
 ];
 
-/** 界面上的中文枚举 → 存储枚举 */
-function normalizeEnv(value) {
-  return value === 'local' || value === '本地' ? 'local' : 'cloud';
+/** 枚举契约（O12）：外部输入只接受存储枚举，非法值一律校验失败（不再接受中文别名或静默兜底） */
+function normalizeEnv(value, { allowEmpty = true } = {}) {
+  if (value === undefined || value === null || value === '') {
+    if (allowEmpty) return 'cloud';
+    throw fail.validation('请选择运行环境');
+  }
+  return assertEnum(value, ['cloud', 'local'], { label: '运行环境' });
 }
 
 function normalizeStatus(value) {
-  if (value === 'offline' || value === '离线') return STATUS.offline;
-  if (value === 'online' || value === '在线') return STATUS.online;
-  return null;
+  if (value === undefined || value === null || value === '') return null;
+  return assertEnum(value, [STATUS.online, STATUS.offline], { label: '运行状态' });
 }
 
 /** 附加展示字段（环境中文名、已挂载能力数），保持存储数据与展示解耦 */
@@ -63,40 +67,36 @@ function listWorkers(filter = {}) {
       `${w.name} ${w.desc || ''} ${w.role}`.toLowerCase().includes(keyword)
     );
   }
-  if (filter.role && filter.role !== '全部角色') {
+  if (filter.role) {
     items = items.filter((w) => w.role === filter.role);
   }
-  if (filter.env && filter.env !== '全部环境') {
-    items = items.filter((w) => w.env === normalizeEnv(filter.env));
+  if (filter.env) {
+    items = items.filter((w) => w.env === normalizeEnv(filter.env, { allowEmpty: false }));
   }
   const status = normalizeStatus(filter.status);
   if (status) {
     items = items.filter((w) => w.status === status);
   }
 
-  const sort = filter.sort || '默认排序';
-  if (sort === '名称') {
+  const sort = filter.sort || '';
+  if (sort === 'name') {
     items = [...items].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  } else if (sort === '最近创建') {
+  } else if (sort === 'newest') {
     items = [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
   return items.map(decorateWorker);
 }
 
 function createWorker(params = {}) {
-  const name = String(params.name ?? '').trim();
-  if (!name) throw fail.validation('请填写 Worker 名称');
-  if (name.length > 20) throw fail.validation('Worker 名称最多 20 个字符');
-  if (allWorkers().some((w) => w.name === name)) {
-    throw fail.conflict(`已存在同名 Worker「${name}」`);
-  }
+  const name = requiredText(params.name, { label: 'Worker 名称', max: 20 });
+  assertUniqueName(allWorkers(), name, { label: 'Worker' });
 
   const worker = {
     id: createId('wk'),
     name,
-    role: ROLES.includes(params.role) ? params.role : ROLES[0],
+    role: params.role === undefined ? ROLES[0] : assertEnum(params.role, ROLES, { label: '角色' }),
     env: normalizeEnv(params.env),
-    desc: String(params.desc ?? '').trim().slice(0, 100),
+    desc: optionalText(params.desc, 100),
     status: STATUS.online,
     avatarColor: AVATAR_COLORS[allWorkers().length % AVATAR_COLORS.length],
     capabilityIds: [],
@@ -116,24 +116,21 @@ function updateWorker(id, patch = {}) {
 
   const next = { ...worker };
   if (patch.name !== undefined) {
-    const name = String(patch.name).trim();
-    if (!name) throw fail.validation('请填写 Worker 名称');
-    if (name.length > 20) throw fail.validation('Worker 名称最多 20 个字符');
-    if (allWorkers().some((w) => w.id !== id && w.name === name)) {
-      throw fail.conflict(`已存在同名 Worker「${name}」`);
-    }
+    const name = requiredText(patch.name, { label: 'Worker 名称', max: 20 });
+    assertUniqueName(allWorkers(), name, { label: 'Worker', exceptId: id });
     next.name = name;
   }
-  if (patch.role !== undefined && ROLES.includes(patch.role)) next.role = patch.role;
-  if (patch.env !== undefined) next.env = normalizeEnv(patch.env);
-  if (patch.desc !== undefined) next.desc = String(patch.desc).trim().slice(0, 100);
+  if (patch.role !== undefined) next.role = assertEnum(patch.role, ROLES, { label: '角色' });
+  if (patch.env !== undefined) next.env = normalizeEnv(patch.env, { allowEmpty: false });
+  if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
   if (patch.status !== undefined) {
     const status = normalizeStatus(patch.status);
     if (status) next.status = status;
   }
   if (patch.capabilityIds !== undefined) {
-    const ids = Array.isArray(patch.capabilityIds) ? patch.capabilityIds.map(String) : [];
-    const unique = [...new Set(ids)];
+    // O12 危险默认值修复：非数组显式报错（原先静默清空 = 一键卸载全部能力）
+    const ids = requireArray(patch.capabilityIds, { label: '能力列表' }) ?? [];
+    const unique = [...new Set(ids.map(String))];
     unique.forEach((capabilityId) => {
       if (!db.find('capabilities', capabilityId)) throw fail.notFound('所选能力中包含已卸载的项，请刷新后重试');
     });
@@ -233,7 +230,11 @@ function listGroups() {
 }
 
 function normalizeMemberIds(memberIds) {
-  const ids = Array.isArray(memberIds) ? memberIds.map(String) : [];
+  // O12：显式传入但不是数组时抛错；undefined 视为内部缺省（允许显式空组，派发端已拦截）
+  if (memberIds !== undefined && !Array.isArray(memberIds)) {
+    throw fail.validation('成员列表格式不正确');
+  }
+  const ids = (memberIds ?? []).map(String);
   const unique = [...new Set(ids)];
   unique.forEach((memberId) => {
     if (!getWorker(memberId)) throw fail.notFound('所选成员中包含不存在的 Worker');
@@ -242,12 +243,8 @@ function normalizeMemberIds(memberIds) {
 }
 
 function createGroup(params = {}) {
-  const name = String(params.name ?? '').trim();
-  if (!name) throw fail.validation('请填写 Group 名称');
-  if (name.length > 20) throw fail.validation('Group 名称最多 20 个字符');
-  if (db.all('groups').some((g) => g.name === name)) {
-    throw fail.conflict(`已存在同名 Group「${name}」`);
-  }
+  const name = requiredText(params.name, { label: 'Group 名称', max: 20 });
+  assertUniqueName(db.all('groups'), name, { label: 'Group' });
 
   const memberIds = normalizeMemberIds(params.memberIds);
   const leadWorkerId = memberIds.includes(params.leadWorkerId) ? params.leadWorkerId : memberIds[0] || null;
@@ -274,14 +271,11 @@ function updateGroup(id, patch = {}) {
 
   const next = { ...group };
   if (patch.name !== undefined) {
-    const name = String(patch.name).trim();
-    if (!name) throw fail.validation('请填写 Group 名称');
-    if (db.all('groups').some((g) => g.id !== id && g.name === name)) {
-      throw fail.conflict(`已存在同名 Group「${name}」`);
-    }
+    const name = requiredText(patch.name, { label: 'Group 名称', max: 20 });
+    assertUniqueName(db.all('groups'), name, { label: 'Group', exceptId: id });
     next.name = name;
   }
-  if (patch.desc !== undefined) next.desc = String(patch.desc).trim().slice(0, 100);
+  if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
   if (patch.memberIds !== undefined) next.memberIds = normalizeMemberIds(patch.memberIds);
   next.leadWorkerId = next.memberIds.includes(patch.leadWorkerId)
     ? patch.leadWorkerId
@@ -359,6 +353,7 @@ function resolveExecutorWorker(assignee) {
 
 module.exports = {
   ROLES,
+  decorateWorker,
   listWorkers,
   getWorker,
   createWorker,

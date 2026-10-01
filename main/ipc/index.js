@@ -334,16 +334,14 @@ function register() {
   handle('automation:runtime', () => ({ apiServer: httpServer.getStatus() }));
   /** 重新生成 API Token（旧 Token 立即失效） */
   handle('automation:regen-token', ({ id } = {}) => automationService.regenerateToken(id));
-  /** 调用命令（含明文 Token）在主进程组装并直接写入剪贴板，明文 Token 不下发渲染层 */
+  /** 调用命令在服务层组装（含明文 Token），本层只负责写剪贴板——明文 Token 不下发渲染层 */
   handle('automation:copy-invocation', ({ id } = {}) => {
-    const automation = automationService.listAll().find((item) => item.id === id);
-    if (!automation) throw fail.notFound('自动任务不存在');
-    if (automation.trigger.type !== 'api') throw fail.invalidState('仅 API 触发的自动任务可以复制调用命令');
-    const token = automationService.revealApiToken(automation);
-    const port = httpServer.getStatus().port || db.getSettings().apiPort;
-    const command = `curl -X POST http://127.0.0.1:${port}/automations/${automation.id}/run -H "X-VirtWorker-Token: ${token}" -H "Content-Type: application/json" -d "{\\"goal\\":\\"\\"}"`;
+    const { command, tokenMask } = automationService.buildInvocation(
+      id,
+      httpServer.getStatus().port || db.getSettings().apiPort
+    );
     clipboard.writeText(command);
-    return { copied: true, tokenMask: automation.trigger.api?.token?.mask || '' };
+    return { copied: true, tokenMask };
   });
 
   // 执行器模式（设置中心）：Mock / 真实执行器切换；真实执行器注册后即可在此切换
@@ -455,7 +453,9 @@ function register() {
       filters: [{ name: String(filterName || 'VirtWorker 资源包'), extensions: ['json'] }]
     });
     if (result.canceled || !result.filePath) return { canceled: true };
-    fs.writeFileSync(result.filePath, String(content ?? ''), 'utf8');
+    const text = String(content ?? '');
+    if (text.length > 50 * 1024 * 1024) throw fail.validation('内容过大（上限 50MB）');
+    fs.writeFileSync(result.filePath, text, 'utf8');
     return { canceled: false, filePath: result.filePath };
   });
   handle('app:open-file', async () => {

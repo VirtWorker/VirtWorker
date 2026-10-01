@@ -126,6 +126,19 @@ function installGlobalHandlers() {
     write('FATAL', ['未捕获异常:', error]);
     close();
     console.error('[main] 未捕获异常:', error);
+    // 主进程已处于未定义状态（O18）：尽力告知用户后受控退出，
+    // 避免带病运行导致脏缓存/半写状态。dialog/app 惰性 require——单元测试环境无 electron。
+    try {
+      const { dialog, app } = require('electron');
+      dialog.showErrorBox(
+        'VirtWorker 遇到内部错误',
+        `应用即将退出以保护数据完整性：${error.message || '未知错误'}
+完整信息见日志文件（%APPDATA%/VirtWorker/logs/）。`
+      );
+      app.quit(); // 走 before-quit 完整清理（落盘/停服务）而非 app.exit 硬退
+    } catch (notifyError) {
+      // 非 Electron 环境（单元测试 / 脚本）：保持仅记录，不退出测试进程
+    }
   });
   process.on('unhandledRejection', (reason) => {
     write('FATAL', ['未处理的 Promise 拒绝:', reason instanceof Error ? reason : String(reason)]);

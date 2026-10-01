@@ -12,6 +12,7 @@ const imAdapter = require('../runtime/im-adapter');
 const vault = require('../util/secret-vault');
 const taskService = require('./task-service');
 const { createId } = require('../util/id');
+const { requiredText, assertUniqueName } = require('../util/validate');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
 
@@ -138,12 +139,8 @@ function createConnection(params = {}) {
   if (!platform) throw fail.validation('请选择 IM 平台');
   if (!platform.available) throw fail.validation(`${platform.label}适配器将在后续版本接入，当前请使用模拟 IM`);
 
-  const name = String(params.name ?? '').trim();
-  if (!name) throw fail.validation('请填写连接名称');
-  if (name.length > 40) throw fail.validation('连接名称最多 40 个字符');
-  if (allConnections().some((item) => item.name === name)) {
-    throw fail.conflict(`已存在同名连接「${name}」`);
-  }
+  const name = requiredText(params.name, { label: '连接名称', max: 40 });
+  assertUniqueName(allConnections(), name, { label: '连接' });
 
   let credential = null;
   if (platform.requiresCredential) {
@@ -175,11 +172,8 @@ function updateConnection(id, patch = {}) {
   const next = { ...connection };
 
   if (patch.name !== undefined) {
-    const name = String(patch.name).trim();
-    if (!name) throw fail.validation('请填写连接名称');
-    if (allConnections().some((item) => item.id !== id && item.name === name)) {
-      throw fail.conflict(`已存在同名连接「${name}」`);
-    }
+    const name = requiredText(patch.name, { label: '连接名称', max: 40 });
+    assertUniqueName(allConnections(), name, { label: '连接', exceptId: id });
     next.name = name;
   }
   // 凭据轮换：仅在提供非空新凭据时更换（换 Token 不必删连接重建，避免丢失全部聊天绑定）
@@ -325,8 +319,9 @@ function listBindings(filter = {}) {
   if (CHAT_TYPES.includes(filter.chatType)) items = items.filter((item) => item.chatType === filter.chatType);
   const model = String(filter.model ?? '').trim();
   if (model) items = items.filter((item) => item.model === model);
-  if (filter.status === '已启用') items = items.filter((item) => item.enabled);
-  if (filter.status === '已停用') items = items.filter((item) => !item.enabled);
+  // 状态筛选枚举（O12）：'' = 全部，'enabled' / 'disabled'
+  if (filter.status === 'enabled') items = items.filter((item) => item.enabled);
+  if (filter.status === 'disabled') items = items.filter((item) => !item.enabled);
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return { items, total: items.length };
@@ -380,6 +375,13 @@ function upsertPendingRequest({ connectionId, chat, sender, text }) {
 function approveRequest(id, params = {}) {
   const request = db.find('chatrequests', id);
   if (!request) throw fail.notFound('接入申请不存在');
+
+  // 幂等（O13）：重复审批同一申请（绑定已生成）直接返回既有结果，
+  // 而不是撞「该聊天已开通」的 CONFLICT 让用户以为操作失败
+  if (request.status === REQUEST_STATUS.approved && request.bindingId) {
+    const existing = db.find('chatbindings', request.bindingId);
+    if (existing) return { request: decorateRequest(request), binding: existing };
+  }
   if (request.status !== REQUEST_STATUS.pending) throw fail.invalidState('该申请已处理，请刷新列表');
 
   // 同意即开通：直接生成绑定；聊天已被占用（如先经向导开通）时按冲突提示
@@ -394,13 +396,25 @@ function approveRequest(id, params = {}) {
     model: params.model
   });
 
-  const next = {
-    ...request,
-    status: REQUEST_STATUS.approved,
-    bindingId: binding.id,
-    resolvedAt: nowIso()
-  };
-  db.update('chatrequests', id, next);
+  // 两步写补偿（O13）：申请状态更新失败时回滚绑定，
+  // 避免「绑定已生效、申请仍 pending」且重试必撞 CONFLICT 的卡死状态
+  let next;
+  try {
+    next = {
+      ...request,
+      status: REQUEST_STATUS.approved,
+      bindingId: binding.id,
+      resolvedAt: nowIso()
+    };
+    db.update('chatrequests', id, next);
+  } catch (error) {
+    try {
+      removeBinding(binding.id);
+    } catch (rollbackError) {
+      console.error('[chat] 审批失败回滚绑定异常:', rollbackError.message || rollbackError);
+    }
+    throw error;
+  }
   publish('chat:request-resolved', decorateRequest(next));
   return { request: decorateRequest(next), binding };
 }

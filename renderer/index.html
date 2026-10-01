@@ -177,17 +177,17 @@
           <label class="select">
             <span class="select-label">触发方式</span>
             <select id="filter-trigger">
-              <option>全部</option>
-              <option>手动创建</option>
-              <option>定时触发</option>
-              <option>事件触发</option>
-              <option>API 触发</option>
-              <option>会话触发</option>
+              <option value="">全部</option>
+              <option value="manual">手动创建</option>
+              <option value="schedule">定时触发</option>
+              <option value="event">事件触发</option>
+              <option value="api">API 触发</option>
+              <option value="chat">会话触发</option>
             </select>
           </label>
           <label class="select">
             <span class="select-label">任务状态</span>
-            <select id="filter-status"><option>全部</option><option>进行中</option><option>需要操作</option><option>已结束</option></select>
+            <select id="filter-status"><option value="">全部</option><option value="active">进行中</option><option value="action">需要操作</option><option value="finished">已结束</option></select>
           </label>
           <label class="select">
             <span class="select-label">数据周期</span>
@@ -270,7 +270,7 @@
           </label>
           <label class="select">
             <span class="select-label">状态</span>
-            <select id="at-filter-status"><option value="">全部</option><option>已启用</option><option>已停用</option></select>
+            <select id="at-filter-status"><option value="">全部</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select>
           </label>
         </div>
 
@@ -338,19 +338,19 @@
           <label class="select">
             <span class="select-label">触发类型</span>
             <select id="auto-filter-trigger">
-              <option>全部类型</option>
-              <option>定时</option>
-              <option>事件</option>
-              <option>API</option>
+              <option value="">全部类型</option>
+              <option value="schedule">定时</option>
+              <option value="event">事件</option>
+              <option value="api">API</option>
             </select>
           </label>
           <label class="select">
             <span class="select-label">自动任务状态</span>
-            <select id="auto-filter-status"><option>全部状态</option><option>已启用</option><option>已停用</option></select>
+            <select id="auto-filter-status"><option value="">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select>
           </label>
           <label class="select">
             <span class="select-label">排序</span>
-            <select id="auto-filter-sort"><option>最近创建</option><option>最近更新</option></select>
+            <select id="auto-filter-sort"><option value="">最近创建</option><option value="updated">最近更新</option></select>
           </label>
         </div>
 
@@ -398,7 +398,7 @@
           </label>
           <label class="select">
             <span class="select-label">运行状态</span>
-            <select id="worker-filter-status"><option>在线</option><option>全部</option><option>离线</option></select>
+            <select id="worker-filter-status"><option value="online">在线</option><option value="">全部</option><option value="offline">离线</option></select>
           </label>
           <label class="select">
             <span class="select-label">角色</span>
@@ -406,11 +406,11 @@
           </label>
           <label class="select">
             <span class="select-label">环境</span>
-            <select id="worker-filter-env"><option>全部环境</option><option>云端</option><option>本地</option></select>
+            <select id="worker-filter-env"><option value="">全部环境</option><option value="cloud">云端</option><option value="local">本地</option></select>
           </label>
           <label class="select">
             <span class="select-label">排序字段</span>
-            <select id="worker-filter-sort"><option>默认排序</option><option>最近创建</option><option>名称</option></select>
+            <select id="worker-filter-sort"><option value="">默认排序</option><option value="newest">最近创建</option><option value="name">名称</option></select>
           </label>
           <span class="filter-count" id="worker-count-label">0 个 Worker</span>
         </div>

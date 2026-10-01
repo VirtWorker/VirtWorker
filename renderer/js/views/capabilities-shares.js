@@ -45,8 +45,12 @@ VW.views.capabilitiesShares = (() => {
     const shares = store.state.shares || [];
     document.getElementById('cap-count-share').textContent = String(shares.length);
     document.getElementById('share-summary').textContent = `${shares.filter((share) => share.visibility === 'public').length} 个公开 · 共 ${shares.length} 个已分享资源`;
-    document.getElementById('share-list').innerHTML = shares.map(shareCardHtml).join('');
-    document.getElementById('share-empty').classList.toggle('hidden', shares.length > 0);
+    VW.util.renderList({
+      container: document.getElementById('share-list'),
+      empty: document.getElementById('share-empty'),
+      items: shares,
+      itemHtml: shareCardHtml
+    });
   }
 
   /** 导出资源包为 JSON 文件（由主进程弹出保存对话框） */

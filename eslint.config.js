@@ -27,5 +27,10 @@ module.exports = [
     // 测试代码：vitest 全局 API
     files: ['tests/**/*.js'],
     languageOptions: { globals: { ...globals.node } }
+  },
+  {
+    // 渲染层测试（happy-dom）：额外需要浏览器全局
+    files: ['tests/renderer.test.js'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } }
   }
 ];

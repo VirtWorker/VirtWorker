@@ -307,7 +307,7 @@ describe('chat-service：接入申请审批与级联删除', () => {
     cleanupTempDb(tempDir);
   });
 
-  test('同意申请：生成绑定并回写 bindingId，重复处理返回 INVALID_STATE', () => {
+  test('同意申请：生成绑定并回写 bindingId，重复审批幂等返回既有结果（O13）', () => {
     const request = chatService.ingest({
       connectionId: connection.id,
       chatId: 'chat-approve',
@@ -327,7 +327,10 @@ describe('chat-service：接入申请审批与级联删除', () => {
     expect(binding.model).toBe('快速模型');
     expect(binding.workspace).toBe('D:\\Work');
 
-    expectAppError(() => chatService.approveRequest(request.requestId, { workerId }), 'INVALID_STATE');
+    // 重复审批：不再撞「该聊天已开通」的 CONFLICT/INVALID_STATE，而是幂等返回同一绑定
+    const repeated = chatService.approveRequest(request.requestId, { workerId });
+    expect(repeated.binding.id).toBe(binding.id);
+    expect(repeated.request.status).toBe('approved');
     expectAppError(() => chatService.rejectRequest(request.requestId), 'INVALID_STATE');
   });
 

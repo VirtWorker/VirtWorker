@@ -50,8 +50,9 @@ VW.store = (() => {
     filters: {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
       statsPeriod: 'month',
-      worker: { keyword: '', status: '在线', role: '', env: '', sort: '' },
-      automation: { executorId: '', triggerType: '', status: '', sort: '最近创建' },
+      // 筛选值一律为存储枚举（O12）：中文展示文案由 <option> 负责
+      worker: { keyword: '', status: 'online', role: '', env: '', sort: '' },
+      automation: { executorId: '', triggerType: '', status: '', sort: '' },
       atworker: { keyword: '', chatType: '', model: '', status: '' }
     },
     ui: {

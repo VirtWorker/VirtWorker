@@ -92,7 +92,7 @@ VirtWorker 让你像管理一支真实团队一样管理数字员工：创建 Wo
 - **单一数据源在主进程**：渲染层不落盘、不持有跨会话状态，启动时通过 `app:bootstrap` 一次性拉取；
 - **单向数据流**：渲染层发命令（`ipcRenderer.invoke`），主进程校验、写库后经事件总线广播 `app:event`，渲染层增量重渲染；
 - **服务与运行时分离**：服务负责校验与持久化，运行时负责调度与执行，均不感知 Electron，可脱离 Electron 单测；
-- **安全默认值**：`contextIsolation` + `sandbox` + 禁用 `nodeIntegration`、单实例锁、外链经系统浏览器打开、渲染层入参全部在主进程校验、敏感凭据经 `safeStorage` 加密落盘且不回传渲染层、本地触发端点仅绑定 `127.0.0.1` 并以一次性 Token 鉴权。
+- **安全默认值**：`contextIsolation` + `sandbox` + 禁用 `nodeIntegration`、单实例锁、外链经系统浏览器打开、渲染层入参全部在主进程校验、敏感凭据经 `safeStorage` 加密落盘且不回传渲染层、本地触发端点仅绑定 `127.0.0.1` 并以自动化专属 Token（长期有效，可手动轮换）鉴权。
 
 ## 快速开始
 
@@ -156,7 +156,7 @@ npm run build:dir        # 仅输出目录，不打包
 # 存活探针（免鉴权）
 curl http://127.0.0.1:17891/health
 
-# 触发指定自动任务（Token 可在对应自动任务详情中查看）
+# 触发指定自动任务（Token 可在对应自动任务详情中查看/轮换）
 curl -X POST http://127.0.0.1:17891/automations/<automationId>/run \
   -H "X-VirtWorker-Token: <token>" \
   -H "Content-Type: application/json" \

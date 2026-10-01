@@ -108,16 +108,12 @@ VW.views.atworker = (() => {
   }
 
   function renderTable() {
-    const tbody = document.getElementById('atworker-table-body');
-    const empty = document.getElementById('atworker-empty');
-    const items = store.state.chatBindingList;
-    if (!items.length) {
-      tbody.innerHTML = '';
-      empty.classList.remove('hidden');
-      return;
-    }
-    empty.classList.add('hidden');
-    tbody.innerHTML = items.map(rowHtml).join('');
+    VW.util.renderList({
+      container: document.getElementById('atworker-table-body'),
+      empty: document.getElementById('atworker-empty'),
+      items: store.state.chatBindingList,
+      itemHtml: rowHtml
+    });
   }
 
   function render() {

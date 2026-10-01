@@ -257,6 +257,99 @@ describe('IPC 契约：app:relaunch 走完整退出流程（O1 回归防护）',
   });
 });
 
+describe('IPC 契约：业务通道行为（O15 扩面）', () => {
+  beforeAll(() => {
+    initTempDb();
+    ipc.register();
+  });
+
+  afterAll(() => {
+    db.flush();
+  });
+
+  test('settings:update 非法值被拒绝（保持原值）', async () => {
+    const before = (await invoke('settings:get')).data;
+    await invoke('settings:update', { maxConcurrent: 99, actionTimeoutPolicy: 'bogus', taskRetentionDays: 0 });
+    const after = (await invoke('settings:get')).data;
+    expect(after.maxConcurrent).toBe(before.maxConcurrent);
+    expect(after.actionTimeoutPolicy).toBe(before.actionTimeoutPolicy);
+    expect(after.taskRetentionDays).toBe(before.taskRetentionDays);
+  });
+
+  test('task：create → detail → cancel → retry 全链路（F1）', async () => {
+    const worker = (await invoke('worker:create', { name: '链路执行者' })).data;
+    const created = await invoke('task:create', { goal: '契约链路目标', assigneeId: worker.id, tags: ['契约'] });
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    await invoke('task:cancel', { id: taskId, reason: '契约取消' });
+    expect((await invoke('task:detail', { id: taskId })).data.task.status).toBe('canceled');
+
+    const retried = await invoke('task:retry', { id: taskId });
+    expect(retried.ok).toBe(true);
+    expect(retried.data.retryOf).toBe(taskId);
+    expect(retried.data.status).toBe('queued');
+  });
+
+  test('worker：挂载能力传非数组被显式拒绝（危险默认值修复，O12）', async () => {
+    const worker = (await invoke('worker:create', { name: '挂载执行者' })).data;
+    const bad = await invoke('worker:update', { id: worker.id, patch: { capabilityIds: 'cap_x' } });
+    expect(bad.ok).toBe(false);
+    expect(bad.error.code).toBe('VALIDATION_FAILED');
+    expect(db.find('workers', worker.id).capabilityIds).toEqual([]);
+  });
+
+  test('worker：无效枚举（环境/角色）返回校验失败而非静默兜底（O12）', async () => {
+    const worker = (await invoke('worker:create', { name: '枚举执行者' })).data;
+    const badEnv = await invoke('worker:update', { id: worker.id, patch: { env: '内网' } });
+    expect(badEnv.error.code).toBe('VALIDATION_FAILED');
+    const badRole = await invoke('worker:update', { id: worker.id, patch: { role: '不存在的角色' } });
+    expect(badRole.error.code).toBe('VALIDATION_FAILED');
+  });
+
+  test('group：成员列表传非数组被拒绝（O12）', async () => {
+    const worker = (await invoke('worker:create', { name: '组员执行者' })).data;
+    const group = (await invoke('group:create', { name: '契约组', memberIds: [worker.id] })).data;
+    const bad = await invoke('group:update', { id: group.id, patch: { memberIds: 'wk_1' } });
+    expect(bad.ok).toBe(false);
+    expect(bad.error.code).toBe('VALIDATION_FAILED');
+  });
+
+  test('automation：create → toggle → regen-token（掩码输出、明文不出服务层）', async () => {
+    const worker = (await invoke('worker:create', { name: '自动任务执行者' })).data;
+    const created = await invoke('automation:create', {
+      name: `契约自动任务 ${Date.now()}`,
+      executorId: worker.id,
+      trigger: { type: 'api' },
+      input: { goal: '目标' }
+    });
+    expect(created.ok).toBe(true);
+    const id = created.data.id;
+    expect(created.data.trigger.api.masked).toBe(true);
+
+    const toggled = await invoke('automation:toggle', { id, enabled: false });
+    expect(toggled.data.enabled).toBe(false);
+    expect(db.find('automations', id).nextRunAt).toBeNull();
+
+    const regen = await invoke('automation:regen-token', { id });
+    expect(regen.ok).toBe(true);
+    expect(JSON.stringify(regen.data)).not.toContain('"sealed"');
+  });
+
+  test('flow：空步骤被校验拦截（create 透传服务层校验）', async () => {
+    const res = await invoke('flow:create', { name: '契约流程' });
+    expect(res.ok).toBe(false);
+    expect(res.error.code).toBe('VALIDATION_FAILED');
+  });
+
+  test('task:list 分页兼容数字字符串（O12）', async () => {
+    const res = await invoke('task:list', { period: '', page: '1', pageSize: '2' });
+    expect(res.ok).toBe(true);
+    expect(res.data.page).toBe(1);
+    expect(res.data.pageSize).toBe(2);
+  });
+});
+
 describe('IPC 契约：执行器配置体系（O16）', () => {
   beforeAll(() => {
     initTempDb();
@@ -342,6 +435,10 @@ describe('IPC 契约：task 事件转发合并节流（O17 回归防护）', () 
     electronStub.BrowserWindow.getAllWindows = () => [fakeWin];
 
     try {
+      // 排空前面用例（如业务链路测试）可能滞留在合并窗口内的事件，保证断言确定性
+      await new Promise((r) => setTimeout(r, 150));
+      sent.length = 0;
+
       bus.emit('task:updated', { id: 'tk_coalesce', title: 'v1' });
       bus.emit('task:updated', { id: 'tk_coalesce', title: 'v2' });
       bus.emit('task:created', { id: 'tk_other', title: 'other' });

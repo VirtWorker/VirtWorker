@@ -355,39 +355,30 @@ VW.views.dashboard = (() => {
   }
 
   async function ackTask(id) {
-    try {
-      await VW.api.task.ack(id);
-      VW.toast.show('已查收');
-      if (VW.modal.isOpen('task-detail-modal')) await openDetail(id);
-      await refresh({ silent: true });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(() => VW.api.task.ack(id), { success: '已查收' });
+    if (VW.modal.isOpen('task-detail-modal')) await openDetail(id);
+    await refresh({ silent: true });
   }
 
   /** 重试失败/已取消任务（F1）：创建新任务重新入队；fromStep='failed' 时从失败步骤断点重跑 */
   async function retryTask(id, { fromStep = null } = {}) {
-    const message = fromStep === 'failed' ? '确认从失败步骤重试？将创建新任务并沿用此前步骤的结果。' : '确认重试该任务？将创建一个新任务重新入队。';
+    const message = fromStep === 'failed'
+      ? '确认从失败步骤重试？将创建新任务并沿用此前步骤的结果。'
+      : '确认重试该任务？将创建一个新任务重新入队。';
     if (!window.confirm(message)) return;
-    try {
-      const task = await VW.api.task.retry(id, fromStep);
-      VW.toast.show(`重试任务「${task.title}」已创建`);
-      VW.modal.close('task-detail-modal');
-      await refresh({ silent: true });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    const task = await VW.util.submitAction(() => VW.api.task.retry(id, fromStep));
+    if (!task) return;
+    VW.toast.show(`重试任务「${task.title}」已创建`);
+    VW.modal.close('task-detail-modal');
+    await refresh({ silent: true });
   }
 
   /** 一键查收当前周期内全部待查收结果（F8） */
   async function ackAll() {
-    try {
-      const result = await VW.api.task.ackAll({ period: store.state.filters.statsPeriod });
-      VW.toast.show(result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果');
-      await refresh({ silent: true });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(() => VW.api.task.ackAll({ period: store.state.filters.statsPeriod }), {
+      success: (result) => (result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果')
+    });
+    await refresh({ silent: true });
   }
 
   async function cancelTask(id) {

@@ -106,7 +106,6 @@ function start() {
 /** 应用退出时清理所有定时器与内存状态 */
 function shutdown() {
   for (const ctx of contexts.values()) {
-    if (ctx.timer) clearTimeout(ctx.timer);
     if (ctx.controller) ctx.controller.abort();
   }
   contexts.clear();
@@ -122,7 +121,19 @@ function clearTimer(map, key) {
   map.delete(key);
 }
 
-/** 槽位释放后排空等待队列：按优先级派发（urgent > high > normal > low），同级先到先执行 */
+/** 槽位释放后排空等待队列：按优先级派发（urgent > high > normal > low），同级先到先执行。
+ *  release 触发的排空统一走微任务（O18）：大量任务连续派发即失败时，
+ *  避免「release → drainWaiting → dispatch → release」的同步深递归。 */
+let drainScheduled = false;
+function scheduleDrain() {
+  if (drainScheduled) return;
+  drainScheduled = true;
+  queueMicrotask(() => {
+    drainScheduled = false;
+    drainWaiting();
+  });
+}
+
 function drainWaiting() {
   while (waiting.size && contexts.size < capacity()) {
     const next = takeNextWaiting();
@@ -153,13 +164,11 @@ function takeNextWaiting() {
 
 /** 释放任务占用的并发槽位与全部中间态（派发失败 / 执行异常 / 超时 / 取消的公共清理路径） */
 function release(taskId) {
-  const ctx = contexts.get(taskId);
-  if (ctx?.timer) clearTimeout(ctx.timer);
   contexts.delete(taskId);
   waiting.delete(taskId);
   clearTimer(retryTimers, taskId);
   retryAttempts.delete(taskId);
-  drainWaiting(); // 槽位已释放，立即派发排队任务
+  scheduleDrain(); // 槽位已释放，微任务内派发排队任务
 }
 
 /** 失败落库：终态守卫可能拒绝改写（如取消与异常竞争），只记录不外抛 */
@@ -183,7 +192,7 @@ function recover() {
 }
 
 function createContext(overrides = {}) {
-  return { timer: null, actionUsed: false, controller: new AbortController(), pumping: false, ...overrides };
+  return { actionUsed: false, controller: new AbortController(), pumping: false, ...overrides };
 }
 
 /**
@@ -276,6 +285,7 @@ async function dispatchUnsafe(taskId) {
     ? `已按 WorkerFlow「${execution.plan.flow.name}」启动，共 ${steps.length} 个节点`
     : `已派发给「${execution.worker.name}」`;
   taskService.markRunning(taskId, steps, message);
+  retryAttempts.delete(taskId); // 派发成功即重置退避计数：Worker 恢复在线后不再沿用旧退避
   pump(taskId);
 }
 
@@ -457,10 +467,9 @@ function resume(taskId) {
 
 async function finish(taskId) {
   const ctx = contexts.get(taskId);
-  if (ctx?.timer) clearTimeout(ctx.timer);
   contexts.delete(taskId);
   retryAttempts.delete(taskId);
-  drainWaiting(); // 释放槽位，派发排队任务
+  scheduleDrain(); // 释放槽位，派发排队任务
 
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.running) return;

@@ -73,10 +73,12 @@ VW.views.capabilitiesKnowledge = (() => {
   }
 
   function render() {
-    const list = document.getElementById('knowledge-list');
-    const empty = document.getElementById('knowledge-empty');
-    list.innerHTML = VW.capCtx.state.knowledge.map(knowledgeCardHtml).join('');
-    empty.classList.toggle('hidden', VW.capCtx.state.knowledge.length > 0);
+    VW.util.renderList({
+      container: document.getElementById('knowledge-list'),
+      empty: document.getElementById('knowledge-empty'),
+      items: VW.capCtx.state.knowledge,
+      itemHtml: knowledgeCardHtml
+    });
   }
 
   function openKnowledgeModal() {

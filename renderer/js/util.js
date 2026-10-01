@@ -100,5 +100,46 @@ VW.util = (() => {
            </div>`;
   }
 
-  return { escapeHtml, safeStyle, debounce, formatTime, statusMeta, statusBadge, assigneeLabel, historyListHtml, PRIORITY_LABEL, ACTION_LABEL };
+  /**
+   * 列表渲染样板（O14）：innerHTML 重建 + 空态显隐的统一实现。
+   * 此前该三行组合散落在 10+ 个视图中。
+   * @returns {number} 渲染的条数
+   */
+  function renderList({ container, empty, items, itemHtml }) {
+    container.innerHTML = items.map(itemHtml).join('');
+    if (empty) empty.classList.toggle('hidden', items.length > 0);
+    return items.length;
+  }
+
+  /**
+   * 操作提交样板（O14）：await action → 成功提示 / 失败 toast。
+   * success 可为文案字符串或 (result) => string；rethrow 时调用方可追加处理（如刷新）。
+   * 破坏性操作的确认（window.confirm）由调用方在 action 之前自行判断。
+   */
+  async function submitAction(action, { success, rethrow = false } = {}) {
+    try {
+      const result = await action();
+      if (success) VW.toast.show(typeof success === 'function' ? success(result) : success);
+      return result;
+    } catch (error) {
+      VW.toast.fromError(error);
+      if (rethrow) throw error;
+      return undefined;
+    }
+  }
+
+  return {
+    escapeHtml,
+    safeStyle,
+    debounce,
+    formatTime,
+    statusMeta,
+    statusBadge,
+    assigneeLabel,
+    historyListHtml,
+    renderList,
+    submitAction,
+    PRIORITY_LABEL,
+    ACTION_LABEL
+  };
 })();

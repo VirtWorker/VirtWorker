@@ -9,6 +9,7 @@ const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const { createId } = require('../util/id');
 const { nowIso, isWithinPeriod } = require('../util/time');
+const { toPositiveInt } = require('../util/validate');
 const { fail } = require('../util/errors');
 
 const STATUS = Object.freeze({
@@ -32,11 +33,11 @@ const TRIGGER_LABEL = {
   chat: '会话触发'
 };
 
-/** 界面筛选项文本 → 存储枚举（与 index.html 中的 option 一一对应） */
+/** 状态筛选枚举（O12）：IPC 契约只认存储枚举，中文展示文案由渲染层负责 */
 const STATUS_FILTER = {
-  进行中: ACTIVE_STATUS,
-  需要操作: [STATUS.needAction],
-  已结束: FINISHED_STATUS
+  active: ACTIVE_STATUS,
+  action: [STATUS.needAction],
+  finished: FINISHED_STATUS
 };
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
@@ -76,6 +77,8 @@ function publish(task, eventType) {
  * 终态守卫：已结束（succeeded/failed/canceled）的任务拒绝一切后续变更（仅查收 ack 豁免），
  * 防止取消/失败后被挂起的运行时回调把任务改写成另一终态（如 canceled → failed）
  * 或向终态任务追加步骤数据，污染看板口径与审计时间线。
+ * 并发约束：本函数依赖「主进程同步单线程执行」这一前提（读取与写回之间不可让出事件循环）；
+ * 未来若在 updater 中引入 await，必须先为任务增加 revision 乐观锁，否则会产生读-改-写竞态。
  */
 function mutate(id, updater, { allowFinished = false } = {}) {
   const task = getOrThrow(id);
@@ -99,7 +102,12 @@ function getOrThrow(id) {
 }
 
 function normalizeTrigger(trigger) {
-  const type = TRIGGER_LABEL[trigger?.type] ? trigger.type : 'manual';
+  // O12：缺省视为手动创建（内部默认值语义）；显式传入无效类型一律校验失败，不再静默归一
+  let type = 'manual';
+  if (trigger?.type !== undefined) {
+    if (!TRIGGER_LABEL[trigger.type]) throw fail.validation('无效的任务触发类型');
+    type = trigger.type;
+  }
   return {
     type,
     refId: trigger?.refId ?? null,
@@ -222,11 +230,9 @@ function list(filter = {}) {
   // period 显式传空字符串表示不限时间（如自动任务的运行历史）
   const period = filter.period === undefined ? 'month' : filter.period;
   const statuses = STATUS_FILTER[filter.status];
-  // 「触发方式」筛选：界面传中文标签，转为存储枚举
-  const triggerKey =
-    Object.keys(TRIGGER_LABEL).find((key) => TRIGGER_LABEL[key] === filter.triggerType) ||
-    (TRIGGER_LABEL[filter.triggerType] ? filter.triggerType : null);
-  const assigneeId = filter.assigneeId && filter.assigneeId !== '全部' ? filter.assigneeId : null;
+  // 「触发方式」筛选（O12）：只认存储枚举（manual/schedule/event/api/chat）
+  const triggerKey = TRIGGER_LABEL[filter.triggerType] ? filter.triggerType : null;
+  const assigneeId = filter.assigneeId || null;
   const keyword = String(filter.keyword ?? '').trim().toLowerCase();
   const tag = String(filter.tag ?? '').trim();
 
@@ -245,9 +251,10 @@ function list(filter = {}) {
   );
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  // 分页（蓝图 task:list 契约中的 page/pageSize）：pageSize 上限 200，防止一次下发全量列表
-  const page = Number.isInteger(filter.page) && filter.page > 0 ? filter.page : null;
-  const pageSize = Number.isInteger(filter.pageSize) && filter.pageSize > 0 ? Math.min(LIST_PAGE_SIZE_MAX, filter.pageSize) : null;
+  // 分页（蓝图 task:list 契约中的 page/pageSize）：兼容数字字符串，pageSize 上限 200
+  const page = toPositiveInt(filter.page);
+  const pageSizeRaw = toPositiveInt(filter.pageSize);
+  const pageSize = pageSizeRaw ? Math.min(LIST_PAGE_SIZE_MAX, pageSizeRaw) : null;
   let limited;
   let pagination = {};
   if (page && pageSize) {
@@ -638,6 +645,13 @@ function ackAll(period = 'month') {
   return { acked };
 }
 
+/** 孤儿时间线清扫（O13）：任务与其事件分属两个集合文件，删除任务的崩溃窗口可能遗留
+ *  taskId 已不存在的 taskevents，且无任何后续清理路径。由每日维护（含启动即跑的一次）调用。 */
+function purgeOrphanEvents() {
+  const knownIds = new Set(db.query('tasks', () => true).map((task) => task.id));
+  return db.removeWhere('taskevents', (event) => !knownIds.has(event.taskId)).removed;
+}
+
 module.exports = {
   STATUS,
   ACTIVE_STATUS,
@@ -666,6 +680,7 @@ module.exports = {
   failTask,
   recordEvent,
   exportTasks,
+  purgeOrphanEvents,
   purgeExpired,
   purgePreview
 };
