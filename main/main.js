@@ -132,6 +132,12 @@ const MAINTENANCE_START_DELAY_MS = 30 * 1000;
 function startDailyMaintenance() {
   const run = () => {
     try {
+      const { archived } = taskService.archiveAged();
+      if (archived) console.log(`[main] 每日维护：已归档 ${archived} 条已查收的历史任务（BUG-20 写放大治理）`);
+    } catch (error) {
+      console.error('[main] 每日维护：任务归档失败:', error.message);
+    }
+    try {
       const { removed, retention } = taskService.purgeExpired(db.getSettings().taskRetentionDays);
       if (removed) console.log(`[main] 每日维护：已按保留策略（${retention} 天）清理 ${removed} 条历史任务`);
     } catch (error) {

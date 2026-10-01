@@ -20,6 +20,10 @@ const COLLECTIONS = [
   'workers',
   'groups',
   'tasks',
+  /** 任务历史归档（BUG-20 写放大治理）：已查收且超出归档阈值的任务从 tasks 移入，
+   *  把高频写入的活跃集合规模压在「归档阈值 + 保留策略」的窗口内；
+   *  结构与 tasks 完全一致（v2，时间线同样在 taskevents），读路径由 task-service 合并 */
+  'tasks-archive',
   /** 任务时间线（v2 起从 tasks 内嵌字段拆出，见 schema.js 迁移说明） */
   'taskevents',
   'automations',

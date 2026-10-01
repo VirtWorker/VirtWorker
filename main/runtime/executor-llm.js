@@ -127,7 +127,7 @@ async function chatCompletion(cfg, messages, signal) {
     });
   } catch (error) {
     // 取消识别以信号为准（task-runtime 以 error.message === 'aborted' 或 signal.aborted 判定取消）
-    if (signal?.aborted) throw new Error('aborted');
+    if (signal?.aborted) throw new Error('aborted', { cause: error });
     throw new Error(`无法连接模型服务（${cfg.baseUrl}）：${error.message || error}`, { cause: error });
   }
   if (!response.ok) {

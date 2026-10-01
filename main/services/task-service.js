@@ -91,8 +91,11 @@ function mutate(id, updater, { allowFinished = false } = {}) {
   return task;
 }
 
+/** 读取任务：先查活跃集合，未命中再查归档集合（BUG-20）。
+ *  归档任务均为「已完成且已查收」，所有变更类操作都会被 mutate 的终态守卫拒绝
+ *  （ack 幂等早返回），因此合并读取不会造成跨集合误写。 */
 function getTask(id) {
-  return db.find('tasks', id);
+  return db.find('tasks', id) || db.find('tasks-archive', id);
 }
 
 function getOrThrow(id) {
@@ -236,7 +239,10 @@ function list(filter = {}) {
   const tag = String(filter.tag ?? '').trim();
 
   // 谓词下推（O8）：db.query 只克隆命中项，替代原先「整集合 structuredClone 后再过滤」
-  let items = db.query('tasks', (task) =>
+  // 归档合并（BUG-20）：活跃 + 归档两集合同谓词查询后合并排序。归档任务均早于归档阈值
+  // （30 天）进入，week/month 周期谓词会零克隆地拒绝全部归档条目，合并只在
+  // quarter / 全部历史窗口产生额外命中，保证「全部任务」口径完整。
+  const predicate = (task) =>
     isWithinPeriod(task.createdAt, period) &&
     (!filter.refId || task.trigger.refId === filter.refId) &&
     (!statuses || statuses.includes(task.status)) &&
@@ -246,8 +252,9 @@ function list(filter = {}) {
     (!keyword ||
       `${task.title} ${task.goal} ${task.assignee.name} ${(task.tags || []).join(' ')}`
         .toLowerCase()
-        .includes(keyword))
-  );
+        .includes(keyword));
+
+  const items = [...db.query('tasks', predicate), ...db.query('tasks-archive', predicate)];
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   // 分页（蓝图 task:list 契约中的 page/pageSize）：兼容数字字符串，pageSize 上限 200
@@ -281,11 +288,13 @@ function queue(period = 'month') {
 }
 
 /** 看板统计口径（与 list 共用同一时间过滤，保证数字与列表一致）。
- *  计数走 countWhere（零克隆），只有活跃任务需要克隆（算工作中的 Worker 去重数） */
+ *  计数走 countWhere（零克隆），只有活跃任务需要克隆（算工作中的 Worker 去重数）。
+ *  归档合并（BUG-20）：total 需含归档集合（week/month 窗口下归档条目零命中，仅 quarter 生效）；
+ *  归档条目均为 succeeded+acked，不可能是 needAction，无需合并该计数。 */
 function stats(period = 'month') {
   const inPeriod = (task) => isWithinPeriod(task.createdAt, period);
   const active = db.query('tasks', (task) => inPeriod(task) && ACTIVE_STATUS.includes(task.status));
-  const total = db.countWhere('tasks', inPeriod);
+  const total = db.countWhere('tasks', inPeriod) + db.countWhere('tasks-archive', inPeriod);
   const needAction = db.countWhere('tasks', (task) => inPeriod(task) && task.status === STATUS.needAction);
   return {
     total,
@@ -580,6 +589,12 @@ function retry(id, { fromStep = null } = {}) {
   return publicTask(next);
 }
 
+/** 归档阈值（BUG-20）：已查收且查收时间早于该天数 → 移入 tasks-archive。
+ *  只归档 succeeded+acked：failed/canceled 是重试候选、未查收结果用户还没看，
+ *  两者都留在活跃集合。归档后活跃集合规模被压在「30 天已查收 + 进行中 + 未查收」窗口内，
+ *  create/completeStep 等高频写的 O(N) 拷贝与全量重写成本随之有界。 */
+const ARCHIVE_AFTER_DAYS = 30;
+
 /** 过期判定：已结束、已查收且超出保留期（未查收的结果不会被清理，避免用户还没看就消失） */
 function expiredPredicate(threshold) {
   return (task) => {
@@ -590,23 +605,55 @@ function expiredPredicate(threshold) {
   };
 }
 
-function expiredTasks(days = 90, now = Date.now()) {
-  const retention = Number(days) > 0 ? Number(days) : 90;
-  const threshold = now - retention * 24 * 60 * 60 * 1000;
-  return { retention, items: db.query('tasks', expiredPredicate(threshold)) };
+/** 归档判定：已完成、已查收且超出归档阈值（严格弱于过期判定，归档是删除前的中间层） */
+function agedPredicate(threshold) {
+  return (task) => {
+    if (task.status !== STATUS.succeeded || !task.resultAckedAt) return false;
+    const settledAt = new Date(task.resultAckedAt).getTime();
+    return !Number.isNaN(settledAt) && settledAt < threshold;
+  };
 }
 
 /** 清理过期任务（连带其时间线），应用启动、每日维护与设置中心手动触发都会调用。
- *  两个集合各一次批量删除（逐条 remove 是 O(N²)），写入经 db 合并窗口只落盘一轮。 */
+ *  两个集合各一次批量删除（逐条 remove 是 O(N²)），写入经 db 合并窗口只落盘一轮。
+ *  归档集合同样按保留期清理（BUG-20）：归档只进不出的话磁盘占用无界增长；
+ *  活跃与归档取并集一次性删除，事件清理与 task:removed 广播保持原语义。 */
 function purgeExpired(days = 90, now = Date.now()) {
-  const { retention, items } = expiredTasks(days, now);
-  if (items.length) {
-    const removedIds = items.map((task) => task.id);
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = now - retention * 24 * 60 * 60 * 1000;
+  const predicate = expiredPredicate(threshold);
+  const expired = [...db.query('tasks', predicate), ...db.query('tasks-archive', predicate)];
+  if (expired.length) {
+    const removedIds = expired.map((task) => task.id);
     db.removeWhere('tasks', { id: removedIds });
+    db.removeWhere('tasks-archive', { id: removedIds });
     db.removeWhere('taskevents', { taskId: removedIds });
-    items.forEach((task) => bus.emit('task:removed', { id: task.id }));
+    expired.forEach((task) => bus.emit('task:removed', { id: task.id }));
   }
-  return { removed: items.length, retention };
+  return { removed: expired.length, retention };
+}
+
+/** 归档迁移（BUG-20）：把「已查收且超出归档阈值」的任务从 tasks 批量移入 tasks-archive。
+ *  由每日维护调用（启动首跑 + 每 24h），低频批量，写入经 insertMany/removeWhere 各只落盘一轮。 */
+function archiveAged(days = ARCHIVE_AFTER_DAYS, now = Date.now()) {
+  const threshold = now - days * 24 * 60 * 60 * 1000;
+  const aged = db.query('tasks', agedPredicate(threshold));
+  if (!aged.length) return { archived: 0, threshold: days };
+  const ids = aged.map((task) => task.id);
+  db.removeWhere('tasks', { id: ids }); // 先出后进：保证任何时刻任务只存在于一个集合
+  db.insertMany('tasks-archive', aged);
+  return { archived: aged.length, threshold: days };
+}
+
+/** 预览可清理数量（设置中心展示用）：countWhere 零克隆；活跃 + 归档合并口径 */
+function purgePreview(days = 90, now = Date.now()) {
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = now - retention * 24 * 60 * 60 * 1000;
+  const predicate = expiredPredicate(threshold);
+  return {
+    removable: db.countWhere('tasks', predicate) + db.countWhere('tasks-archive', predicate),
+    retention
+  };
 }
 
 /** 导出任务历史（含完整时间线）：与 list 共用筛选口径，供归档与外部报表。
@@ -624,13 +671,6 @@ function exportTasks(filter = {}) {
   }
   const records = items.map((task) => ({ ...task, events: eventsById.get(task.id) || [] }));
   return { exportedAt: nowIso(), count: records.length, total, records };
-}
-
-/** 预览可清理数量（设置中心展示用）：countWhere 零克隆 */
-function purgePreview(days = 90, now = Date.now()) {
-  const retention = Number(days) > 0 ? Number(days) : 90;
-  const threshold = now - retention * 24 * 60 * 60 * 1000;
-  return { removable: db.countWhere('tasks', expiredPredicate(threshold)), retention };
 }
 
 /** 批量查收：周期内全部「已完成且未查收」的任务（看板「查收结果」页签的一键操作，F8） */
@@ -652,9 +692,13 @@ function ackAll(period = 'month') {
 }
 
 /** 孤儿时间线清扫（O13）：任务与其事件分属两个集合文件，删除任务的崩溃窗口可能遗留
- *  taskId 已不存在的 taskevents，且无任何后续清理路径。由每日维护（含启动即跑的一次）调用。 */
+ *  taskId 已不存在的 taskevents，且无任何后续清理路径。由每日维护（含启动即跑的一次）调用。
+ *  已知 taskId 需含归档集合（BUG-20）：归档任务的时间线仍然有效，不得当作孤儿清扫 */
 function purgeOrphanEvents() {
-  const knownIds = new Set(db.query('tasks', () => true).map((task) => task.id));
+  const knownIds = new Set([
+    ...db.query('tasks', () => true).map((task) => task.id),
+    ...db.query('tasks-archive', () => true).map((task) => task.id)
+  ]);
   return db.removeWhere('taskevents', (event) => !knownIds.has(event.taskId)).removed;
 }
 
@@ -686,6 +730,8 @@ module.exports = {
   failTask,
   recordEvent,
   exportTasks,
+  archiveAged,
+  ARCHIVE_AFTER_DAYS,
   purgeOrphanEvents,
   purgeExpired,
   purgePreview
