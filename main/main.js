@@ -268,6 +268,15 @@ app.on('window-all-closed', () => {
 
 // 全局未捕获异常兜底已由 logger.installGlobalHandlers() 统一接管（见文件顶部）
 
+/** 退出清理兜底：单个子系统清理抛错时记录并继续，绝不中断清理链 */
+function safeTeardown(name, fn) {
+  try {
+    fn();
+  } catch (error) {
+    console.error(`[main] 退出清理：${name} 失败:`, error);
+  }
+}
+
 // 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流
 app.on('before-quit', () => {
   // 「重启应用」不再走 app.exit(0)（会跳过本钩子导致脏缓存不落盘）：
@@ -275,9 +284,11 @@ app.on('before-quit', () => {
   if (ipc.consumeRelaunchRequest()) {
     app.relaunch();
   }
-  runtime.shutdown();
-  scheduler.stop();
-  httpServer.stop();
-  db.flush();
-  logger.close();
+  // 逐步独立兜底：此前单步抛错（如 runtime.shutdown 异常）会跳过后续全部清理，
+  // 导致 100ms 写入窗口内的脏缓存丢失、日志流未关闭
+  safeTeardown('runtime.shutdown', () => runtime.shutdown());
+  safeTeardown('scheduler.stop', () => scheduler.stop());
+  safeTeardown('httpServer.stop', () => httpServer.stop());
+  safeTeardown('db.flush', () => db.flush()); // 脏缓存落盘
+  safeTeardown('logger.close', () => logger.close()); // 日志流关闭，必须在 flush 之后
 });
