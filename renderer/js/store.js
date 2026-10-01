@@ -66,6 +66,13 @@ VW.store = (() => {
 
   const subscribers = new Map();
 
+  /**
+   * 按「切片名」或「字段路径」订阅（OPT-5）：
+   * - on('tasks', fn)         顶层切片，set({tasks}) 时通知
+   * - on('ui.page', fn)       嵌套字段路径，仅 merge('ui', { page }) 且内容变化时通知
+   * - on('filters.task.keyword', fn)  setFilters 深层字段，同上
+   * 整段订阅（'ui'）保持既有行为：任一字段变化即通知。同一 handler 多键订阅去重（OPT-3）。
+   */
   function on(slices, handler) {
     const keys = Array.isArray(slices) ? slices : [slices];
     keys.forEach((key) => {
@@ -111,18 +118,37 @@ VW.store = (() => {
     return false;
   }
 
-  /** 顶层字段替换：内容未变的切片不赋值（保持引用稳定）也不通知订阅者 */
+  /** 顶层字段替换：内容未变的切片不赋值（保持引用稳定）也不通知订阅者。
+   *  对象切片（settings/ui 等）整段替换时，对字段级订阅者做逐字段差量通知（OPT-5）——
+   *  如 bootstrap 一次性下发 settings，'settings.taskView' 订阅者只在该字段真的变化时收到。 */
   function set(patch) {
     const changed = [];
+    const fieldChanges = [];
     Object.entries(patch).forEach(([key, value]) => {
       if (valuesEqual(state[key], value)) return;
+      const prev = state[key];
       state[key] = value;
       changed.push(key);
+      if (
+        prev &&
+        value &&
+        typeof prev === 'object' &&
+        typeof value === 'object' &&
+        !Array.isArray(prev) &&
+        !Array.isArray(value)
+      ) {
+        new Set([...Object.keys(prev), ...Object.keys(value)]).forEach((field) => {
+          if (!valuesEqual(prev[field], value[field])) fieldChanges.push(`${key}.${field}`);
+        });
+      }
     });
+    if (fieldChanges.length) notify(fieldChanges);
     notify(changed);
   }
 
-  /** 嵌套切片合并（filters / ui）：内容未变的字段跳过，全部未变时不通知 */
+  /** 嵌套切片合并（filters / ui）：内容未变的字段跳过，全部未变时不通知。
+   *  变化字段同时以「字段路径键」（如 'ui.page'）通知细粒度订阅者（OPT-5），
+   *  与整段键合并为一次 notify（OPT-3 去重生效）。 */
   function merge(section, values) {
     const changed = [];
     Object.entries(values).forEach(([key, value]) => {
@@ -130,21 +156,31 @@ VW.store = (() => {
       state[section][key] = value;
       changed.push(key);
     });
-    if (changed.length) notify([section]);
+    if (changed.length) notify([...changed.map((key) => `${section}.${key}`), section]);
   }
 
   /**
    * 筛选条件变更的唯一入口（替代对 state.filters 的直接赋值）。
    * - setFilters({ statsPeriod: 'week' })            顶层切片
    * - setFilters('task', { keyword: 'abc' })         嵌套切片（浅合并该切片）
+   * 内容未变的字段跳过；变化字段以 'filters.task.keyword' 这类字段路径键通知（OPT-5）。
    */
   function setFilters(section, values) {
+    const changed = [];
     if (typeof section === 'object' && section !== null) {
-      Object.assign(state.filters, section);
+      Object.entries(section).forEach(([key, value]) => {
+        if (valuesEqual(state.filters[key], value)) return;
+        state.filters[key] = value;
+        changed.push(`filters.${key}`);
+      });
     } else {
-      Object.assign(state.filters[section], values);
+      Object.entries(values).forEach(([key, value]) => {
+        if (valuesEqual(state.filters[section][key], value)) return;
+        state.filters[section][key] = value;
+        changed.push(`filters.${section}.${key}`);
+      });
     }
-    notify(['filters']);
+    if (changed.length) notify(['filters', ...changed]);
   }
 
   /** 执行者下拉选项：Worker / Group / WorkerFlow（任务派发、自动任务执行者共用） */

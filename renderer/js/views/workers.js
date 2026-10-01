@@ -343,7 +343,8 @@ VW.views.workers = (() => {
     document.getElementById('group-modal-close').addEventListener('click', () => VW.modal.close('group-modal'));
     document.getElementById('group-modal-cancel').addEventListener('click', () => VW.modal.close('group-modal'));
 
-    store.on(['workerList', 'groups', 'ui'], render);
+    // OPT-5：管理页只依赖 manageSeg——page/侧边栏搜索等 ui 变化不再触发整页卡片重建
+    store.on(['workerList', 'groups', 'ui.manageSeg'], render);
     render();
   }
 

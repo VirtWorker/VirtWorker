@@ -95,6 +95,61 @@ describe('store：切片订阅与相等性跳过（O9）', () => {
     off();
   });
 
+  test('字段路径订阅：仅订阅的字段变化才通知，其余 ui 字段变化不触发（OPT-5）', () => {
+    const pageSeen = [];
+    const sectionSeen = [];
+    const offPage = VW.store.on('ui.page', () => pageSeen.push('page'));
+    const offSection = VW.store.on('ui', () => sectionSeen.push('section'));
+
+    VW.store.merge('ui', { dashboardTab: 'action' }); // 非 page 字段
+    expect(pageSeen.length).toBe(0); // 字段级订阅者不受其他字段变化影响
+    expect(sectionSeen.length).toBe(1); // 整段订阅者保持既有行为
+
+    VW.store.merge('ui', { page: 'workers' });
+    expect(pageSeen.length).toBe(1);
+    expect(sectionSeen.length).toBe(2);
+
+    VW.store.merge('ui', { page: 'workers' }); // 内容未变：两者都不通知
+    expect(pageSeen.length).toBe(1);
+    expect(sectionSeen.length).toBe(2);
+
+    offPage();
+    offSection();
+  });
+
+  test('字段路径 + 整段双订阅同一 handler 去重：一次 merge 只执行一次（OPT-3×OPT-5）', () => {
+    const seen = [];
+    const off = VW.store.on(['ui.page', 'ui'], () => seen.push('fired'));
+    VW.store.merge('ui', { page: 'dashboard' });
+    expect(seen.length).toBe(1); // page 字段键与整段键在同一次 notify 中去重
+    off();
+  });
+
+  test('整段替换（set）对字段级订阅者做逐字段差量通知（bootstrap 场景）', () => {
+    const taskViewSeen = [];
+    const off = VW.store.on('settings.taskView', () => taskViewSeen.push('fired'));
+
+    const next = { ...VW.store.state.settings, theme: 'dark' }; // taskView 未变，theme 变了
+    VW.store.set({ settings: next });
+    expect(taskViewSeen.length).toBe(0);
+
+    VW.store.set({ settings: { ...next, taskView: 'board' } });
+    expect(taskViewSeen.length).toBe(1);
+    off();
+  });
+
+  test('setFilters 字段路径通知且内容未变不通知（OPT-5）', () => {
+    const seen = [];
+    const off = VW.store.on('filters.task.keyword', () => seen.push('fired'));
+    VW.store.setFilters('task', { keyword: 'abc' });
+    expect(seen.length).toBe(1);
+    VW.store.setFilters('task', { keyword: 'abc' }); // 内容未变：不通知
+    expect(seen.length).toBe(1);
+    VW.store.setFilters('task', { keyword: 'def' });
+    expect(seen.length).toBe(2);
+    off();
+  });
+
   test('setFilters 更新筛选切片', () => {
     VW.store.setFilters('task', { keyword: 'abc' });
     expect(VW.store.state.filters.task.keyword).toBe('abc');

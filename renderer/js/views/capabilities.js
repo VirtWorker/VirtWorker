@@ -444,8 +444,9 @@ VW.views.capabilities = (() => {
       VW.views.capabilitiesFlows.render();
     });
     // 懒加载：进入能力页才拉取视图数据（启动数据由 bootstrap 提供 flows/shares 等全局切片），
-    // 避免与 bootstrap 并发重复请求、消除首屏 7 个 IPC 竞争
-    store.on('ui', (s) => {
+    // 避免与 bootstrap 并发重复请求、消除首屏 7 个 IPC 竞争。
+    // OPT-5：只订阅 page 字段，页内 tab/搜索等 ui 变化不再触发本回调
+    store.on('ui.page', (s) => {
       if (s.ui.page === 'capabilities') ensureLoaded();
     });
 

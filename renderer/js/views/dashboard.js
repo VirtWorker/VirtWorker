@@ -717,10 +717,11 @@ VW.views.dashboard = (() => {
     });
     // 拆分订阅：轻量刷新（refreshStats）只更新统计卡片，不再连带重建队列 DOM——
     // 此前 stats 也在 renderTabs 的订阅里，统计数字抖动就会触发队列整体重绘
-    store.on(['queue', 'ui'], renderTabs);
+    // OPT-5：页签只依赖 dashboardTab，manageSeg/sidebarSearch 等变化不再触发队列卡片重建
+    store.on(['queue', 'ui.dashboardTab'], renderTabs);
     store.on('stats', renderStats);
     store.on(['tasks', 'tasksMeta'], renderTaskList);
-    store.on('settings', renderTaskList);
+    store.on('settings.taskView', renderTaskList); // OPT-5：列表/看板只随视图偏好切换重绘
 
     renderAll();
   }

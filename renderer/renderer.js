@@ -351,7 +351,8 @@
     VW.views.atworker.init();
     VW.views.shell.init();
 
-    store.on(['workers', 'groups', 'ui'], renderSidebar);
+    // OPT-5：侧边栏只依赖这两个 ui 字段——dashboardTab/manageSeg/page 变化不再触发整块侧边栏重建
+    store.on(['workers', 'groups', 'ui.sidebarSearch', 'ui.sidebarTab'], renderSidebar);
     store.on('stats', renderNavBadge);
 
     renderSidebar();
