@@ -14,7 +14,7 @@ const validWorker = {
   kind: 'virtworker.resource',
   version: 1,
   resourceType: 'worker',
-  resource: { name: '小助手', role: '通用助理', env: 'cloud', desc: '' },
+  resource: { name: '小助手', role: '通用助理', env: 'local', desc: '' },
   capabilities: []
 };
 const validFlow = {

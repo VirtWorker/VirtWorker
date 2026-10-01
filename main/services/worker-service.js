@@ -15,7 +15,9 @@ const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
 
 const ROLES = ['通用助理', '数据分析', '内容创作', '研发工程'];
-const ENV_LABEL = { cloud: '云端', local: '本地' };
+/** 运行环境已收敛为纯本地模式（云端 Worker 已移除）：label 仅保留本地，
+ *  旧数据中的 cloud 由 decorateWorker 兜底显示为本地、下次更新时自动改写 */
+const ENV_LABEL = { local: '本地' };
 const STATUS = { online: 'online', offline: 'offline' };
 
 const AVATAR_COLORS = [
@@ -26,13 +28,10 @@ const AVATAR_COLORS = [
   'linear-gradient(135deg,#9ae0e8,#22aab5)'
 ];
 
-/** 枚举契约（O12）：外部输入只接受存储枚举，非法值一律校验失败（不再接受中文别名或静默兜底） */
-function normalizeEnv(value, { allowEmpty = true } = {}) {
-  if (value === undefined || value === null || value === '') {
-    if (allowEmpty) return 'cloud';
-    throw fail.validation('请选择运行环境');
-  }
-  return assertEnum(value, ['cloud', 'local'], { label: '运行环境' });
+/** 运行环境（原 cloud | local 枚举）：云端模式移除后退化为系统固定值 local。
+ *  入参不再校验——UI 已删除选择项，外部调用传入任何值（含旧包的 cloud）都收敛为本地 */
+function normalizeEnv() {
+  return 'local';
 }
 
 function normalizeStatus(value) {
@@ -44,7 +43,7 @@ function normalizeStatus(value) {
 function decorateWorker(worker) {
   return {
     ...worker,
-    envLabel: ENV_LABEL[worker.env] || ENV_LABEL.cloud,
+    envLabel: ENV_LABEL[worker.env] || ENV_LABEL.local,
     capabilityCount: (worker.capabilityIds || []).length
   };
 }
@@ -71,7 +70,7 @@ function listWorkers(filter = {}) {
     items = items.filter((w) => w.role === filter.role);
   }
   if (filter.env) {
-    items = items.filter((w) => w.env === normalizeEnv(filter.env, { allowEmpty: false }));
+    items = items.filter((w) => w.env === normalizeEnv());
   }
   const status = normalizeStatus(filter.status);
   if (status) {

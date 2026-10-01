@@ -128,14 +128,13 @@ function resolveAssignee(assigneeId) {
     if (!group) throw fail.notFound('所选 Group 不存在');
     const leadId = group.leadWorkerId || group.memberIds[0];
     if (!leadId) throw fail.validation('该 Group 没有成员，请先为其添加成员再派发任务');
-    const lead = leadId ? db.find('workers', leadId) : null;
-    return { type: 'group', id: group.id, name: group.name, env: lead?.env ?? 'cloud' };
+    return { type: 'group', id: group.id, name: group.name, env: 'local' };
   }
 
   if (id.startsWith('fl_')) {
     const flow = db.find('flows', id);
     if (!flow) throw fail.notFound('所选 WorkerFlow 不存在');
-    return { type: 'flow', id: flow.id, name: flow.name, env: 'cloud' };
+    return { type: 'flow', id: flow.id, name: flow.name, env: 'local' };
   }
 
   const worker = db.find('workers', id);

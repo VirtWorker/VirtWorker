@@ -45,7 +45,7 @@ function summarize(payload) {
   if (!payload) return '';
   if (payload.resourceType === 'worker') {
     const capabilityCount = (payload.capabilities || []).length;
-    return `${payload.resource.role} · ${payload.resource.env === 'local' ? '本地' : '云端'}${capabilityCount ? ` · 含 ${capabilityCount} 项能力` : ''}`;
+    return `${payload.resource.role} · 本地${capabilityCount ? ` · 含 ${capabilityCount} 项能力` : ''}`;
   }
   return `${(payload.nodes || []).length} 个节点`;
 }

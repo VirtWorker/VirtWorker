@@ -89,7 +89,7 @@ describe('chat-service：聊天绑定与会话消息接入', () => {
 
   beforeAll(() => {
     tempDir = initTempDb();
-    const worker = workerService.createWorker({ name: '调研员小张', role: '数据分析', env: 'cloud' });
+    const worker = workerService.createWorker({ name: '调研员小张', role: '数据分析', env: 'local' });
     workerId = worker.id;
     workerName = worker.name;
     connection = chatService.createConnection({ platform: 'mock', name: '演示连接' });

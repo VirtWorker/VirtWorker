@@ -405,10 +405,6 @@
             <select id="worker-filter-role"><option>全部角色</option><option>通用助理</option><option>数据分析</option><option>内容创作</option><option>研发工程</option></select>
           </label>
           <label class="select">
-            <span class="select-label">环境</span>
-            <select id="worker-filter-env"><option value="">全部环境</option><option value="cloud">云端</option><option value="local">本地</option></select>
-          </label>
-          <label class="select">
             <span class="select-label">排序字段</span>
             <select id="worker-filter-sort"><option value="">默认排序</option><option value="newest">最近创建</option><option value="name">名称</option></select>
           </label>
@@ -597,8 +593,7 @@
         <div class="form-item">
           <label class="form-label">运行环境</label>
           <div class="radio-row">
-            <label class="radio"><input type="radio" name="env" value="云端" checked /><span>云端</span></label>
-            <label class="radio"><input type="radio" name="env" value="本地" /><span>本地</span></label>
+            <label class="radio"><input type="radio" name="env" value="本地" checked disabled /><span>本地（云端模式已下线）</span></label>
           </div>
         </div>
         <div class="form-item">

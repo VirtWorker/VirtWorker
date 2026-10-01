@@ -340,12 +340,14 @@ describe('IPC 契约：业务通道行为（O15 扩面）', () => {
     expect(db.find('workers', worker.id).capabilityIds).toEqual([]);
   });
 
-  test('worker：无效枚举（环境/角色）返回校验失败而非静默兜底（O12）', async () => {
+  test('worker：无效枚举（角色）返回校验失败而非静默兜底（O12）；env 收敛为本地固定值', async () => {
     const worker = (await invoke('worker:create', { name: '枚举执行者' })).data;
-    const badEnv = await invoke('worker:update', { id: worker.id, patch: { env: '内网' } });
-    expect(badEnv.error.code).toBe('VALIDATION_FAILED');
     const badRole = await invoke('worker:update', { id: worker.id, patch: { role: '不存在的角色' } });
     expect(badRole.error.code).toBe('VALIDATION_FAILED');
+    // 云端模式已移除：env 不再是用户可选枚举，任何传入值（含旧数据 cloud）都收敛为本地
+    const coerced = await invoke('worker:update', { id: worker.id, patch: { env: '内网' } });
+    expect(coerced.ok).toBe(true);
+    expect(db.find('workers', worker.id).env).toBe('local');
   });
 
   test('group：成员列表传非数组被拒绝（O12）', async () => {
