@@ -84,6 +84,9 @@ function sanitizeSettings(patch = {}) {
   const safe = {};
   SETTINGS_KEYS.forEach((key) => {
     if (patch[key] === undefined) return;
+    // activeExecutor / executorConfig 只能经 executor:activate / executor:configure 写入：
+    // 在此放行会让渲染层旁路 mergeExecutorConfig 的 vault 加密，把密钥明文落库
+    if (key === 'activeExecutor' || key === 'executorConfig') return;
     if (key === 'taskView' && !TASK_VIEWS.includes(patch[key])) return;
     if (key === 'period' && !PERIODS.includes(patch[key])) return;
     if (key === 'theme' && !THEMES.includes(patch[key])) return;

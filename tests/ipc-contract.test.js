@@ -276,6 +276,19 @@ describe('IPC 契约：业务通道行为（O15 扩面）', () => {
     expect(after.taskRetentionDays).toBe(before.taskRetentionDays);
   });
 
+  test('settings:update 无法旁路写入 activeExecutor / executorConfig（密钥必须走 executor:configure 加密）', async () => {
+    const before = db.getSettings();
+    await invoke('settings:update', {
+      activeExecutor: 'rogue-executor',
+      executorConfig: { rogue: { apiKey: 'sk-plaintext-bypass' } }
+    });
+    const after = db.getSettings();
+    // 两个键被白名单显式跳过：绕过 mergeExecutorConfig 的明文落库通道必须封死
+    expect(after.activeExecutor).toBe(before.activeExecutor);
+    expect(after.executorConfig?.rogue).toBeUndefined();
+    expect(JSON.stringify(after)).not.toContain('sk-plaintext-bypass');
+  });
+
   test('task：create → detail → cancel → retry 全链路（F1）', async () => {
     const worker = (await invoke('worker:create', { name: '链路执行者' })).data;
     const created = await invoke('task:create', { goal: '契约链路目标', assigneeId: worker.id, tags: ['契约'] });
