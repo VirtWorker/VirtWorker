@@ -464,6 +464,22 @@ function resume(taskId) {
   dispatch(taskId);
 }
 
+/** 结果汇总的执行者解析（OPT-7）：
+ *  - 单 Worker/Group 任务：按任务执行者解析（与执行时一致）；
+ *  - 流程任务：取「产出最终交付物的节点」——最后一个绑定了执行者的步骤的 Worker。
+ *    此前流程任务传 null，buildResult 的交付物退化为通用助理口径，与流程节点角色不符；
+ *    全部节点都未绑定执行者时仍回退 null（保持通用口径）。 */
+function resolveResultWorker(task) {
+  if (task.assignee.type !== 'flow') return workerService.resolveExecutorWorker(task.assignee);
+  for (let i = task.steps.length - 1; i >= 0; i -= 1) {
+    if (task.steps[i]?.workerId) {
+      const bound = workerService.getWorker(task.steps[i].workerId);
+      if (bound) return bound;
+    }
+  }
+  return null;
+}
+
 async function finish(taskId) {
   const ctx = contexts.get(taskId);
   contexts.delete(taskId);
@@ -473,9 +489,8 @@ async function finish(taskId) {
   const task = taskService.getTask(taskId);
   if (!task || task.status !== taskService.STATUS.running) return;
   const executor = ctx.executor || executorRegistry.getActive();
-  const worker = task.assignee.type === 'flow' ? null : workerService.resolveExecutorWorker(task.assignee);
   // 契约统一 await：结果汇总允许异步（真实 LLM 执行器需要等待最终响应）
-  taskService.succeed(taskId, await executor.buildResult(task, worker));
+  taskService.succeed(taskId, await executor.buildResult(task, resolveResultWorker(task)));
 }
 
 function stop(taskId) {

@@ -169,6 +169,49 @@ describe('task-runtime 端到端', () => {
     executor.setActive('fast-test');
   });
 
+  test('流程任务收尾传入末节点执行者，交付物角色对齐（OPT-7）', async () => {
+    db.removeWhere('tasks', () => true);
+    const first = workerService.createWorker({ name: '首节点创作者', role: '内容创作' });
+    const last = workerService.createWorker({ name: '末节点分析师', role: '数据分析' });
+    let captured = null;
+    // 探针执行器：步骤计划与 mock 同款（携带节点 Worker），记录 buildResult 收到的 worker
+    const probing = {
+      ...fastExecutor,
+      name: 'probe-test',
+      buildFlowSteps: (task, plan) =>
+        plan.nodes.map((node, index) => ({
+          step: index + 1,
+          title: node.title,
+          status: 'pending',
+          startedAt: null,
+          finishedAt: null,
+          log: '',
+          citations: [],
+          workerId: node.worker ? node.worker.id : null,
+          workerName: node.worker ? node.worker.name : ''
+        })),
+      buildResult: (task, worker) => {
+        captured = worker;
+        return { summary: 'done', text: 'done', artifacts: [], capabilities: {} };
+      }
+    };
+    executor.register(probing);
+    executor.setActive('probe-test');
+
+    const flow = flowService.create({
+      name: `角色流程 ${Date.now()}`,
+      nodes: [
+        { title: '撰写初稿', workerId: first.id, instruction: '完成初稿' },
+        { title: '分析产出', workerId: last.id, instruction: '分析结果' }
+      ]
+    });
+    const task = taskService.create({ goal: '流程交付', assigneeId: flow.id });
+    await waitForStatus(task.id, 'succeeded');
+
+    expect(captured?.id).toBe(last.id); // 末节点（产出交付物的角色），此前传 null 退化为通用助理
+    executor.setActive('fast-test');
+  });
+
   test('派发失败兜底：Flow 在排队等待期间被删除，槽位释放派发时任务应失败', async () => {
     const hold = { ...fastExecutor, name: 'hold-test', stepDelay: () => 5000 };
     executor.register(hold);
