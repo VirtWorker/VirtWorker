@@ -84,6 +84,9 @@ function sanitizeSettings(patch = {}) {
   const safe = {};
   SETTINGS_KEYS.forEach((key) => {
     if (patch[key] === undefined) return;
+    // activeExecutor / executorConfig 只能经 executor:activate / executor:configure 写入：
+    // 在此放行会让渲染层旁路 mergeExecutorConfig 的 vault 加密，把密钥明文落库
+    if (key === 'activeExecutor' || key === 'executorConfig') return;
     if (key === 'taskView' && !TASK_VIEWS.includes(patch[key])) return;
     if (key === 'period' && !PERIODS.includes(patch[key])) return;
     if (key === 'theme' && !THEMES.includes(patch[key])) return;
@@ -132,6 +135,7 @@ function mergeExecutorConfig(patch = {}) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
   const current = readSettings().executorConfig || {};
   const next = { ...current };
+  let sealedUnprotected = false;
   for (const [name, config] of Object.entries(patch).slice(0, 20)) {
     if (!config || typeof config !== 'object' || Array.isArray(config)) {
       delete next[name];
@@ -154,12 +158,22 @@ function mergeExecutorConfig(patch = {}) {
       }
       if (SENSITIVE_CONFIG_KEY_RE.test(key)) {
         // 与自动化 Token 同款形态：{ sealed, mask }——密文落库、掩码供展示
-        merged[key] = { sealed: vault.seal(text.slice(0, 2048)), mask: vault.mask(text.slice(0, 2048)) };
+        const sealedValue = vault.seal(text.slice(0, 2048));
+        if (sealedValue.mode !== 'encrypted') sealedUnprotected = true;
+        merged[key] = { sealed: sealedValue, mask: vault.mask(text.slice(0, 2048)) };
       } else {
         merged[key] = text.slice(0, 2048);
       }
     }
     next[name] = merged;
+  }
+  // 系统密钥链不可用时密钥仅 base64 编码存储，必须让用户知情（与连接器凭据同款告警，BUG-6）
+  if (sealedUnprotected) {
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: '执行器密钥未获得系统级加密保护',
+      body: '当前系统密钥链不可用，执行器配置中的敏感密钥仅做了基础编码存储。请检查 Windows 凭据服务是否正常。'
+    });
   }
   return next;
 }
@@ -180,8 +194,31 @@ function decorateExecutorConfig(executorConfig) {
   );
 }
 
+/**
+ * IPC sender 信任校验：仅放行主窗口的顶层 file:// frame（iframe/webview/被销毁 frame 一律拒绝）。
+ * event 同时缺 sender 与 senderFrame 时放行——测试直调与内部调用没有 Electron 事件；
+ * 生产环境 IPC 事件恒有这两属性，缺一即拒。
+ */
+function isTrustedSender(event) {
+  if (!event || (event.sender == null && event.senderFrame == null)) return true;
+  const frame = event.senderFrame;
+  if (!frame) return false;
+  try {
+    return frame.parent === null && String(frame.url || '').startsWith('file:');
+  } catch (error) {
+    return false; // frame 已销毁等异常，宁可误拒
+  }
+}
+
 function handle(channel, handler) {
-  ipcMain.handle(channel, async (_event, payload) => {
+  ipcMain.handle(channel, async (event, payload) => {
+    if (!isTrustedSender(event)) {
+      return {
+        ok: false,
+        apiVersion: API_VERSION,
+        error: { code: 'FORBIDDEN', message: '请求来源不受信任', details: null }
+      };
+    }
     try {
       return { ok: true, data: await handler(payload), apiVersion: API_VERSION };
     } catch (error) {
@@ -455,7 +492,8 @@ function register() {
     if (result.canceled || !result.filePath) return { canceled: true };
     const text = String(content ?? '');
     if (text.length > 50 * 1024 * 1024) throw fail.validation('内容过大（上限 50MB）');
-    fs.writeFileSync(result.filePath, text, 'utf8');
+    // 异步写：50MB 同步写会阻塞主进程，期间 IPC/HTTP/任务运行时全部停摆
+    await fs.promises.writeFile(result.filePath, text, 'utf8');
     return { canceled: false, filePath: result.filePath };
   });
   handle('app:open-file', async () => {
@@ -467,9 +505,9 @@ function register() {
     });
     if (result.canceled || !result.filePaths.length) return { canceled: true };
     const filePath = result.filePaths[0];
-    const stat = fs.statSync(filePath);
+    const stat = await fs.promises.stat(filePath);
     if (stat.size > 2 * 1024 * 1024) throw fail.validation('文件过大（上限 2MB）');
-    return { canceled: false, filePath, content: fs.readFileSync(filePath, 'utf8') };
+    return { canceled: false, filePath, content: await fs.promises.readFile(filePath, 'utf8') };
   });
   handle('app:data-stats', () => {
     const dir = path.join(app.getPath('userData'), 'data');

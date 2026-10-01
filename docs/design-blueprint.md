@@ -139,7 +139,7 @@ renderer/
   "id": "wk_8f3a1c",              // 前缀 + 短随机，替代现有 Date.now()
   "name": "调研员小张",
   "role": "数据分析",
-  "env": "cloud",                 // cloud | local
+  "env": "local",                 // 仅本地（云端模式已下线；旧数据 cloud 在更新时自动改写）
   "desc": "负责竞品调研",
   "status": "online",             // online | offline
   "avatarColor": "linear-gradient(...)",
@@ -179,7 +179,7 @@ renderer/
     "label": "手动创建"            // 看板「触发方式」筛选与展示用
   },
   "assignee": { "type": "worker", "id": "wk_8f3a1c", "name": "调研员小张" },  // worker | group | flow
-  "workspace": { "cwd": "D:\\Work\\feedback", "env": "cloud" },
+  "workspace": { "cwd": "D:\\Work\\feedback", "env": "local" },
   "input": { "payload": {}, "attachments": [] },        // 触发时注入的原始输入
   "plan":   [ { "step": 1, "title": "汇总反馈原文", "status": "done" } ],   // 步骤与执行轨迹
   "steps":  [ { "step": 1, "title": "...", "status": "running", "startedAt": "...", "log": "" } ],

@@ -319,13 +319,12 @@ function scheduleRetry(taskId, name) {
   if (attempts === 0) taskService.recordEvent(taskId, `执行者「${name}」当前不在线，任务等待中`);
   retryAttempts.set(taskId, attempts + 1);
   const delay = Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS);
-  retryTimers.set(
-    taskId,
-    setTimeout(() => {
-      retryTimers.delete(taskId);
-      dispatch(taskId);
-    }, delay)
-  );
+  const timer = setTimeout(() => {
+    retryTimers.delete(taskId);
+    dispatch(taskId);
+  }, delay);
+  timer.unref?.(); // 不阻塞进程退出（before-quit 清理链被中断时不至于拖住进程最长 10 分钟）
+  retryTimers.set(taskId, timer);
 }
 
 /** 可被取消信号中断的等待 */

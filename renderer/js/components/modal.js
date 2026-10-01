@@ -11,6 +11,9 @@ VW.modal = (() => {
   /** 打开栈：记录每个弹窗的触发元素，支持多层弹窗逐层还原焦点 */
   const openStack = [];
 
+  /** 动态生成的弹窗标题 id 序号（无 id 的 <h3> 需要 aria-labelledby 关联） */
+  let dialogTitleSeq = 0;
+
   function el(id) {
     return typeof id === 'string' ? document.getElementById(id) : id;
   }
@@ -27,6 +30,12 @@ VW.modal = (() => {
     target.classList.remove('hidden');
     target.setAttribute('role', 'dialog');
     target.setAttribute('aria-modal', 'true');
+    // aria-labelledby 关联弹窗标题：读屏软件打开弹窗时可朗读弹窗名称
+    const title = target.querySelector('.modal-header h3');
+    if (title) {
+      if (!title.id) title.id = `modal-title-${(dialogTitleSeq += 1)}`;
+      target.setAttribute('aria-labelledby', title.id);
+    }
     openStack.push({ id: target.id, trigger: document.activeElement });
     const first = target.querySelector('input:not([type="checkbox"]), textarea, select') || target.querySelector(FOCUSABLE);
     first?.focus();

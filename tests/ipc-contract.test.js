@@ -45,10 +45,10 @@ const db = require('../main/store/db');
 const { initTempDb, cleanupTempDb } = await import('./setup.js');
 
 /** 模拟渲染层 invoke：直接调用注册到 ipcMain 的 handler */
-function invoke(channel, payload) {
+function invoke(channel, payload, event = {}) {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`通道未注册: ${channel}`);
-  return handler({}, payload);
+  return handler(event, payload);
 }
 
 /** 创建一个包含可索引文本文件的临时目录 */
@@ -82,6 +82,34 @@ describe('IPC 契约：统一响应包', () => {
     expect(res.error.code).toBe('INTERNAL');
     expect(res.error.message).toBe('系统内部错误，请重试');
     expect(res.error.details).toBeNull();
+  });
+
+  test('sender 信任校验：无 Electron 事件的测试直调被放行（BUG-5）', async () => {
+    const res = await invoke('settings:get');
+    expect(res.ok).toBe(true);
+  });
+
+  test('sender 信任校验：主窗口顶层 file:// frame 被放行（BUG-5）', async () => {
+    const mainFrameEvent = { sender: { id: 1 }, senderFrame: { parent: null, url: 'file:///C:/app/renderer/index.html' } };
+    const res = await invoke('settings:get', undefined, mainFrameEvent);
+    expect(res.ok).toBe(true);
+  });
+
+  test('sender 信任校验：iframe / 非 file 协议 / 缺 frame 的一律拒绝（BUG-5）', async () => {
+    const iframeEvent = { sender: { id: 1 }, senderFrame: { parent: { parent: null }, url: 'file:///C:/app/renderer/index.html' } };
+    const iframeRes = await invoke('settings:get', undefined, iframeEvent);
+    expect(iframeRes.ok).toBe(false);
+    expect(iframeRes.error.code).toBe('FORBIDDEN');
+
+    const httpEvent = { sender: { id: 1 }, senderFrame: { parent: null, url: 'https://evil.example.com/' } };
+    const httpRes = await invoke('settings:get', undefined, httpEvent);
+    expect(httpRes.ok).toBe(false);
+    expect(httpRes.error.code).toBe('FORBIDDEN');
+
+    const disposedEvent = { sender: { id: 1 }, senderFrame: null };
+    const disposedRes = await invoke('settings:get', undefined, disposedEvent);
+    expect(disposedRes.ok).toBe(false);
+    expect(disposedRes.error.code).toBe('FORBIDDEN');
   });
 });
 
@@ -276,6 +304,19 @@ describe('IPC 契约：业务通道行为（O15 扩面）', () => {
     expect(after.taskRetentionDays).toBe(before.taskRetentionDays);
   });
 
+  test('settings:update 无法旁路写入 activeExecutor / executorConfig（密钥必须走 executor:configure 加密）', async () => {
+    const before = db.getSettings();
+    await invoke('settings:update', {
+      activeExecutor: 'rogue-executor',
+      executorConfig: { rogue: { apiKey: 'sk-plaintext-bypass' } }
+    });
+    const after = db.getSettings();
+    // 两个键被白名单显式跳过：绕过 mergeExecutorConfig 的明文落库通道必须封死
+    expect(after.activeExecutor).toBe(before.activeExecutor);
+    expect(after.executorConfig?.rogue).toBeUndefined();
+    expect(JSON.stringify(after)).not.toContain('sk-plaintext-bypass');
+  });
+
   test('task：create → detail → cancel → retry 全链路（F1）', async () => {
     const worker = (await invoke('worker:create', { name: '链路执行者' })).data;
     const created = await invoke('task:create', { goal: '契约链路目标', assigneeId: worker.id, tags: ['契约'] });
@@ -299,12 +340,14 @@ describe('IPC 契约：业务通道行为（O15 扩面）', () => {
     expect(db.find('workers', worker.id).capabilityIds).toEqual([]);
   });
 
-  test('worker：无效枚举（环境/角色）返回校验失败而非静默兜底（O12）', async () => {
+  test('worker：无效枚举（角色）返回校验失败而非静默兜底（O12）；env 收敛为本地固定值', async () => {
     const worker = (await invoke('worker:create', { name: '枚举执行者' })).data;
-    const badEnv = await invoke('worker:update', { id: worker.id, patch: { env: '内网' } });
-    expect(badEnv.error.code).toBe('VALIDATION_FAILED');
     const badRole = await invoke('worker:update', { id: worker.id, patch: { role: '不存在的角色' } });
     expect(badRole.error.code).toBe('VALIDATION_FAILED');
+    // 云端模式已移除：env 不再是用户可选枚举，任何传入值（含旧数据 cloud）都收敛为本地
+    const coerced = await invoke('worker:update', { id: worker.id, patch: { env: '内网' } });
+    expect(coerced.ok).toBe(true);
+    expect(db.find('workers', worker.id).env).toBe('local');
   });
 
   test('group：成员列表传非数组被拒绝（O12）', async () => {

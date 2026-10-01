@@ -190,6 +190,32 @@ describe('schema v1→v2 迁移：任务时间线拆分（P3-30）', () => {
     db.init(path.join(dir, 'data'));
     expect(db.isReadOnly()).toBe(false);
   });
+
+  test('schemaVersion 缺失的 v1 tasks 文件仍迁移内嵌时间线（NaN 边缘，BUG-7）', () => {
+    const nanDir = path.join(dir, 'nan-version');
+    fs.mkdirSync(path.join(nanDir, 'data'), { recursive: true });
+    // 故意不写 schemaVersion 字段：Number(undefined)=NaN，旧判断 NaN<2 为 false 会跳过提取，
+    // 而 schema.upgrade 把缺失版本按 v1 处理剥离 events → 时间线静默丢失
+    const legacy = {
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      items: [
+        {
+          id: 'tk_nan',
+          title: '无版本号旧任务',
+          status: 'succeeded',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          events: [{ id: 'ev_nan1', taskId: 'tk_nan', type: 'created', message: '创建', at: '2026-01-01T00:00:01.000Z' }]
+        }
+      ]
+    };
+    fs.writeFileSync(path.join(nanDir, 'data', 'tasks.json'), JSON.stringify(legacy), 'utf8');
+
+    db.init(path.join(nanDir, 'data'));
+    expect(db.query('taskevents', (event) => event.taskId === 'tk_nan').map((event) => event.id)).toEqual(['ev_nan1']);
+    expect(db.find('tasks', 'tk_nan')).not.toHaveProperty('events'); // schema 照常剥离内嵌字段
+
+    db.init(path.join(dir, 'data')); // 恢复主数据目录
+  });
 });
 
 describe('数据快照备份与恢复（F5）', () => {
@@ -309,5 +335,60 @@ describe('O11 结构化匹配器：where / countWhere / removeWhere / keepLast',
     db.append('taskevents', { id: 'ev_k3', taskId: 'tk_keep', type: 'log', at: '2026-01-01T00:00:05.000Z' });
     expect(db.keepLast('taskevents', { taskId: 'tk_keep' }, 2)).toBe(1);
     expect(db.where('taskevents', { taskId: 'tk_keep' }).map((event) => event.id)).toEqual(['ev_k2', 'ev_k3']);
+  });
+});
+
+describe('taskevents 追加日志：写放大治理（PERF-1）', () => {
+  const dataDir = () => path.join(dir, 'data-events');
+  const logOf = () => path.join(dataDir(), 'taskevents.log');
+  const baseOf = () => path.join(dataDir(), 'taskevents.json');
+  const event = (id) => ({ id, taskId: 'tk_log', type: 'log', message: id, at: '2026-01-01T00:00:00.000Z' });
+
+  beforeAll(() => {
+    db.init(dataDir());
+  });
+
+  test('append 走追加日志，不经全量重写（flush 后 base 文件仍不生成）', () => {
+    db.append('taskevents', event('ev_l1'));
+    db.flush(); // append 不再标记脏：无 taskevents 全量写
+
+    const logLines = fs.readFileSync(logOf(), 'utf8').trim().split('\n');
+    expect(JSON.parse(logLines[0]).id).toBe('ev_l1');
+    expect(fs.existsSync(baseOf())).toBe(false);
+    expect(db.count('taskevents')).toBe(1);
+  });
+
+  test('重新 init 回放日志恢复事件；重复行按 id 去重', () => {
+    // 模拟「全量写成功但日志截断失败」的残留：同一事件在日志中出现两次
+    fs.appendFileSync(logOf(), `${JSON.stringify(event('ev_l1'))}\n`, 'utf8');
+    db.init(dataDir());
+    expect(db.where('taskevents', { taskId: 'tk_log' }).map((event) => event.id)).toEqual(['ev_l1']);
+  });
+
+  test('removeWhere 全量落盘后日志清空，已删事件重启后不复活', () => {
+    db.removeWhere('taskevents', () => true);
+    db.flush();
+    expect(fs.readFileSync(logOf(), 'utf8')).toBe(''); // 全量写成功即清空日志
+
+    db.append('taskevents', event('ev_l2'));
+    db.init(dataDir()); // 模拟重启加载：base + 日志回放
+    expect(db.where('taskevents', { taskId: 'tk_log' }).map((event) => event.id)).toEqual(['ev_l2']);
+  });
+
+  test('追加达到阈值后触发压缩：base 收编全部事件、日志清空、计数复位', () => {
+    // 先重置为干净状态（清空 base/日志/计数），让压缩触发点完全确定
+    db.removeWhere('taskevents', () => true);
+    db.flush();
+    for (let i = 0; i < db.EVENTS_LOG_COMPACT_LINES; i += 1) {
+      db.append('taskevents', event(`ev_c${i}`));
+    }
+    const payload = JSON.parse(fs.readFileSync(baseOf(), 'utf8'));
+    expect(payload.items.filter((item) => item.taskId === 'tk_log')).toHaveLength(db.EVENTS_LOG_COMPACT_LINES);
+    expect(fs.readFileSync(logOf(), 'utf8')).toBe('');
+
+    // 压缩后计数已复位：继续追加仍走追加路径，不触发第二次压缩
+    db.append('taskevents', event('ev_c_after'));
+    expect(JSON.parse(fs.readFileSync(logOf(), 'utf8').trim()).id).toBe('ev_c_after');
+    expect(db.countWhere('taskevents', { taskId: 'tk_log' })).toBe(db.EVENTS_LOG_COMPACT_LINES + 1);
   });
 });

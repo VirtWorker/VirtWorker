@@ -228,12 +228,12 @@ function revokeConnector(id) {
 
 // ==================== 知识库 ====================
 
-function normalizeDir(dir) {
+async function normalizeDir(dir) {
   const target = path.resolve(String(dir ?? '').trim());
   if (!target) throw fail.validation('请选择要导入的目录');
-  let stat = null;
+  let stat;
   try {
-    stat = fs.statSync(target);
+    stat = await fs.promises.stat(target);
   } catch (error) {
     throw fail.validation('目录不存在或不可访问');
   }
@@ -241,34 +241,36 @@ function normalizeDir(dir) {
   return target;
 }
 
-function scanFiles(dir) {
+/** 全链路 fs.promises 异步扫描：每次 await 都让出事件循环，
+ *  大目录导入（上限 200×512KB）期间主进程的 IPC/HTTP/任务运行时不被阻塞 */
+async function scanFiles(dir) {
   const files = [];
-  const walk = (current) => {
+  const walk = async (current) => {
     if (files.length >= MAX_FILES) return;
-    let entries = [];
+    let entries;
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch (error) {
       return;
     }
-    entries.forEach((entry) => {
+    for (const entry of entries) {
       if (files.length >= MAX_FILES) return;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) walk(full);
-        return;
+        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) await walk(full);
+        continue;
       }
-      if (!entry.isFile()) return;
-      if (!TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) return;
+      if (!entry.isFile()) continue;
+      if (!TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
       try {
-        if (fs.statSync(full).size > MAX_FILE_BYTES) return;
+        if ((await fs.promises.stat(full)).size > MAX_FILE_BYTES) continue;
       } catch (error) {
-        return;
+        continue;
       }
       files.push(full);
-    });
+    }
   };
-  walk(dir);
+  await walk(dir);
   return files;
 }
 
@@ -300,18 +302,18 @@ function tokenize(text) {
   return [...tokens];
 }
 
-function indexDirectory(capabilityId, dir) {
-  const files = scanFiles(dir);
+async function indexDirectory(capabilityId, dir) {
+  const files = await scanFiles(dir);
   if (!files.length) throw fail.validation('该目录下没有可索引的文本文件');
 
   const chunks = [];
-  files.forEach((file) => {
-    if (chunks.length >= MAX_CHUNKS) return;
-    let text = '';
+  for (const file of files) {
+    if (chunks.length >= MAX_CHUNKS) break;
+    let text;
     try {
-      text = fs.readFileSync(file, 'utf8');
+      text = await fs.promises.readFile(file, 'utf8');
     } catch (error) {
-      return;
+      continue;
     }
     chunkText(text)
       .slice(0, MAX_CHUNKS - chunks.length)
@@ -325,7 +327,7 @@ function indexDirectory(capabilityId, dir) {
           text: slice
         });
       });
-  });
+  }
 
   db.removeWhere('chunks', { capabilityId });
   db.insertMany('chunks', chunks); // 批量写盘：逐条 insert 在数千片段时是 O(N²)
@@ -333,11 +335,11 @@ function indexDirectory(capabilityId, dir) {
   return { fileCount: files.length, chunkCount: chunks.length, dir };
 }
 
-function createKnowledge(params = {}) {
+async function createKnowledge(params = {}) {
   const name = String(params.name ?? '').trim();
   if (!name) throw fail.validation('请填写知识库名称');
   if (name.length > 30) throw fail.validation('名称最多 30 个字符');
-  const dir = normalizeDir(params.dir);
+  const dir = await normalizeDir(params.dir);
 
   const capability = {
     id: createId('cp'),
@@ -354,7 +356,7 @@ function createKnowledge(params = {}) {
   // 先索引、后入库：索引失败（如目录没有可索引文本）时不能留下 status=indexed 但没有任何片段的幽灵知识库
   let source;
   try {
-    source = indexDirectory(capability.id, dir);
+    source = await indexDirectory(capability.id, dir);
   } catch (error) {
     db.removeWhere('chunks', { capabilityId: capability.id });
     invalidateChunkIndex();
@@ -366,10 +368,10 @@ function createKnowledge(params = {}) {
   return decorate(next);
 }
 
-function reindexKnowledge(id) {
+async function reindexKnowledge(id) {
   const capability = getOrThrow(id);
   if (capability.type !== 'knowledge') throw fail.invalidState('该能力不是知识库');
-  const source = indexDirectory(id, capability.dir);
+  const source = await indexDirectory(id, capability.dir);
   const next = { ...capability, source, status: 'indexed', updatedAt: nowIso() };
   db.update('capabilities', id, next);
   publish(next, 'capability:updated');

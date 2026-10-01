@@ -168,7 +168,6 @@ VW.views.workers = (() => {
     if (worker) {
       form.name.value = worker.name;
       form.role.value = worker.role;
-      form.querySelector(`input[name="env"][value="${worker.env === 'local' ? '本地' : '云端'}"]`).checked = true;
       form.desc.value = worker.desc || '';
     }
     VW.modal.open('worker-modal');
@@ -214,7 +213,6 @@ VW.views.workers = (() => {
     const payload = {
       name: form.name.value,
       role: form.role.value,
-      env: form.env.value,
       desc: form.desc.value
     };
     const request = editingWorkerId
@@ -308,7 +306,6 @@ VW.views.workers = (() => {
     };
     bindFilter('worker-filter-status', 'status', filters.status);
     bindFilter('worker-filter-role', 'role');
-    bindFilter('worker-filter-env', 'env');
     bindFilter('worker-filter-sort', 'sort');
 
     // 新建入口（统一经 openWorkerModal 清空编辑态）

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
 const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
@@ -40,24 +40,67 @@ if (!hasSingleInstanceLock) {
 }
 
 /**
- * 装配领域层：持久化 → IPC 通道 → 任务运行时 → 自动任务调度与本地触发端点。
- * 初始化失败不阻塞窗口创建，页面会以空数据降级启动。
+ * 装配领域层：分层初始化，避免单个 try/catch 包住全部时「一步失败、后续全跳过」——
+ * 尤其 ipc.register 被跳过后渲染层所有通道无 handler，应用沦为无提示的空壳窗口。
+ * 分层规则：
+ *  - 致命层（存储 / 执行器装配 / IPC 通道）：失败弹窗告知 + 记日志后退出，绝不空壳假启动；
+ *  - 降级层（运行时 / 调度 / Webhook / 聊天回执 / 本地端点）：单个失败只降级该子系统，
+ *    其余照常启动，并广播通知告知用户哪个功能不可用。
+ * @returns {boolean} false = 致命失败已发起退出，调用方不得继续创建窗口
  */
 function bootstrapServices() {
+  // 致命层 1：存储是一切服务的前置依赖
   try {
     db.init(path.join(app.getPath('userData'), 'data'));
+  } catch (error) {
+    console.error('[main] 数据目录初始化失败:', error);
+    dialog.showErrorBox(
+      'VirtWorker 无法启动',
+      `数据目录初始化失败，请检查磁盘空间与 %APPDATA% 写入权限后重试。\n\n${error.message}`
+    );
+    logger.close();
+    app.exit(1);
+    return false;
+  }
+
+  // 致命层 2：执行器装配与 IPC 通道——渲染层所有交互的入口
+  try {
     executor.register(executorMock, { activate: true }); // 当前为模拟执行器；接入真实 LLM 时注册并 setActive 即可
     restoreExecutorPreference(); // 恢复持久化的执行器选择（O16）
     ipc.register();
-    runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
-    scheduler.start(); // 启动补跑错过的定时任务并排程
-    webhookNotifier.start(); // 任务终态 Webhook 出站通知（F2）
-    chatService.startNotifier(); // 聊天出站回执（F3）
-    httpServer.start(); // API 触发的本地端点（仅回环地址）
-    startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照
   } catch (error) {
-    console.error('[main] 领域服务初始化失败:', error);
+    console.error('[main] 执行器/IPC 装配失败:', error);
+    dialog.showErrorBox('VirtWorker 无法启动', `服务装配失败，请重启应用。\n\n${error.message}`);
+    db.flush();
+    logger.close();
+    app.exit(1);
+    return false;
   }
+
+  // 降级层：各子系统独立启动，互不拖累
+  const startSteps = [
+    ['任务运行时', () => runtime.start()], // 恢复上次未完成的任务（排队重新派发、执行中继续）
+    ['自动任务调度', () => scheduler.start()], // 补跑错过的定时任务并排程
+    ['Webhook 通知', () => webhookNotifier.start()], // 任务终态出站通知（F2）
+    ['聊天回执', () => chatService.startNotifier()], // 聊天出站回执（F3）
+    ['本地 API 端点', () => httpServer.start()] // API 触发的本地端点（仅回环地址）
+  ];
+  for (const [name, start] of startSteps) {
+    try {
+      start();
+    } catch (error) {
+      console.error(`[main] ${name}启动失败:`, error);
+      // 窗口就绪前发出的通知无法送达渲染层（尽力而为），必须同时落日志
+      bus.emit('app:notice', {
+        level: 'error',
+        title: `${name}启动失败`,
+        body: '该功能本次会话不可用，其余功能不受影响；重启应用可尝试恢复。'
+      });
+    }
+  }
+
+  startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照，内部已逐步兜底
+  return true;
 }
 
 /** 恢复持久化的执行器选择（O16）：所选执行器未注册（如配置了真实执行器但当前未接入）时保持 mock */
@@ -72,8 +115,11 @@ function restoreExecutorPreference() {
   }
 }
 
+/** 首次维护延迟：备份是整目录同步拷贝，数据目录大时直接在启动路径上跑会造成启动卡顿 */
+const MAINTENANCE_START_DELAY_MS = 30 * 1000;
+
 /**
- * 每日维护（O7）：启动即执行一次，此后每 24 小时一次。
+ * 每日维护（O7）：启动 30 秒后首跑，此后每 24 小时一次。
  * - 过期任务清理：保留策略此前只在启动时执行，长期运行的自动化场景下过期任务会持续堆积
  * - 数据快照：.bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）
  */
@@ -98,7 +144,8 @@ function startDailyMaintenance() {
       console.error('[main] 每日维护：数据快照失败:', error.message);
     }
   };
-  run();
+  const first = setTimeout(run, MAINTENANCE_START_DELAY_MS);
+  first.unref?.(); // 不阻塞进程退出
   const timer = setInterval(run, 24 * 60 * 60 * 1000);
   timer.unref?.(); // 不阻塞进程退出
 }
@@ -116,6 +163,32 @@ function openExternalIfSafe(url) {
   } catch (error) {
     // 非法 URL 直接忽略，不打开
   }
+}
+
+/**
+ * 渲染进程连续崩溃达上限后的用户告知（BUG-12）：不能只留在日志里让用户面对无提示的白屏。
+ * 绕过 wireSystemNotifications 的「窗口聚焦抑制」——白屏时用户可能正盯着窗口，必须直接弹系统通知；
+ * 也不受 notify 设置开关限制（关键故障告知优先于免打扰）。点击通知 = 用户显式重试：
+ * 重置崩溃计数并重新加载（窗口已销毁时重建），配合焦点还原。
+ */
+function notifyRenderCrashLimit() {
+  if (!Notification?.isSupported?.()) return;
+  const notification = new Notification({
+    title: 'VirtWorker 界面已停止响应',
+    body: '界面连续崩溃多次，已停止自动恢复。点击此通知可尝试重新加载，建议尽快重启应用。'
+  });
+  notification.on('click', () => {
+    renderCrashCount = 0; // 人为的显式重试：重新计数，自动恢复机制重新可用
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      createWindow();
+    }
+  });
+  notification.show();
 }
 
 function createWindow() {
@@ -187,7 +260,8 @@ function createWindow() {
     console.error('[main] 渲染进程异常退出:', details.reason, `exitCode=${details.exitCode}`);
     renderCrashCount += 1;
     if (renderCrashCount > MAX_RENDER_CRASH_RECOVERY) {
-      console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，请重启应用');
+      console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，已弹系统通知告知用户');
+      notifyRenderCrashLimit();
       return;
     }
     setTimeout(() => {
@@ -247,7 +321,8 @@ app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
   // Windows 通知必须设置 AppUserModelID（与 electron-builder 的 appId 保持一致）才能弹出
   app.setAppUserModelId('com.virtworker.app');
-  bootstrapServices();
+  // 致命失败（存储/装配）时已弹窗并发起退出，不再创建窗口
+  if (!bootstrapServices()) return;
   wireSystemNotifications();
   createWindow();
 
@@ -268,6 +343,15 @@ app.on('window-all-closed', () => {
 
 // 全局未捕获异常兜底已由 logger.installGlobalHandlers() 统一接管（见文件顶部）
 
+/** 退出清理兜底：单个子系统清理抛错时记录并继续，绝不中断清理链 */
+function safeTeardown(name, fn) {
+  try {
+    fn();
+  } catch (error) {
+    console.error(`[main] 退出清理：${name} 失败:`, error);
+  }
+}
+
 // 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流
 app.on('before-quit', () => {
   // 「重启应用」不再走 app.exit(0)（会跳过本钩子导致脏缓存不落盘）：
@@ -275,9 +359,11 @@ app.on('before-quit', () => {
   if (ipc.consumeRelaunchRequest()) {
     app.relaunch();
   }
-  runtime.shutdown();
-  scheduler.stop();
-  httpServer.stop();
-  db.flush();
-  logger.close();
+  // 逐步独立兜底：此前单步抛错（如 runtime.shutdown 异常）会跳过后续全部清理，
+  // 导致 100ms 写入窗口内的脏缓存丢失、日志流未关闭
+  safeTeardown('runtime.shutdown', () => runtime.shutdown());
+  safeTeardown('scheduler.stop', () => scheduler.stop());
+  safeTeardown('httpServer.stop', () => httpServer.stop());
+  safeTeardown('db.flush', () => db.flush()); // 脏缓存落盘
+  safeTeardown('logger.close', () => logger.close()); // 日志流关闭，必须在 flush 之后
 });

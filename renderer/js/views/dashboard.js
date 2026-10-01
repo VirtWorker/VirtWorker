@@ -84,6 +84,38 @@ VW.views.dashboard = (() => {
 
   // ==================== 统计与页签 ====================
 
+  /** 保留队列卡片中已填写的操作内容（重绘竞态防护，与审批弹窗 collectRequestFormState 同款思路）：
+   *  任务执行期间 queue 切片变化会触发 renderTabs 全量重建 DOM，
+   *  用户正在填写的回答/表单/选项不能因此被清空或在提交时读到空值 */
+  function collectQueueFormState() {
+    const saved = {};
+    document.querySelectorAll('#dashboard-tab-list .queue-item[data-id]').forEach((item) => {
+      const inputs = {};
+      item.querySelectorAll('.request-input[data-field]').forEach((input) => {
+        inputs[input.dataset.field] = input.value;
+      });
+      const choice = item.querySelector('.choice-btn.active');
+      saved[item.dataset.id] = { inputs, choice: choice ? choice.dataset.value : null };
+    });
+    return saved;
+  }
+
+  function restoreQueueFormState(saved) {
+    if (!saved) return;
+    document.querySelectorAll('#dashboard-tab-list .queue-item[data-id]').forEach((item) => {
+      const state = saved[item.dataset.id];
+      if (!state) return;
+      item.querySelectorAll('.request-input[data-field]').forEach((input) => {
+        if (state.inputs[input.dataset.field] !== undefined) input.value = state.inputs[input.dataset.field];
+      });
+      // 已选中的选项一并恢复（按 value 匹配，选项集合变化时静默放弃）
+      if (state.choice !== null) {
+        const choice = item.querySelector(`.choice-btn[data-value="${CSS.escape(state.choice)}"]`);
+        if (choice) activateChoice(choice);
+      }
+    });
+  }
+
   function renderStats() {
     const stats = store.state.stats;
     document.getElementById('stat-total').textContent = String(stats.total);
@@ -124,16 +156,19 @@ VW.views.dashboard = (() => {
     }
 
     empty.classList.add('hidden');
+    // 全量 innerHTML 重建前采集已填写的输入，重建后按 taskId 恢复（重绘竞态不丢用户输入）
+    const savedForm = collectQueueFormState();
     container.innerHTML = list
       .map((task) => (tab === 'result' ? resultItemHtml(task) : actionItemHtml(task)))
       .join('');
+    restoreQueueFormState(savedForm);
   }
 
   /** 需要操作：按请求类型渲染选项 / 输入框 */
   function actionItemHtml(task) {
     const request = task.actionRequest || {};
     return `
-      <div class="queue-item" tabindex="0" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -190,7 +225,7 @@ VW.views.dashboard = (() => {
   function resultItemHtml(task) {
     const result = task.result || {};
     return `
-      <div class="queue-item" tabindex="0" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -268,7 +303,7 @@ VW.views.dashboard = (() => {
       container.innerHTML = tasks
         .map(
           (task) => `
-        <div class="task-row" tabindex="0" data-id="${task.id}">
+        <div class="task-row" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
           <div class="task-row-main">
             <div class="task-row-title">${escapeHtml(task.title)}</div>
             <div class="task-row-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
@@ -301,7 +336,7 @@ VW.views.dashboard = (() => {
                 ? items
                     .map(
                       (task) => `
-              <div class="board-card" tabindex="0" data-id="${task.id}">
+              <div class="board-card" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
                 <div class="board-card-title">${escapeHtml(task.title)}</div>
                 <div class="board-card-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${statusMeta(task.status).label}</div>
                 ${progressHtml(task)}
@@ -373,8 +408,10 @@ VW.views.dashboard = (() => {
     await refresh({ silent: true });
   }
 
-  /** 一键查收当前周期内全部待查收结果（F8） */
+  /** 一键查收当前周期内全部待查收结果（F8）：批量且不可逆，操作前确认 */
   async function ackAll() {
+    const count = store.state.queue.result.length;
+    if (!window.confirm(`确认一键查收当前周期内全部 ${count} 条任务结果？查收后将从队列移除。`)) return;
     await VW.util.submitAction(() => VW.api.task.ackAll({ period: store.state.filters.statsPeriod }), {
       success: (result) => (result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果')
     });
@@ -680,10 +717,10 @@ VW.views.dashboard = (() => {
       if (VW.modal.isOpen('task-modal')) fillAssigneeSelect(document.getElementById('task-assignee').value);
       renderAssigneeFilter();
     });
-    store.on(['queue', 'ui', 'stats'], () => {
-      renderTabs();
-      renderStats();
-    });
+    // 拆分订阅：轻量刷新（refreshStats）只更新统计卡片，不再连带重建队列 DOM——
+    // 此前 stats 也在 renderTabs 的订阅里，统计数字抖动就会触发队列整体重绘
+    store.on(['queue', 'ui'], renderTabs);
+    store.on('stats', renderStats);
     store.on(['tasks', 'tasksMeta'], renderTaskList);
     store.on('settings', renderTaskList);
 

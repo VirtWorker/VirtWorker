@@ -51,7 +51,7 @@ VW.store = (() => {
       task: { keyword: '', assigneeId: '', triggerType: '', status: '', period: 'month' },
       statsPeriod: 'month',
       // 筛选值一律为存储枚举（O12）：中文展示文案由 <option> 负责
-      worker: { keyword: '', status: 'online', role: '', env: '', sort: '' },
+      worker: { keyword: '', status: 'online', role: '', sort: '' },
       automation: { executorId: '', triggerType: '', status: '', sort: '' },
       atworker: { keyword: '', chatType: '', model: '', status: '' }
     },

@@ -144,7 +144,7 @@ VW.views.capabilities = (() => {
     const capabilityId = mode === 'mine' ? skill.id : '';
     const mounted = capabilityId ? mountedCount(capabilityId) : 0;
     return `
-      <div class="skill-card" data-skill="${skill.skillId || skill.id || ''}" data-capability="${capabilityId}">
+      <div class="skill-card" data-skill="${escapeHtml(skill.skillId || skill.id || '')}" data-capability="${escapeHtml(capabilityId)}">
         <div class="skill-head">
           <span class="skill-icon" style="background:${VW.util.safeStyle(skill.color, '#eef0f2')};color:${VW.util.safeStyle(skill.fg, '#5c6066')}">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
@@ -274,7 +274,7 @@ VW.views.capabilities = (() => {
     }
     const select = document.getElementById('mount-worker');
     select.innerHTML = store.state.workers
-      .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}（${escapeHtml(worker.role)}）</option>`)
+      .map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}（${escapeHtml(worker.role)}）</option>`)
       .join('');
     select.value = workerId && store.state.workers.some((item) => item.id === workerId)
       ? workerId

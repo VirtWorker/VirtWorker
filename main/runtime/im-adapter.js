@@ -48,7 +48,9 @@ function registeredKeys() {
   return [...adapters.keys()];
 }
 
-/** 出站消息存根（mock）：真实适配器调用平台 API 发送；mock 记入内存 outbox 供演示与测试断言 */
+/** 出站消息存根（mock）：真实适配器调用平台 API 发送；mock 记入内存 outbox 供演示与测试断言。
+ *  环形上限：长会话下每条任务回执都 push，无上限会缓慢泄漏内存 */
+const OUTBOX_LIMIT = 500;
 const outbox = [];
 
 function listOutbox(connectionId) {
@@ -69,6 +71,7 @@ function mockSend(connection, chatId, content) {
     at: nowIso()
   };
   outbox.push(message);
+  if (outbox.length > OUTBOX_LIMIT) outbox.splice(0, outbox.length - OUTBOX_LIMIT);
   return message;
 }
 

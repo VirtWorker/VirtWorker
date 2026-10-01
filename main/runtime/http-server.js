@@ -52,6 +52,33 @@ function tokenMatches(expected, provided) {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Token 认证失败限速：时序防护挡不住无时间差的暴力枚举，回环上的任意本地进程
+ * 可高频尝试。连续失败达阈值后进入冷却窗口（期间一律 429），成功认证或 start() 重启时复位。
+ */
+const AUTH_FAIL_LIMIT = 10;
+const AUTH_COOLDOWN_MS = 30 * 1000;
+let authFailCount = 0;
+let authBlockedUntil = 0;
+
+function authRateLimited() {
+  return Date.now() < authBlockedUntil;
+}
+
+function recordAuthFailure() {
+  authFailCount += 1;
+  if (authFailCount >= AUTH_FAIL_LIMIT) {
+    authBlockedUntil = Date.now() + AUTH_COOLDOWN_MS;
+    authFailCount = 0;
+    console.warn('[api] Token 连续认证失败达到上限，进入 30 秒冷却');
+  }
+}
+
+function recordAuthSuccess() {
+  authFailCount = 0;
+  authBlockedUntil = 0;
+}
+
 function readToken(req) {
   const header = req.headers['x-virtworker-token'];
   if (header) return String(header).trim();
@@ -111,6 +138,10 @@ async function handle(req, res) {
   const match = pathname.match(/^\/automations\/([A-Za-z0-9_]+)\/run$/);
   if (match) {
     if (req.method !== 'POST') return failRequest(res, 405, 'METHOD_NOT_ALLOWED', '请使用 POST');
+    // 冷却期直接拒绝：连自动化 ID 的枚举探测也一并挡下
+    if (authRateLimited()) {
+      return failRequest(res, 429, 'TOO_MANY_REQUESTS', '认证失败次数过多，请稍后重试');
+    }
 
     let automation = null;
     try {
@@ -125,8 +156,10 @@ async function handle(req, res) {
     if (!automation.enabled) return failRequest(res, 400, 'INVALID_STATE', '该自动任务已停用');
     // Token 在服务层解密（保险箱密文或旧版明文），定长比较防时序侧信道
     if (!tokenMatches(automationService.revealApiToken(automation), readToken(req))) {
+      recordAuthFailure();
       return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
     }
+    recordAuthSuccess();
 
     let body = {};
     try {
@@ -153,6 +186,7 @@ async function handle(req, res) {
 function start() {
   if (server) return getStatus();
   const port = Number(db.getSettings().apiPort) || DEFAULT_PORT;
+  recordAuthSuccess(); // 端点（重）启动时复位认证限速状态
 
   server = http.createServer((req, res) => {
     handle(req, res).catch((error) => {

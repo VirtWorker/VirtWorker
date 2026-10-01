@@ -136,7 +136,7 @@ VW.views.atworker = (() => {
     select.innerHTML = platformsCache
       .map(
         (platform) => `
-        <option value="${platform.key}" ${platform.available ? '' : 'disabled'}>
+        <option value="${escapeHtml(platform.key)}" ${platform.available ? '' : 'disabled'}>
           ${escapeHtml(platform.label)}${platform.available ? '' : '（后续版本）'}
         </option>`
       )
@@ -362,7 +362,7 @@ VW.views.atworker = (() => {
     const select = document.getElementById(selectId);
     const workers = store.state.workers;
     select.innerHTML = workers
-      .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
+      .map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`)
       .join('');
     const valid = selectedId && workers.some((worker) => worker.id === selectedId);
     select.value = valid ? selectedId : workers[0]?.id || '';
@@ -552,7 +552,7 @@ VW.views.atworker = (() => {
   function fillWorkerSelectById(select) {
     const workers = store.state.workers;
     select.innerHTML = workers
-      .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
+      .map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`)
       .join('');
     select.value = workers[0]?.id || '';
     VW.dropdown.refresh(select);
