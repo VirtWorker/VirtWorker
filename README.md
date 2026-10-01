@@ -15,8 +15,9 @@ VirtWorker 让你像管理一支真实团队一样管理数字员工：创建 Wo
 | 任务看板 | 任务统计卡片、需要操作 / 查收结果页签、列表与看板双视图、多维筛选与搜索、任务详情时间线 |
 | Worker 管理 | Worker 的创建、编辑、删除、搜索筛选；Group 建组与编组（可设组长）；Worker 导入导出与分享 |
 | @Worker | IM 连接管理、聊天接入申请审批、聊天绑定；聊天中 @ Worker 即解析为任务进入看板 |
-| 自主工作 | 定时 / 事件 / API 三类触发的自动任务，调度器常驻补跑错过的定时任务，运行历史可下钻到任务 |
+| 自主工作 | 定时 / 事件 / API 三类触发的自动任务，调度器常驻补跑错过的定时任务，运行历史可下钻到任务；任务终态可配置 Webhook 出站通知外部系统 |
 | 能力与资源 | Skills 技能市场、连接器授权、知识库索引、WorkerFlow 可视化编排、公开项目分享 |
+| 设置 | 浅色 / 深色 / 跟随系统主题、任务保留期、本地触发端口（修改后重启失败自动回滚） |
 
 三条入口最终收敛为同一种实体 `Task`：会话与自动化只是任务的不同触发来源与输入装配方式，Worker / Group 是执行者，Skills / 知识库 / WorkerFlow 是执行时可调用的能力。
 
@@ -138,12 +139,12 @@ npm run build:dir        # 仅输出目录，不打包
 | `npm run lint` | ESLint 检查 main / preload / renderer / scripts / tests |
 | `npm run rebuild` | electron-rebuild 重建原生依赖 |
 
-测试覆盖服务层、运行时（假定时器验证 need_action 暂停 / 恢复）、持久化（原子写、`.bak` 回退、schema 迁移幂等）、IPC 契约与安全组件（secret-vault、dir-grant 等），全部不依赖 Electron 运行。
+测试覆盖服务层、运行时（假定时器验证 need_action 暂停 / 恢复）、持久化（原子写、`.bak` 回退、schema 迁移幂等、写入节流与退出 flush）、IPC 契约与安全组件（secret-vault、dir-grant、webhook 通知投递、任务入参收敛等），全部不依赖 Electron 运行。
 
 ## 数据存储与安全
 
 - 数据目录：`%APPDATA%/VirtWorker/data/`，按集合拆分 JSON 文件（workers / groups / tasks / taskevents / automations / chats / capabilities / settings 等）；
-- 写入均为「临时文件 + 原子替换」，每次写入前保留最近一份 `.bak` 备份；文件损坏或版本异常时自动回退备份，不阻塞启动；
+- 写入合并节流（100ms）以削峰，进程退出前统一 flush；文件写入为「临时文件 + 原子替换」，每次写入前保留最近一份 `.bak` 备份；文件损坏或版本异常时自动回退备份，不阻塞启动；
 - schema 带版本号并内置迁移（当前 v2：任务时间线拆分为独立的 `taskevents` 集合），升级应用后旧数据自动迁移；
 - 已结束且已查收的任务默认保留 90 天（可在设置中调整保留期）；
 - 日志位于 `%APPDATA%/VirtWorker/logs/`，全局异常统一落盘。
@@ -164,6 +165,27 @@ curl -X POST http://127.0.0.1:17891/automations/<automationId>/run \
 ```
 
 端点仅绑定 `127.0.0.1`，不对外网暴露；Token 经常数时间比较校验。
+
+### Webhook 出站通知
+
+自动任务可配置 `notify.webhookUrl`，其触发的任务进入终态（`succeeded` / `failed`）时，应用会向该地址 POST 结构化事件（`event=task.finished`，含任务结果摘要与产出物）：
+
+```json
+{
+  "event": "task.finished",
+  "taskId": "...",
+  "title": "任务标题",
+  "status": "succeeded",
+  "automationId": "...",
+  "automationName": "...",
+  "finishedAt": "...",
+  "result": { "summary": "...", "artifacts": [] },
+  "error": null
+}
+```
+
+- 投递为单次、10 秒超时、不重试；结果写入任务时间线供排查，失败不影响任务状态；
+- 地址经校验（仅 http/https、拒绝 userinfo）后才入库；仅 API / 定时 / 事件型自动任务可配置，手动与聊天任务不投递。
 
 ## 项目结构
 
