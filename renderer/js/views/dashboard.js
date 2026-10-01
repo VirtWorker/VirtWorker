@@ -84,6 +84,38 @@ VW.views.dashboard = (() => {
 
   // ==================== 统计与页签 ====================
 
+  /** 保留队列卡片中已填写的操作内容（重绘竞态防护，与审批弹窗 collectRequestFormState 同款思路）：
+   *  任务执行期间 queue 切片变化会触发 renderTabs 全量重建 DOM，
+   *  用户正在填写的回答/表单/选项不能因此被清空或在提交时读到空值 */
+  function collectQueueFormState() {
+    const saved = {};
+    document.querySelectorAll('#dashboard-tab-list .queue-item[data-id]').forEach((item) => {
+      const inputs = {};
+      item.querySelectorAll('.request-input[data-field]').forEach((input) => {
+        inputs[input.dataset.field] = input.value;
+      });
+      const choice = item.querySelector('.choice-btn.active');
+      saved[item.dataset.id] = { inputs, choice: choice ? choice.dataset.value : null };
+    });
+    return saved;
+  }
+
+  function restoreQueueFormState(saved) {
+    if (!saved) return;
+    document.querySelectorAll('#dashboard-tab-list .queue-item[data-id]').forEach((item) => {
+      const state = saved[item.dataset.id];
+      if (!state) return;
+      item.querySelectorAll('.request-input[data-field]').forEach((input) => {
+        if (state.inputs[input.dataset.field] !== undefined) input.value = state.inputs[input.dataset.field];
+      });
+      // 已选中的选项一并恢复（按 value 匹配，选项集合变化时静默放弃）
+      if (state.choice !== null) {
+        const choice = item.querySelector(`.choice-btn[data-value="${CSS.escape(state.choice)}"]`);
+        if (choice) activateChoice(choice);
+      }
+    });
+  }
+
   function renderStats() {
     const stats = store.state.stats;
     document.getElementById('stat-total').textContent = String(stats.total);
@@ -124,9 +156,12 @@ VW.views.dashboard = (() => {
     }
 
     empty.classList.add('hidden');
+    // 全量 innerHTML 重建前采集已填写的输入，重建后按 taskId 恢复（重绘竞态不丢用户输入）
+    const savedForm = collectQueueFormState();
     container.innerHTML = list
       .map((task) => (tab === 'result' ? resultItemHtml(task) : actionItemHtml(task)))
       .join('');
+    restoreQueueFormState(savedForm);
   }
 
   /** 需要操作：按请求类型渲染选项 / 输入框 */
@@ -680,10 +715,10 @@ VW.views.dashboard = (() => {
       if (VW.modal.isOpen('task-modal')) fillAssigneeSelect(document.getElementById('task-assignee').value);
       renderAssigneeFilter();
     });
-    store.on(['queue', 'ui', 'stats'], () => {
-      renderTabs();
-      renderStats();
-    });
+    // 拆分订阅：轻量刷新（refreshStats）只更新统计卡片，不再连带重建队列 DOM——
+    // 此前 stats 也在 renderTabs 的订阅里，统计数字抖动就会触发队列整体重绘
+    store.on(['queue', 'ui'], renderTabs);
+    store.on('stats', renderStats);
     store.on(['tasks', 'tasksMeta'], renderTaskList);
     store.on('settings', renderTaskList);
 

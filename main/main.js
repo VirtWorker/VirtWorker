@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, Notification, dialog } = require('electron');
 const path = require('node:path');
 const db = require('./store/db');
 const ipc = require('./ipc');
@@ -40,24 +40,67 @@ if (!hasSingleInstanceLock) {
 }
 
 /**
- * 装配领域层：持久化 → IPC 通道 → 任务运行时 → 自动任务调度与本地触发端点。
- * 初始化失败不阻塞窗口创建，页面会以空数据降级启动。
+ * 装配领域层：分层初始化，避免单个 try/catch 包住全部时「一步失败、后续全跳过」——
+ * 尤其 ipc.register 被跳过后渲染层所有通道无 handler，应用沦为无提示的空壳窗口。
+ * 分层规则：
+ *  - 致命层（存储 / 执行器装配 / IPC 通道）：失败弹窗告知 + 记日志后退出，绝不空壳假启动；
+ *  - 降级层（运行时 / 调度 / Webhook / 聊天回执 / 本地端点）：单个失败只降级该子系统，
+ *    其余照常启动，并广播通知告知用户哪个功能不可用。
+ * @returns {boolean} false = 致命失败已发起退出，调用方不得继续创建窗口
  */
 function bootstrapServices() {
+  // 致命层 1：存储是一切服务的前置依赖
   try {
     db.init(path.join(app.getPath('userData'), 'data'));
+  } catch (error) {
+    console.error('[main] 数据目录初始化失败:', error);
+    dialog.showErrorBox(
+      'VirtWorker 无法启动',
+      `数据目录初始化失败，请检查磁盘空间与 %APPDATA% 写入权限后重试。\n\n${error.message}`
+    );
+    logger.close();
+    app.exit(1);
+    return false;
+  }
+
+  // 致命层 2：执行器装配与 IPC 通道——渲染层所有交互的入口
+  try {
     executor.register(executorMock, { activate: true }); // 当前为模拟执行器；接入真实 LLM 时注册并 setActive 即可
     restoreExecutorPreference(); // 恢复持久化的执行器选择（O16）
     ipc.register();
-    runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
-    scheduler.start(); // 启动补跑错过的定时任务并排程
-    webhookNotifier.start(); // 任务终态 Webhook 出站通知（F2）
-    chatService.startNotifier(); // 聊天出站回执（F3）
-    httpServer.start(); // API 触发的本地端点（仅回环地址）
-    startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照
   } catch (error) {
-    console.error('[main] 领域服务初始化失败:', error);
+    console.error('[main] 执行器/IPC 装配失败:', error);
+    dialog.showErrorBox('VirtWorker 无法启动', `服务装配失败，请重启应用。\n\n${error.message}`);
+    db.flush();
+    logger.close();
+    app.exit(1);
+    return false;
   }
+
+  // 降级层：各子系统独立启动，互不拖累
+  const startSteps = [
+    ['任务运行时', () => runtime.start()], // 恢复上次未完成的任务（排队重新派发、执行中继续）
+    ['自动任务调度', () => scheduler.start()], // 补跑错过的定时任务并排程
+    ['Webhook 通知', () => webhookNotifier.start()], // 任务终态出站通知（F2）
+    ['聊天回执', () => chatService.startNotifier()], // 聊天出站回执（F3）
+    ['本地 API 端点', () => httpServer.start()] // API 触发的本地端点（仅回环地址）
+  ];
+  for (const [name, start] of startSteps) {
+    try {
+      start();
+    } catch (error) {
+      console.error(`[main] ${name}启动失败:`, error);
+      // 窗口就绪前发出的通知无法送达渲染层（尽力而为），必须同时落日志
+      bus.emit('app:notice', {
+        level: 'error',
+        title: `${name}启动失败`,
+        body: '该功能本次会话不可用，其余功能不受影响；重启应用可尝试恢复。'
+      });
+    }
+  }
+
+  startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照，内部已逐步兜底
+  return true;
 }
 
 /** 恢复持久化的执行器选择（O16）：所选执行器未注册（如配置了真实执行器但当前未接入）时保持 mock */
@@ -247,7 +290,8 @@ app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
   // Windows 通知必须设置 AppUserModelID（与 electron-builder 的 appId 保持一致）才能弹出
   app.setAppUserModelId('com.virtworker.app');
-  bootstrapServices();
+  // 致命失败（存储/装配）时已弹窗并发起退出，不再创建窗口
+  if (!bootstrapServices()) return;
   wireSystemNotifications();
   createWindow();
 
