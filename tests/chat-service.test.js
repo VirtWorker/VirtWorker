@@ -544,4 +544,83 @@ describe('chat-service：出站回执与应答回流（F3）', () => {
     });
     expectAppError(() => chatService.answerPendingAction(binding.id, '乱写的'), 'VALIDATION_FAILED');
   });
+
+  test('answerPendingAction：最新任务已终态而更早任务等待操作时仍可应答（BUG-24）', () => {
+    const worker = workerService.createWorker({ name: '跨任务回流' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `跨任务连接 ${Date.now()}` });
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId: `${connection.id}:direct-cross`,
+      chatName: '跨任务',
+      workerId: worker.id
+    });
+
+    // 任务 A 进入 need_action
+    const inboundA = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatType: 'direct',
+      sender: '张三',
+      text: '任务A'
+    });
+    taskService.requestAction(inboundA.taskId, {
+      type: 'input',
+      title: '补充A',
+      form: [{ name: 'note', label: '说明', required: false, type: 'text' }]
+    });
+
+    // 任务 B（最新）直接完成：lastTaskId 指向已终态任务
+    const inboundB = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatType: 'direct',
+      sender: '张三',
+      text: '任务B'
+    });
+    taskService.succeed(inboundB.taskId, { summary: 'B 完成' });
+    expect(db.find('chatbindings', binding.id).lastTaskId).toBe(inboundB.taskId);
+
+    // 旧逻辑只认 lastTaskId（B，已终态）→ 误报"没有等待操作的任务"；现在应答到更早的 A
+    const answered = chatService.answerPendingAction(binding.id, '补充内容');
+    expect(answered.taskId).toBe(inboundA.taskId);
+    expect(db.find('tasks', inboundA.taskId).status).toBe('running');
+  });
+
+  test('answerPendingAction：多个等待任务并存时先应答最新创建的一个（BUG-24）', () => {
+    const worker = workerService.createWorker({ name: '多在途回流' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `多在途连接 ${Date.now()}` });
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId: `${connection.id}:direct-multi`,
+      chatName: '多在途',
+      workerId: worker.id
+    });
+    const options = [
+      { value: 'amount', label: '按金额' },
+      { value: 'count', label: '按条数' }
+    ];
+
+    const first = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatType: 'direct',
+      sender: '张三',
+      text: '先问的任务'
+    });
+    taskService.requestAction(first.taskId, { type: 'selection', title: '口径一', options, defaultValue: 'amount' });
+    const second = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatType: 'direct',
+      sender: '张三',
+      text: '后问的任务'
+    });
+    taskService.requestAction(second.taskId, { type: 'selection', title: '口径二', options, defaultValue: 'amount' });
+
+    // 第一次回复命中最新（second），第二次回复才轮到 first——与其余入口"回复最新请求"心智一致
+    const answerLatest = chatService.answerPendingAction(binding.id, '按金额');
+    expect(answerLatest.taskId).toBe(second.taskId);
+    const answerOlder = chatService.answerPendingAction(binding.id, '按条数');
+    expect(answerOlder.taskId).toBe(first.taskId);
+  });
 });

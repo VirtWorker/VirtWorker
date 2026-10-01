@@ -578,17 +578,24 @@ function notifyTaskEvent(payload = {}) {
  * 应答回流（F3）：把聊天中的回复映射为该绑定在途任务的 need_action 应答。
  * 选项类请求按 label/value 精确匹配，自由文本作为回答内容；
  * 真实平台适配器在收到交互卡片回复 / 定向回复时调用，无在途操作请求时抛错提示。
+ * 多个等待任务（BUG-24）：此前只认 binding.lastTaskId——最新任务已终态而更早任务
+ * 仍在等待操作时，聊天侧永远无法应答。chat 触发的任务都带 trigger.refId=binding.id，
+ * 直接按绑定查全部 need_action 任务并应答其中最新的一个（与其余入口"回复最新请求"的
+ * 心智一致；更早的请求仍可在应用内处理）。
  */
 function answerPendingAction(bindingId, text) {
   const binding = db.find('chatbindings', bindingId);
   if (!binding) throw fail.notFound('聊天绑定不存在');
-  const task = db.find('tasks', binding.lastTaskId);
-  if (!task || task.status !== taskService.STATUS.needAction) {
-    throw fail.invalidState('该聊天当前没有等待操作的任务');
-  }
-  const request = task.actionRequest;
   const value = String(text ?? '').trim();
   if (!value) throw fail.validation('请填写回复内容');
+  const pending = db
+    .where('tasks', { 'trigger.type': 'chat', 'trigger.refId': bindingId, status: taskService.STATUS.needAction })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!pending.length) {
+    throw fail.invalidState('该聊天当前没有等待操作的任务');
+  }
+  const task = pending[0];
+  const request = task.actionRequest;
   let answer;
   if (request.type === 'selection' || request.type === 'confirm') {
     const option = (request.options || []).find((item) => item.value === value || item.label === value);

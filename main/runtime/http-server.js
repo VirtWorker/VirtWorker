@@ -149,17 +149,17 @@ async function handle(req, res) {
     } catch (error) {
       console.error('[api] 读取自动任务失败:', error);
     }
-    if (!automation) return failRequest(res, 404, 'NOT_FOUND', '自动任务不存在');
-    if (automation.trigger.type !== 'api') {
-      return failRequest(res, 400, 'INVALID_STATE', '该自动任务不是 API 触发类型');
-    }
-    if (!automation.enabled) return failRequest(res, 400, 'INVALID_STATE', '该自动任务已停用');
-    // Token 在服务层解密（保险箱密文或旧版明文），定长比较防时序侧信道
-    if (!tokenMatches(automationService.revealApiToken(automation), readToken(req))) {
+    // BUG-22 鉴权前置：ID 不存在 / Token 错误 / 缺 Token / 非 API 类型，一律同形 401——
+    // 若先查资源后鉴权，404（存在性）与 400（类型/启用状态）的差异会成为无凭证探测探测器
+    if (!automation || !tokenMatches(automationService.revealApiToken(automation), readToken(req))) {
       recordAuthFailure();
       return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
     }
     recordAuthSuccess();
+    if (automation.trigger.type !== 'api') {
+      return failRequest(res, 400, 'INVALID_STATE', '该自动任务不是 API 触发类型');
+    }
+    if (!automation.enabled) return failRequest(res, 400, 'INVALID_STATE', '该自动任务已停用');
 
     let body = {};
     try {

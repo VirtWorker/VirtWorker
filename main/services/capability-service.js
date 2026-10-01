@@ -242,11 +242,18 @@ async function normalizeDir(dir) {
 }
 
 /** 全链路 fs.promises 异步扫描：每次 await 都让出事件循环，
- *  大目录导入（上限 200×512KB）期间主进程的 IPC/HTTP/任务运行时不被阻塞 */
+ *  大目录导入（上限 200×512KB）期间主进程的 IPC/HTTP/任务运行时不被阻塞。
+ *  循环防护（BUG-23）：符号链接/junction（reparse point）一律不下钻；visited 集合
+ *  兜底个别仅报告为 directory 的挂载形态——否则 junction 指回父目录会造成无限递归，
+ *  仅靠 MAX_FILES 兜底会白白耗尽配额且可能把循环路径外的文件全部挤出。 */
 async function scanFiles(dir) {
   const files = [];
+  const visited = new Set(); // 已下钻目录（规范化小写路径，Windows 大小写不敏感）
   const walk = async (current) => {
     if (files.length >= MAX_FILES) return;
+    const key = `${path.resolve(current).toLowerCase()}\\`;
+    if (visited.has(key)) return;
+    visited.add(key);
     let entries;
     try {
       entries = await fs.promises.readdir(current, { withFileTypes: true });
@@ -257,6 +264,7 @@ async function scanFiles(dir) {
       if (files.length >= MAX_FILES) return;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
+        if (entry.isSymbolicLink()) continue; // junction/symlink 不下钻
         if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) await walk(full);
         continue;
       }

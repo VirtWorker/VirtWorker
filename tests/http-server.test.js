@@ -112,14 +112,32 @@ describe('http-server Token 鉴权', () => {
     expect(db.all('tasks').length).toBe(before);
   });
 
-  test('缺少 Token 返回 401；不存在的自动任务返回 404', async () => {
+  test('缺少 Token / 不存在的自动任务 / 非 API 类型一律同形 401（BUG-22 防探测）', async () => {
     const port = ensureServer();
+    // 不存在的 ID：无 Token 与持他人有效 Token 都必须与「Token 错误」同形 401，不暴露存在性
     const missing = await request(port, { path: '/automations/at_none/run', method: 'POST' });
-    expect(missing.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(401);
 
     const { token } = makeApiAutomation();
     const noToken = await request(port, { path: '/automations/at_none/run', method: 'POST', headers: { 'X-VirtWorker-Token': token } });
-    expect(noToken.statusCode).toBe(404);
+    expect(noToken.statusCode).toBe(401);
+
+    // 非 API 类型（无 Token 可验证）同样 401，且错误文案与 Token 错误一致（无类型信息泄漏）
+    const stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const worker = workerService.createWorker({ name: `定时执行者${stamp}`.slice(0, 20) });
+    const schedule = automationService.create({
+      name: `定时自动任务${stamp}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule' }, // 缺省 daily 模式，非 API 触发
+      input: { goal: '定时任务目标' }
+    });
+    const scheduleRes = await request(port, {
+      path: `/automations/${schedule.id}/run`,
+      method: 'POST',
+      headers: { 'X-VirtWorker-Token': token }
+    });
+    expect(scheduleRes.statusCode).toBe(401);
+    expect(JSON.parse(missing.body).error.message).toBe(JSON.parse(scheduleRes.body).error.message);
   });
 
   test('连续认证失败达阈值后进入冷却一律 429，重启端点复位（BUG-13）', async () => {

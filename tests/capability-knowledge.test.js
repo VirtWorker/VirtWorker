@@ -73,6 +73,23 @@ describe('知识库检索缓存失效（P3-20）', () => {
     }
   });
 
+  test('junction 指回自身目录不无限递归，文件不被重复索引（BUG-23）', async () => {
+    const loopDir = fs.mkdtempSync(path.join(os.tmpdir(), 'virtworker-loop-'));
+    try {
+      fs.writeFileSync(path.join(loopDir, 'doc.md'), '循环防护内容。');
+      // junction/symlink 指向自身所在目录：无防护时会循环下钻，把同一个文件按路径变体
+      // 重复收集直到 MAX_FILES 耗尽（chunk 数 ×200）
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+      fs.symlinkSync(loopDir, path.join(loopDir, 'self-loop'), linkType);
+
+      const created = await capabilityService.createKnowledge({ name: `循环库${Date.now()}`, dir: loopDir });
+      // 只索引到 1 个真实文件（单小文件 → 1 个片段）；若防护失效该值会是百级
+      expect(created.source.chunkCount).toBe(1);
+    } finally {
+      fs.rmSync(loopDir, { recursive: true, force: true });
+    }
+  });
+
   test('批量索引落盘（insertMany）后片段计数正确', async () => {
     const before = db.count('chunks');
     const docsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'virtworker-bulk-'));
