@@ -30,15 +30,35 @@ const flowService = require('../services/flow-service');
  */
 const contexts = new Map();
 
-/** 并发上限：同时被运行时接管的任务数 */
+/** 并发上限默认值：可在设置中调整（maxConcurrent，1..20，O16） */
 const MAX_CONCURRENT = 5;
 /** 离线重试：指数退避（30s 起步，最长 10 分钟） */
 const RETRY_BASE_MS = 30 * 1000;
 const RETRY_MAX_MS = 10 * 60 * 1000;
 /** 单步执行默认超时：执行器可通过 stepTimeoutMs() 覆盖（真实 LLM 执行器建议按请求特征设定） */
 const STEP_TIMEOUT_MS = 120 * 1000;
+/** 步骤级重试退避：1s 起步、翻倍、上限 30s（F1；次数由执行器 stepRetryLimit() 声明） */
+const STEP_RETRY_BASE_MS = 1000;
+const STEP_RETRY_MAX_MS = 30 * 1000;
 /** 任务优先级 → 派发顺序（值越小越先派发），与 task-service 的 priority 枚举对应 */
 const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+/**
+ * 当前有效并发上限（O16）：取设置值（maxConcurrent），并受执行器声明的
+ * maxParallel() 约束（如真实 LLM 执行器按上游速率限制声明更低的并行度）。
+ */
+function capacity() {
+  const configured = Number(db.getSettings().maxConcurrent);
+  let cap = Number.isInteger(configured) && configured >= 1 && configured <= 20 ? configured : MAX_CONCURRENT;
+  try {
+    const executor = executorRegistry.getActive();
+    const declared = typeof executor.maxParallel === 'function' ? Number(executor.maxParallel()) : 0;
+    if (Number.isInteger(declared) && declared >= 1) cap = Math.min(cap, declared);
+  } catch (error) {
+    // 无注册执行器时按设置值返回（dispatch 阶段会得到更明确的错误）
+  }
+  return cap;
+}
 
 const waiting = new Set(); // 等待并发槽位的任务（含暂停恢复的 running 任务）；派发顺序见 drainWaiting
 const retryTimers = new Map(); // taskId → 离线重试定时器
@@ -71,6 +91,16 @@ function start() {
     }
   });
   recover();
+  // 重启补提醒（O10）：need_action 任务重启后不会自愈，主动提示并由看门狗按策略接管
+  const pending = taskService.listNeedAction();
+  if (pending.length) {
+    bus.emit('app:notice', {
+      level: 'warning',
+      title: `有 ${pending.length} 个任务正在等待操作`,
+      body: '任务在重启前挂起于「需要操作」状态，请到任务看板处理'
+    });
+  }
+  startActionWatchdog();
 }
 
 /** 应用退出时清理所有定时器与内存状态 */
@@ -83,6 +113,7 @@ function shutdown() {
   for (const taskId of [...retryTimers.keys()]) clearTimer(retryTimers, taskId);
   waiting.clear();
   retryAttempts.clear();
+  stopActionWatchdog();
 }
 
 function clearTimer(map, key) {
@@ -93,7 +124,7 @@ function clearTimer(map, key) {
 
 /** 槽位释放后排空等待队列：按优先级派发（urgent > high > normal > low），同级先到先执行 */
 function drainWaiting() {
-  while (waiting.size && contexts.size < MAX_CONCURRENT) {
+  while (waiting.size && contexts.size < capacity()) {
     const next = takeNextWaiting();
     if (!next) return;
     dispatch(next);
@@ -211,7 +242,7 @@ async function dispatchUnsafe(taskId) {
     scheduleRetry(taskId, execution.name); // 不占并发槽位
     return;
   }
-  if (contexts.size >= MAX_CONCURRENT) {
+  if (contexts.size >= capacity()) {
     waiting.add(taskId); // 槽位已满，排队等待
     return;
   }
@@ -219,7 +250,7 @@ async function dispatchUnsafe(taskId) {
   contexts.set(taskId, createContext({ executor }));
   const isFlow = execution.kind === 'flow';
   // 契约统一 await：步骤计划允许异步生成（真实 LLM 执行器常见）；同步实现零成本兼容
-  const steps = await (isFlow
+  let steps = await (isFlow
     ? executor.buildFlowSteps(task, execution.plan)
     : executor.buildSteps(task, execution.worker));
   // await 期间任务可能已被取消/删除：非排队态不得再标记运行（与 pump 的 afterRun 守卫同款）
@@ -227,6 +258,19 @@ async function dispatchUnsafe(taskId) {
   if (!fresh || fresh.status !== taskService.STATUS.queued) {
     release(taskId);
     return;
+  }
+  // 断点重跑（F1）：重试任务从原任务的失败步骤继续，此前步骤沿用原执行结果
+  const retryFromStep = Number(task.input?.retryFromStep) || 0;
+  if (retryFromStep > 1 && task.retryOf) {
+    const source = taskService.getTask(task.retryOf);
+    if (source) {
+      steps = steps.map((step) => {
+        if (step.step >= retryFromStep) return step;
+        const prev = (source.steps || []).find((item) => item.step === step.step);
+        if (!prev || prev.status !== 'done') return step;
+        return { ...step, status: 'done', log: prev.log || '', citations: prev.citations || [], finishedAt: prev.finishedAt || null };
+      });
+    }
   }
   const message = isFlow
     ? `已按 WorkerFlow「${execution.plan.flow.name}」启动，共 ${steps.length} 个节点`
@@ -247,7 +291,7 @@ function resumeRunning(taskId, task) {
     scheduleRetry(taskId, execution.name);
     return;
   }
-  if (contexts.size >= MAX_CONCURRENT) {
+  if (contexts.size >= capacity()) {
     waiting.add(taskId);
     return;
   }
@@ -325,6 +369,8 @@ async function pump(taskId) {
   if (!ctx || ctx.pumping) return;
   ctx.pumping = true;
   const executor = ctx.executor || executorRegistry.getActive(); // 全程使用派发时锁定的执行器
+  // 步骤级重试计数（F1）：同一步骤内累计，成功后清零；次数由执行器 stepRetryLimit() 声明
+  let stepRetries = 0;
 
   try {
     while (true) {
@@ -351,12 +397,33 @@ async function pump(taskId) {
         return;
       }
 
-      const outcome = await runStepWithTimeout(executor, fresh, step, ctx);
+      let outcome;
+      try {
+        outcome = await runStepWithTimeout(executor, fresh, step, ctx);
+      } catch (error) {
+        // 超时与取消不重试：前者是挂起兜底（重试只会加倍挂起时间），后者是用户意图
+        if (error?.code === 'STEP_TIMEOUT') throw error;
+        if (error.message === 'aborted' || ctx.controller.signal.aborted) throw error;
+        const limit =
+          typeof executor.stepRetryLimit === 'function' ? Number(executor.stepRetryLimit()) || 0 : 0;
+        if (stepRetries >= limit) throw error;
+        stepRetries += 1;
+        taskService.recordEvent(
+          taskId,
+          `步骤「${step.title}」执行失败（${error.message}），第 ${stepRetries}/${limit} 次重试`
+        );
+        await sleep(Math.min(STEP_RETRY_BASE_MS * 2 ** (stepRetries - 1), STEP_RETRY_MAX_MS), ctx.controller.signal);
+        const retried = taskService.getTask(taskId);
+        if (!retried) return release(taskId);
+        if (retried.status !== taskService.STATUS.running) return;
+        continue; // 重跑同一步骤（startStep 只标记 pending，不会重复计时）
+      }
       // runStep（异步执行时为挂起点）期间任务可能已被取消/暂停：非 running 态不得再写入步骤数据
       const afterRun = taskService.getTask(taskId);
       if (!afterRun) return release(taskId);
       if (afterRun.status !== taskService.STATUS.running) return;
       taskService.completeStep(taskId, step.step, outcome.log, outcome.citations);
+      stepRetries = 0;
     }
   } catch (error) {
     if (error?.code === 'STEP_TIMEOUT') {
@@ -409,4 +476,87 @@ function stop(taskId) {
   release(taskId);
 }
 
-module.exports = { start, dispatch, stop, shutdown, MAX_CONCURRENT };
+// ==================== need_action 超时看门狗（O10） ====================
+
+const ACTION_CHECK_INTERVAL_MS = 60 * 1000;
+const ACTION_REMIND_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let actionWatchdogTimer = null;
+
+function startActionWatchdog() {
+  if (actionWatchdogTimer) return;
+  actionWatchdogTimer = setInterval(() => checkActionTimeouts(), ACTION_CHECK_INTERVAL_MS);
+  actionWatchdogTimer.unref?.(); // 不阻塞进程退出
+}
+
+function stopActionWatchdog() {
+  if (actionWatchdogTimer) clearInterval(actionWatchdogTimer);
+  actionWatchdogTimer = null;
+}
+
+/**
+ * 扫描挂起任务并按超时策略处置（O10）：
+ * - fail：自动失败（ACTION_TIMEOUT）
+ * - continue：自动采用默认选项继续（无默认值则失败）
+ * - remind：保持挂起，每 24 小时重发一次提醒
+ * actionTimeoutHours = 0 表示关闭超时处置。扫描与处置均做逐任务容错。
+ */
+function checkActionTimeouts(now = Date.now()) {
+  const settings = db.getSettings();
+  const hours = Number(settings.actionTimeoutHours);
+  if (!Number.isFinite(hours) || hours <= 0) return;
+  const policy = ['fail', 'continue', 'remind'].includes(settings.actionTimeoutPolicy)
+    ? settings.actionTimeoutPolicy
+    : 'remind';
+  const deadline = hours * 60 * 60 * 1000;
+
+  taskService.listNeedAction().forEach((task) => {
+    try {
+      const request = task.actionRequest || {};
+      const createdAt = new Date(request.createdAt || task.updatedAt).getTime();
+      if (Number.isNaN(createdAt) || now - createdAt < deadline) return;
+
+      if (policy === 'fail') {
+        taskService.failTask(task.id, {
+          code: 'ACTION_TIMEOUT',
+          message: `等待操作超过 ${hours} 小时，已按超时策略自动失败`
+        });
+        return;
+      }
+
+      if (policy === 'continue') {
+        const defaultValue = request.defaultValue;
+        if (defaultValue === null || defaultValue === undefined) {
+          taskService.failTask(task.id, {
+            code: 'ACTION_TIMEOUT',
+            message: `等待操作超过 ${hours} 小时且无默认选项，已自动失败`
+          });
+          return;
+        }
+        taskService.answer({ taskId: task.id, answer: { value: defaultValue } });
+        bus.emit('app:notice', {
+          level: 'info',
+          title: `「${task.title}」已按超时策略自动继续`,
+          body: '操作等待超时，已采用默认选项继续执行'
+        });
+        return;
+      }
+
+      // remind：首次超时即提醒，此后重发间隔不低于 24 小时，避免通知刷屏
+      if (request.remindedAt) {
+        const last = new Date(request.remindedAt).getTime();
+        if (!Number.isNaN(last) && now - last < ACTION_REMIND_INTERVAL_MS) return;
+      }
+      taskService.touchActionReminder(task.id);
+      bus.emit('app:notice', {
+        level: 'warning',
+        title: `「${task.title}」仍在等待你的操作`,
+        body: `已等待超过 ${hours} 小时，请尽快到任务看板处理`
+      });
+    } catch (error) {
+      // 处置竞争（如扫描与用户操作同时发生）只记录，不中断其余任务
+      console.error(`[runtime] 任务 ${task.id} 超时处置失败:`, error.message || error);
+    }
+  });
+}
+
+module.exports = { start, dispatch, stop, shutdown, MAX_CONCURRENT, capacity, checkActionTimeouts };

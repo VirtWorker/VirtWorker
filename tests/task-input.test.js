@@ -173,6 +173,53 @@ describe('taskService.exportTasks 任务历史导出（F5）', () => {
   });
 });
 
+describe('taskService.retry 任务重试（F1）', () => {
+  let worker;
+
+  beforeEach(() => {
+    ['workers', 'tasks', 'taskevents'].forEach((name) => db.removeWhere(name, () => true));
+    worker = workerService.createWorker({ name: '重试执行者' });
+  });
+
+  function makeFailedTask() {
+    const source = taskService.create({ goal: '会失败的任务', assigneeId: worker.id, tags: ['回归'] });
+    db.update('tasks', source.id, { status: 'failed' });
+    return source;
+  }
+
+  test('重试创建新任务重新入队，并通过 retryOf 与原任务时间线关联', () => {
+    const source = makeFailedTask();
+    const retried = taskService.retry(source.id);
+
+    expect(retried.id).not.toBe(source.id);
+    expect(retried.retryOf).toBe(source.id);
+    expect(retried.goal).toBe(source.goal);
+    expect(retried.assignee.id).toBe(source.assignee.id);
+    expect(retried.tags).toContain('回归');
+    expect(retried.status).toBe('queued');
+
+    const sourceEvents = taskService.detail(source.id).task.events;
+    expect(sourceEvents.some((event) => event.type === 'retried' && event.message.includes(retried.id))).toBe(true);
+  });
+
+  test('fromStep="failed" 按原任务首个未完成步骤设置断点', () => {
+    const source = makeFailedTask();
+    db.update('tasks', source.id, {
+      steps: [
+        { step: 1, title: '步骤一', status: 'done', log: '已完成', citations: [], startedAt: null, finishedAt: null },
+        { step: 2, title: '步骤二', status: 'failed', log: '', citations: [], startedAt: null, finishedAt: null }
+      ]
+    });
+    const retried = taskService.retry(source.id, { fromStep: 'failed' });
+    expect(retried.input.retryFromStep).toBe(2);
+  });
+
+  test('非终态任务不能重试', () => {
+    const task = taskService.create({ goal: '进行中的任务', assigneeId: worker.id });
+    expect(() => taskService.retry(task.id)).toThrow(/仅失败或已取消/);
+  });
+});
+
 describe('taskService 列表检索与批量查收（O8/F8）', () => {
   let worker;
 

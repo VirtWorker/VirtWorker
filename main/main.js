@@ -7,7 +7,9 @@ const executorMock = require('./runtime/executor-mock');
 const runtime = require('./runtime/task-runtime');
 const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
+const webhookNotifier = require('./runtime/webhook-notifier');
 const taskService = require('./services/task-service');
+const chatService = require('./services/chat-service');
 const logger = require('./util/logger');
 const bus = require('./runtime/event-bus');
 
@@ -45,13 +47,28 @@ function bootstrapServices() {
   try {
     db.init(path.join(app.getPath('userData'), 'data'));
     executor.register(executorMock, { activate: true }); // 当前为模拟执行器；接入真实 LLM 时注册并 setActive 即可
+    restoreExecutorPreference(); // 恢复持久化的执行器选择（O16）
     ipc.register();
     runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
     scheduler.start(); // 启动补跑错过的定时任务并排程
+    webhookNotifier.start(); // 任务终态 Webhook 出站通知（F2）
+    chatService.startNotifier(); // 聊天出站回执（F3）
     httpServer.start(); // API 触发的本地端点（仅回环地址）
     startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照
   } catch (error) {
     console.error('[main] 领域服务初始化失败:', error);
+  }
+}
+
+/** 恢复持久化的执行器选择（O16）：所选执行器未注册（如配置了真实执行器但当前未接入）时保持 mock */
+function restoreExecutorPreference() {
+  const preferred = db.getSettings().activeExecutor;
+  if (!preferred || preferred === executorMock.name) return;
+  try {
+    executor.setActive(preferred);
+    console.log(`[main] 已恢复执行器：${preferred}`);
+  } catch (error) {
+    console.warn(`[main] 执行器「${preferred}」未注册，保持模拟执行器`);
   }
 }
 

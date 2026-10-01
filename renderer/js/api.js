@@ -99,6 +99,7 @@ VW.api = (() => {
       create: (payload) => call(bridge?.task?.create, payload),
       detail: (id) => call(bridge?.task?.detail, id),
       cancel: (id, reason) => call(bridge?.task?.cancel, id, reason),
+      retry: (id, fromStep) => call(bridge?.task?.retry, id, fromStep),
       ack: (id) => call(bridge?.task?.ack, id),
       ackAll: (query) => call(bridge?.task?.ackAll, query),
       answer: (payload) => call(bridge?.task?.answer, payload)
@@ -117,10 +118,11 @@ VW.api = (() => {
       copyInvocation: (id) => call(bridge?.automation?.copyInvocation, id)
     },
 
-    /** 执行器模式（设置中心）：Mock / 真实执行器切换 */
+    /** 执行器模式（设置中心）：Mock / 真实执行器切换、私有配置（O16） */
     executor: {
       list: () => call(bridge?.executor?.list),
-      activate: (name) => call(bridge?.executor?.activate, name)
+      activate: (name) => call(bridge?.executor?.activate, name),
+      configure: (name, config) => call(bridge?.executor?.configure, name, config)
     },
 
     capability: {

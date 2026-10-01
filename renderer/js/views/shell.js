@@ -65,6 +65,9 @@ VW.views.shell = (() => {
     document.getElementById('setting-theme').value = settings.theme || 'system';
     document.getElementById('setting-api-port').value = settings.apiPort || store.state.apiServer.port || '';
     document.getElementById('setting-retention').value = settings.taskRetentionDays || 90;
+    document.getElementById('setting-max-concurrent').value = settings.maxConcurrent || 5;
+    document.getElementById('setting-action-timeout').value = settings.actionTimeoutHours ?? 48;
+    document.getElementById('setting-action-policy').value = settings.actionTimeoutPolicy || 'remind';
     document.getElementById('setting-api-hint').textContent = store.state.apiServer.running
       ? `运行中：http://127.0.0.1:${store.state.apiServer.port}`
       : `未启动${store.state.apiServer.error ? `：${store.state.apiServer.error}` : ''}`;
@@ -75,7 +78,17 @@ VW.views.shell = (() => {
   async function saveSettings() {
     const port = Number(document.getElementById('setting-api-port').value);
     const retention = Number(document.getElementById('setting-retention').value);
+    const maxConcurrent = Number(document.getElementById('setting-max-concurrent').value);
+    const actionTimeoutHours = Number(document.getElementById('setting-action-timeout').value);
     const patch = {
+      maxConcurrent: Number.isInteger(maxConcurrent) && maxConcurrent >= 1 && maxConcurrent <= 20
+        ? maxConcurrent
+        : store.state.settings.maxConcurrent,
+      actionTimeoutHours:
+        Number.isInteger(actionTimeoutHours) && actionTimeoutHours >= 0 && actionTimeoutHours <= 8760
+          ? actionTimeoutHours
+          : store.state.settings.actionTimeoutHours,
+      actionTimeoutPolicy: document.getElementById('setting-action-policy').value,
       notify: document.getElementById('setting-notify').checked,
       catchUpMissed: document.getElementById('setting-catchup').checked,
       mockRandomAction: document.getElementById('setting-random-action').checked,

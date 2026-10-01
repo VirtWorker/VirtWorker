@@ -257,6 +257,73 @@ describe('IPC 契约：app:relaunch 走完整退出流程（O1 回归防护）',
   });
 });
 
+describe('IPC 契约：执行器配置体系（O16）', () => {
+  beforeAll(() => {
+    initTempDb();
+    ipc.register();
+  });
+
+  afterAll(() => {
+    db.flush();
+  });
+
+  const executorRegistry = require('../main/runtime/executor');
+  const fakeLlm = {
+    name: 'llm-test',
+    buildSteps: () => [],
+    buildFlowSteps: () => [],
+    stepDelay: () => 0,
+    runStep: () => ({ log: '', citations: [] }),
+    maybeAction: () => null,
+    buildResult: () => ({})
+  };
+
+  test('executor:activate 持久化到设置（重启后由 main.js 恢复），未注册返回 NOT_FOUND', async () => {
+    executorRegistry.register(fakeLlm);
+    const res = await invoke('executor:activate', { name: 'llm-test' });
+    expect(res.ok).toBe(true);
+    expect(res.data.active).toBe('llm-test');
+    expect(db.getSettings().activeExecutor).toBe('llm-test');
+
+    const bad = await invoke('executor:activate', { name: 'nope' });
+    expect(bad.ok).toBe(false);
+    expect(bad.error.code).toBe('NOT_FOUND');
+  });
+
+  test('executor:configure 敏感键加密落库，响应与 settings:get 均为只读掩码', async () => {
+    const res = await invoke('executor:configure', {
+      name: 'llm-test',
+      config: { apiKey: 'sk-secret-123', model: 'gpt-test', temperature: 0.5 }
+    });
+    expect(res.ok).toBe(true);
+
+    const stored = db.getSettings().executorConfig['llm-test'];
+    expect(stored.apiKey.sealed).toBeTruthy(); // 密文落库
+    expect(JSON.stringify(stored)).not.toContain('sk-secret-123'); // 明文不落库
+    expect(stored.model).toBe('gpt-test');
+    expect(stored.temperature).toBe(0.5);
+
+    expect(res.data.config.apiKey).toEqual({ masked: true, mask: expect.any(String) });
+    expect(res.data.config.model).toBe('gpt-test');
+
+    const settings = await invoke('settings:get');
+    expect(JSON.stringify(settings.data)).not.toContain('sk-secret-123');
+    expect(settings.data.executorConfig['llm-test'].apiKey.masked).toBe(true);
+
+    // 掩码回传保留库内原值（与自动化 Token 的 O6 契约同款语义）
+    await invoke('executor:configure', {
+      name: 'llm-test',
+      config: { apiKey: res.data.config.apiKey }
+    });
+    expect(db.getSettings().executorConfig['llm-test'].apiKey.sealed).toEqual(stored.apiKey.sealed);
+
+    // 未注册的执行器拒绝配置
+    const bad = await invoke('executor:configure', { name: 'nope', config: { model: 'x' } });
+    expect(bad.ok).toBe(false);
+    expect(bad.error.code).toBe('NOT_FOUND');
+  });
+});
+
 describe('IPC 契约：task 事件转发合并节流（O17 回归防护）', () => {
   beforeAll(() => {
     initTempDb();

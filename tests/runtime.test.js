@@ -13,7 +13,8 @@ import {
   flowService,
   taskService,
   executor,
-  runtime
+  runtime,
+  nowIso
 } from './setup.js';
 
 let dir;
@@ -531,6 +532,196 @@ describe('执行器契约异步一致性（O2）：全部契约方法支持 asyn
 
     const finished = await waitForStatus(task.id, 'succeeded');
     expect(finished.actionRequest.answer.value).toBe('yes');
+    executor.setActive('fast-test');
+  });
+});
+
+describe('need_action 超时看门狗（O10）', () => {
+  // 离线的真实执行者：continue 策略 answer 后任务被 resume 派发，离线保证它停在 running（退避重试）而非被派发失败/执行收口
+  // 注意必须在 beforeAll（initTempDb 之后）创建，否则会被重新 init 清掉
+  let o10Worker;
+
+  beforeAll(() => {
+    o10Worker = workerService.createWorker({ name: 'O10 执行者' });
+    workerService.updateWorker(o10Worker.id, { status: 'offline' });
+  });
+
+  /** 直接插入挂起任务（绕过运行时），actionRequest.createdAt 可回拨以模拟长期无人处理 */
+  function insertPendingAction(id, { hoursAgo = 10, defaultValue = null } = {}) {
+    db.insert('tasks', {
+      id,
+      title: `等待任务 ${id}`,
+      goal: '目标',
+      status: 'need_action',
+      priority: 'normal',
+      trigger: { type: 'manual', refId: null, depth: 0, label: '手动创建' },
+      assignee: { type: 'worker', id: o10Worker.id, name: o10Worker.name },
+      steps: [],
+      progress: 0,
+      actionRequest: {
+        id: `ar_${id}`,
+        taskId: id,
+        type: 'selection',
+        title: '选择口径',
+        options: [{ value: 'yes', label: '继续' }],
+        defaultValue,
+        answer: null,
+        createdAt: new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString(),
+        answeredAt: null
+      },
+      createdAt: nowIso(),
+      startedAt: null,
+      updatedAt: nowIso(),
+      finishedAt: null
+    });
+  }
+
+  afterAll(() => {
+    db.setSettings({ actionTimeoutHours: 48, actionTimeoutPolicy: 'remind' });
+    db.removeWhere('tasks', () => true);
+  });
+
+  test('fail 策略：超时任务自动失败（ACTION_TIMEOUT）', () => {
+    db.setSettings({ actionTimeoutHours: 1, actionTimeoutPolicy: 'fail' });
+    insertPendingAction('tk_o10_fail', { hoursAgo: 5 });
+    runtime.checkActionTimeouts();
+    const stored = db.find('tasks', 'tk_o10_fail');
+    expect(stored.status).toBe('failed');
+    expect(stored.error.code).toBe('ACTION_TIMEOUT');
+  });
+
+  test('continue 策略：有默认选项时自动继续，无默认选项则失败', () => {
+    db.setSettings({ actionTimeoutHours: 1, actionTimeoutPolicy: 'continue' });
+    insertPendingAction('tk_o10_auto', { hoursAgo: 5, defaultValue: 'yes' });
+    insertPendingAction('tk_o10_stuck', { hoursAgo: 5, defaultValue: null });
+    runtime.checkActionTimeouts();
+    const auto = db.find('tasks', 'tk_o10_auto');
+    expect(auto.status).toBe('running'); // answer 置回 running
+    expect(auto.actionRequest.answer.value).toBe('yes');
+    expect(db.find('tasks', 'tk_o10_stuck').status).toBe('failed');
+  });
+
+  test('remind 策略：保持挂起并记录提醒时间；hours=0 时不处置', () => {
+    db.setSettings({ actionTimeoutHours: 1, actionTimeoutPolicy: 'remind' });
+    insertPendingAction('tk_o10_remind', { hoursAgo: 5 });
+    runtime.checkActionTimeouts();
+    const reminded = db.find('tasks', 'tk_o10_remind');
+    expect(reminded.status).toBe('need_action');
+    expect(reminded.actionRequest.remindedAt).toBeTruthy();
+
+    db.setSettings({ actionTimeoutHours: 0, actionTimeoutPolicy: 'remind' });
+    insertPendingAction('tk_o10_off', { hoursAgo: 100 });
+    runtime.checkActionTimeouts();
+    expect(db.find('tasks', 'tk_o10_off').status).toBe('need_action');
+  });
+});
+
+describe('并发上限可配置（O16）', () => {
+  test('maxConcurrent=2 时同时运行不超过 2，恢复设置后生效', async () => {
+    db.setSettings({ maxConcurrent: 2 });
+    const hold = { ...fastExecutor, name: 'cap-hold', stepDelay: () => 5000 };
+    executor.register(hold);
+    executor.setActive('cap-hold');
+    db.removeWhere('tasks', () => true);
+
+    const worker = workerService.createWorker({ name: '容量执行者' });
+    const created = [];
+    for (let i = 0; i < 4; i += 1) {
+      created.push(taskService.create({ goal: `容量 ${i}`, assigneeId: worker.id }));
+    }
+    await settle();
+    expect(created.filter((t) => db.find('tasks', t.id).status === 'running').length).toBe(2);
+    expect(db.find('tasks', created[3].id).status).toBe('queued');
+
+    created.forEach((t) => {
+      const current = db.find('tasks', t.id);
+      if (!['succeeded', 'failed', 'canceled'].includes(current.status)) taskService.cancel(t.id, '清理');
+    });
+    db.setSettings({ maxConcurrent: 5 });
+    executor.setActive('fast-test');
+  });
+});
+
+describe('任务重试与断点重跑（F1）', () => {
+  test('步骤级重试：runStep 瞬时失败按执行器 stepRetryLimit 重试后成功', async () => {
+    db.removeWhere('tasks', () => true);
+    const worker = workerService.createWorker({ name: '抖动执行者' });
+    let attempts = 0;
+    const flaky = {
+      ...fastExecutor,
+      name: 'flaky-test',
+      stepDelay: () => 1,
+      stepRetryLimit: () => 2,
+      runStep: (task, step) => {
+        if (step.step === 2 && attempts === 0) {
+          attempts += 1;
+          throw new Error('网络抖动');
+        }
+        return { log: `ok ${step.title}`, citations: [] };
+      }
+    };
+    executor.register(flaky);
+    executor.setActive('flaky-test');
+
+    const task = taskService.create({ goal: '抖动目标', assigneeId: worker.id });
+    const finished = await waitForStatus(task.id, 'succeeded', 6000);
+    expect(finished.status).toBe('succeeded');
+    const events = taskService.detail(task.id).task.events;
+    expect(events.some((event) => event.message.includes('重试'))).toBe(true);
+    executor.setActive('fast-test');
+  });
+
+  test('不重试：STEP_TIMEOUT 与超出重试次数仍按失败收口并释放槽位', async () => {
+    db.removeWhere('tasks', () => true);
+    const worker = workerService.createWorker({ name: '连炸执行者' });
+    const always = {
+      ...fastExecutor,
+      name: 'always-boom',
+      stepDelay: () => 1,
+      stepRetryLimit: () => 1,
+      runStep: () => {
+        throw new Error('始终失败');
+      }
+    };
+    executor.register(always);
+    executor.setActive('always-boom');
+
+    const task = taskService.create({ goal: '连炸目标', assigneeId: worker.id });
+    const failed = await waitForStatus(task.id, 'failed', 8000);
+    expect(failed.error.message).toBe('始终失败');
+    const events = taskService.detail(task.id).task.events;
+    expect(events.filter((event) => event.message.includes('第 1/1 次重试')).length).toBe(1);
+    executor.setActive('fast-test');
+  });
+
+  test('断点重跑：从失败步骤重试的新任务沿用此前步骤结果', async () => {
+    db.removeWhere('tasks', () => true);
+    const worker = workerService.createWorker({ name: '断点执行者' });
+    const boom = {
+      ...fastExecutor,
+      name: 'boom2-test',
+      stepDelay: () => 1,
+      runStep: (task, step) => {
+        if (step.step === 2) throw new Error('步骤二炸了');
+        return { log: `done ${step.title}`, citations: [] };
+      }
+    };
+    executor.register(boom);
+    executor.setActive('boom2-test');
+    const failed = taskService.create({ goal: '断点目标', assigneeId: worker.id });
+    await waitForStatus(failed.id, 'failed');
+
+    // 修复执行器后从失败步骤重试：第一步沿用原结果，第二步重新执行
+    executor.setActive('fast-test');
+    const retried = taskService.retry(failed.id, { fromStep: 'failed' });
+    expect(retried.retryOf).toBe(failed.id);
+    expect(retried.input.retryFromStep).toBe(2);
+    const done = await waitForStatus(retried.id, 'succeeded');
+    expect(done.steps[0].log).toBe('done 步骤一');
+    expect(done.steps[1].log).toBe('完成 步骤二');
+
+    const sourceEvents = taskService.detail(failed.id).task.events;
+    expect(sourceEvents.some((event) => event.type === 'retried')).toBe(true);
     executor.setActive('fast-test');
   });
 });

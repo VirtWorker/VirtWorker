@@ -225,6 +225,9 @@ VW.views.dashboard = (() => {
     if (['queued', 'running', 'need_action'].includes(task.status)) {
       actions.push('<button class="mini-btn" data-act="cancel">取消</button>');
     }
+    if (['failed', 'canceled'].includes(task.status)) {
+      actions.push('<button class="mini-btn" data-act="retry">重试</button>');
+    }
     return actions.join('');
   }
 
@@ -362,6 +365,20 @@ VW.views.dashboard = (() => {
     }
   }
 
+  /** 重试失败/已取消任务（F1）：创建新任务重新入队；fromStep='failed' 时从失败步骤断点重跑 */
+  async function retryTask(id, { fromStep = null } = {}) {
+    const message = fromStep === 'failed' ? '确认从失败步骤重试？将创建新任务并沿用此前步骤的结果。' : '确认重试该任务？将创建一个新任务重新入队。';
+    if (!window.confirm(message)) return;
+    try {
+      const task = await VW.api.task.retry(id, fromStep);
+      VW.toast.show(`重试任务「${task.title}」已创建`);
+      VW.modal.close('task-detail-modal');
+      await refresh({ silent: true });
+    } catch (error) {
+      VW.toast.fromError(error);
+    }
+  }
+
   /** 一键查收当前周期内全部待查收结果（F8） */
   async function ackAll() {
     try {
@@ -433,6 +450,14 @@ VW.views.dashboard = (() => {
 
     document.getElementById('task-detail-title').textContent = task.title;
     footerCancel.classList.toggle('hidden', !['queued', 'running', 'need_action'].includes(task.status));
+
+    // 重试入口（F1）：失败任务若有已完成步骤则提供断点重跑，否则整单重试
+    const footerRetry = document.getElementById('task-detail-retry');
+    const retryable = ['failed', 'canceled'].includes(task.status);
+    const hasDoneSteps = (task.steps || []).some((step) => step.status === 'done');
+    footerRetry.classList.toggle('hidden', !retryable);
+    footerRetry.textContent = retryable && hasDoneSteps ? '从失败步骤重试' : '重试任务';
+    if (detailState) detailState.retryFromStep = retryable && hasDoneSteps ? 'failed' : null;
 
     const steps = (task.steps || [])
       .map(
@@ -628,6 +653,7 @@ VW.views.dashboard = (() => {
         const action = event.target.closest('[data-act]')?.dataset.act || 'detail';
         if (action === 'ack') return ackTask(holder.dataset.id);
         if (action === 'cancel') return cancelTask(holder.dataset.id);
+        if (action === 'retry') return retryTask(holder.dataset.id);
         return openDetail(holder.dataset.id);
       });
     });
@@ -647,6 +673,9 @@ VW.views.dashboard = (() => {
     document.getElementById('task-detail-ok').addEventListener('click', () => VW.modal.close('task-detail-modal'));
     document.getElementById('task-detail-cancel-task').addEventListener('click', () => {
       if (detailState) cancelTask(detailState.task.id);
+    });
+    document.getElementById('task-detail-retry').addEventListener('click', () => {
+      if (detailState) retryTask(detailState.task.id, { fromStep: detailState.retryFromStep ?? null });
     });
 
     // 新建任务

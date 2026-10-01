@@ -168,6 +168,10 @@ function sanitizePayload(payload) {
 }
 
 function create(params = {}) {
+  // retryOf / retryFromStep 是 retry() 使用的内部关联字段（trusted internal params）：
+  // 必须在任务入队（触发派发）之前落到任务对象上，断点重跑才能在派发时读到断点
+  const retryOf = typeof params.retryOf === 'string' ? params.retryOf : null;
+  const retryFromStep = Number.isInteger(params.retryFromStep) && params.retryFromStep > 1 ? params.retryFromStep : null;
   const goal = String(params.goal ?? '').trim();
   if (!goal) throw fail.validation('任务目标不能为空');
   if (goal.length > 500) throw fail.validation('任务目标最多 500 字');
@@ -186,7 +190,12 @@ function create(params = {}) {
     assignee,
     confirmFirst: Boolean(params.confirmFirst),
     workspace: { cwd: String(params.workspace ?? '').trim().slice(0, 300), env: assignee.env },
-    input: { payload: sanitizePayload(params.payload), attachments: [] },
+    input: {
+      payload: sanitizePayload(params.payload),
+      attachments: [],
+      ...(retryFromStep ? { retryFromStep } : {})
+    },
+    ...(retryOf ? { retryOf } : {}),
     steps: [],
     progress: 0,
     actionRequest: null,
@@ -438,6 +447,8 @@ function requestAction(id, actionRequest) {
     title: `「${next.title}」需要你的操作`,
     body: next.actionRequest.title
   });
+  // 内部指令：出站回执（IM 推送等）与 SLA 看门狗的触发源（F3）
+  bus.command('task:action-requested', { taskId: id, title: next.title });
   return publicTask(next);
 }
 
@@ -505,10 +516,62 @@ function cancelActiveByAssignees(assigneeIds, reason) {
   return canceled;
 }
 
-/** 仅记录时间线（如执行者离线等待），不改变任务状态 */
-function recordEvent(id, message) {
-  const next = mutate(id, (t) => appendEvent(t, 'log', message));
+/** 仅记录时间线（如执行者离线等待），不改变任务状态；allowFinished 允许写给终态任务（如重试/出站通知的审计） */
+function recordEvent(id, message, { allowFinished = false } = {}) {
+  const next = mutate(id, (t) => appendEvent(t, 'log', message), { allowFinished });
   publish(next, 'task:updated');
+}
+
+/** need_action 任务清单（SLA 看门狗扫描用，O10） */
+function listNeedAction() {
+  return db.where('tasks', { status: STATUS.needAction });
+}
+
+/** 更新操作请求的最近提醒时间（超时策略 remind 每 24h 重发提醒，O10） */
+function touchActionReminder(id) {
+  return mutate(id, (t) => {
+    if (t.actionRequest) t.actionRequest.remindedAt = nowIso();
+  });
+}
+
+/**
+ * 重试失败/已取消的任务（F1）：以新任务重新入队（终态任务本身不可变，保证时间线审计完整），
+ * 新任务通过 retryOf 关联原任务；fromStep='failed' 时从原任务第一个未完成步骤继续（断点重跑，
+ * 由运行时在构建步骤后沿用原任务已完成步骤的结果）。
+ */
+function retry(id, { fromStep = null } = {}) {
+  const source = getOrThrow(id);
+  if (!FINISHED_STATUS.includes(source.status)) {
+    throw fail.invalidState('仅失败或已取消的任务可以重试');
+  }
+
+  let retryFromStep = null;
+  if (fromStep === 'failed') {
+    const firstPending = (source.steps || []).find((step) => step.status !== 'done');
+    retryFromStep = firstPending && firstPending.step > 1 ? firstPending.step : null;
+  } else if (Number.isInteger(fromStep) && fromStep > 1) {
+    retryFromStep = fromStep;
+  }
+
+  const task = create({
+    title: source.title,
+    goal: source.goal,
+    assigneeId: source.assignee.id,
+    priority: source.priority,
+    workspace: source.workspace?.cwd,
+    payload: source.input?.payload,
+    tags: source.tags,
+    confirmFirst: source.confirmFirst,
+    trigger: { type: 'manual' },
+    retryOf: source.id,
+    retryFromStep
+  });
+
+  const next = task;
+
+  recordEvent(task.id, retryFromStep ? `重试自任务 ${source.id}（从第 ${retryFromStep} 步继续）` : `重试自任务 ${source.id}`);
+  mutate(source.id, (t) => appendEvent(t, 'retried', `已发起重试，新任务：${task.id}`), { allowFinished: true });
+  return publicTask(next);
 }
 
 /** 过期判定：已结束、已查收且超出保留期（未查收的结果不会被清理，避免用户还没看就消失） */
@@ -589,9 +652,12 @@ module.exports = {
   ack,
   ackAll,
   answer,
+  retry,
   getTask,
   resolveAssignee,
   cancelActiveByAssignees,
+  listNeedAction,
+  touchActionReminder,
   markRunning,
   startStep,
   completeStep,

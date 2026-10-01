@@ -210,6 +210,25 @@ function normalizeInput(input = {}) {
   };
 }
 
+/** 出站通知配置（F2）：任务终态时向 webhookUrl POST 结构化事件（由 runtime/webhook-notifier 投递） */
+function normalizeNotify(input = {}) {
+  const url = String(input?.webhookUrl ?? '').trim().slice(0, 500);
+  if (!url) return { webhookUrl: '' };
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    throw fail.validation('Webhook 地址不是合法的 URL');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw fail.validation('Webhook 地址必须以 http:// 或 https:// 开头');
+  }
+  if (parsed.username || parsed.password) {
+    throw fail.validation('Webhook 地址不应携带账号密码（请在接收端校验签名）');
+  }
+  return { webhookUrl: parsed.href };
+}
+
 function listAll() {
   return db.all('automations');
 }
@@ -313,6 +332,7 @@ function create(params = {}) {
     trigger,
     executor: { type: executor.type, id: executor.id, name: executor.name },
     input: normalizeInput(params.input),
+    notify: normalizeNotify(params.notify),
     lastRunAt: null,
     lastTaskId: null,
     runCount: 0,
@@ -340,6 +360,7 @@ function update(id, patch = {}) {
   }
   if (patch.desc !== undefined) next.desc = String(patch.desc).trim().slice(0, 100);
   if (patch.input !== undefined) next.input = normalizeInput({ ...automation.input, ...patch.input });
+  if (patch.notify !== undefined) next.notify = normalizeNotify({ ...automation.notify, ...patch.notify });
   if (patch.executorId !== undefined) {
     const executor = taskService.resolveAssignee(patch.executorId);
     next.executor = { type: executor.type, id: executor.id, name: executor.name };

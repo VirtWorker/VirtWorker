@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('virtworker', {
     create: (payload) => invoke('task:create', payload),
     detail: (id) => invoke('task:detail', { id }),
     cancel: (id, reason) => invoke('task:cancel', { id, reason }),
+    retry: (id, fromStep) => invoke('task:retry', { id, fromStep }),
     ack: (id) => invoke('task:ack', { id }),
     ackAll: (query) => invoke('task:ack-all', query),
     answer: (payload) => invoke('task:answer', payload)
@@ -71,10 +72,11 @@ contextBridge.exposeInMainWorld('virtworker', {
     copyInvocation: (id) => invoke('automation:copy-invocation', { id })
   },
 
-  /** 执行器模式（设置中心）：Mock / 真实执行器切换 */
+  /** 执行器模式（设置中心）：Mock / 真实执行器切换、私有配置（O16） */
   executor: {
     list: () => invoke('executor:list'),
-    activate: (name) => invoke('executor:activate', { name })
+    activate: (name) => invoke('executor:activate', { name }),
+    configure: (name, config) => invoke('executor:configure', { name, config })
   },
 
   /** 能力与资源：技能 / 连接器 / 知识库 / 挂载 */

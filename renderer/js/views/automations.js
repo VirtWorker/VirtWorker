@@ -190,6 +190,7 @@ VW.views.automations = (() => {
     form.goal.value = automation.input.goal;
     form.workspace.value = automation.input.workspace || '';
     form.confirmFirst.checked = Boolean(automation.input.confirmFirst);
+    form.webhookUrl.value = automation.notify?.webhookUrl || '';
     setSelect(form.priority, automation.input.priority);
     setSelect(form.triggerType, automation.trigger.type);
 
@@ -257,6 +258,9 @@ VW.views.automations = (() => {
         workspace: form.workspace.value,
         priority: form.priority.value,
         confirmFirst: form.confirmFirst.checked
+      },
+      notify: {
+        webhookUrl: form.webhookUrl.value.trim()
       }
     };
   }

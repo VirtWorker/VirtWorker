@@ -5,7 +5,11 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { createRequire } from 'node:module';
 import { initTempDb, cleanupTempDb, db, workerService, taskService, chatService, bus, nowIso } from './setup.js';
+
+const require = createRequire(import.meta.url);
+const imAdapter = require('../main/runtime/im-adapter');
 
 /** 断言业务异常错误码（渲染层只按 code 决定提示策略） */
 function expectAppError(fn, code) {
@@ -443,5 +447,98 @@ describe('chat-service：连接编辑与凭据轮换、healthy 结构化输出�
     expect(updated).toBeTruthy();
     expect(updated.payload.message).toBe('第二次');
     expect(updated.payload.sender).toBe('新同事');
+  });
+});
+
+describe('chat-service：出站回执与应答回流（F3）', () => {
+  let tempDir;
+
+  beforeAll(() => {
+    tempDir = initTempDb();
+    chatService.startNotifier();
+    chatService.startNotifier(); // 幂等
+    imAdapter.clearOutbox();
+  });
+
+  afterAll(() => {
+    db.flush();
+    cleanupTempDb(tempDir);
+  });
+
+  test('need_action 与终态回执推送到原聊天（mock outbox 记录）', () => {
+    const worker = workerService.createWorker({ name: '回执执行者' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `回执连接 ${Date.now()}` });
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId: `${connection.id}:group-dev`,
+      chatName: '回执群',
+      workerId: worker.id
+    });
+    const inbound = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatName: '回执群',
+      chatType: 'group',
+      sender: '王工',
+      text: `@${worker.name} 检查一下数据`
+    });
+    expect(inbound.kind).toBe('task_created');
+    const taskId = inbound.taskId;
+    expect(imAdapter.listOutbox(connection.id).length).toBe(0); // 尚无可回执的事件
+
+    // 进入 need_action → 操作请求推送到聊天
+    taskService.requestAction(taskId, {
+      type: 'selection',
+      title: '请选择统计口径',
+      options: [
+        { value: 'amount', label: '按金额' },
+        { value: 'count', label: '按条数' }
+      ],
+      defaultValue: 'amount'
+    });
+    let messages = imAdapter.listOutbox(connection.id);
+    expect(messages.length).toBe(1);
+    expect(messages[0].chatId).toBe(binding.chatId);
+    expect(messages[0].content).toContain('请选择统计口径');
+
+    // 应答回流：按 label 匹配选项，任务恢复 running
+    const answered = chatService.answerPendingAction(binding.id, '按条数');
+    expect(answered.answer.value).toBe('count');
+    expect(db.find('tasks', taskId).status).toBe('running');
+
+    // 完成 → 结果摘要推送
+    taskService.succeed(taskId, { summary: '数据处理完成' });
+    messages = imAdapter.listOutbox(connection.id);
+    expect(messages.length).toBe(2);
+    expect(messages[1].content).toContain('已完成');
+    expect(messages[1].content).toContain('数据处理完成');
+  });
+
+  test('answerPendingAction：无效选项与无在途任务时给出业务错误', () => {
+    const worker = workerService.createWorker({ name: '回流执行者' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `回流连接 ${Date.now()}` });
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId: `${connection.id}:direct-zhang`,
+      chatName: '张三',
+      workerId: worker.id
+    });
+
+    expectAppError(() => chatService.answerPendingAction(binding.id, '任意'), 'INVALID_STATE');
+
+    const inbound = chatService.ingest({
+      connectionId: connection.id,
+      chatId: binding.chatId,
+      chatType: 'direct',
+      sender: '张三',
+      text: '帮我整理数据'
+    });
+    taskService.requestAction(inbound.taskId, {
+      type: 'selection',
+      title: '选择口径',
+      options: [{ value: 'amount', label: '按金额' }],
+      defaultValue: 'amount'
+    });
+    expectAppError(() => chatService.answerPendingAction(binding.id, '乱写的'), 'VALIDATION_FAILED');
   });
 });

@@ -696,6 +696,7 @@
       </div>
       <div class="task-detail" id="task-detail-body"></div>
       <div class="modal-footer">
+        <button type="button" class="btn btn-primary hidden" id="task-detail-retry">重试任务</button>
         <button type="button" class="btn btn-outline hidden" id="task-detail-cancel-task">取消任务</button>
         <button type="button" class="btn btn-primary" id="task-detail-ok">关闭</button>
       </div>
@@ -815,6 +816,11 @@
         </div>
         <div class="form-item">
           <label class="checkbox-row"><input type="checkbox" name="confirmFirst" /><span>执行前先让我确认方向</span></label>
+        </div>
+        <div class="form-item">
+          <label class="form-label">Webhook 通知</label>
+          <input type="text" name="webhookUrl" placeholder="选填，任务完成或失败时 POST 通知到该地址，例如 https://example.com/hooks/vw" />
+          <span class="form-hint">仅对通过本自动任务创建的任务生效</span>
         </div>
 
         <div class="modal-footer">
@@ -1056,6 +1062,26 @@
             <input type="checkbox" id="setting-notify" />
             <span>需要你操作 / 任务完成时发送系统通知</span>
           </label>
+        </div>
+
+        <div class="detail-section">
+          <div class="detail-label">运行时</div>
+          <div class="settings-row">
+            <span>任务并发上限</span>
+            <input type="number" id="setting-max-concurrent" min="1" max="20" />
+            <span class="form-hint">同时执行的任务数（1–20）</span>
+          </div>
+          <div class="settings-row">
+            <span>操作超时</span>
+            <input type="number" id="setting-action-timeout" min="0" max="8760" />
+            <span>小时</span>
+            <select id="setting-action-policy">
+              <option value="remind">仅提醒</option>
+              <option value="fail">自动失败</option>
+              <option value="continue">按默认选项继续</option>
+            </select>
+          </div>
+          <span class="form-hint">「需要操作」的任务等待超时后的处置方式，0 表示不超时</span>
         </div>
 
         <div class="detail-section">

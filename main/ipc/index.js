@@ -19,6 +19,7 @@ const chatService = require('../services/chat-service');
 const httpServer = require('../runtime/http-server');
 const dirGrant = require('../runtime/dir-grant');
 const executorRegistry = require('../runtime/executor');
+const vault = require('../util/secret-vault');
 const { fail } = require('../util/errors');
 
 const API_VERSION = 1;
@@ -43,7 +44,16 @@ const DEFAULT_SETTINGS = {
   /** 已结束且已查收的任务保留天数 */
   taskRetentionDays: 90,
   /** 界面主题：浅色 / 深色 / 跟随系统 */
-  theme: 'system'
+  theme: 'system',
+  /** 任务并发上限（O16，1..20），运行时按 capacity() 即时生效 */
+  maxConcurrent: 5,
+  /** 激活执行器（仅由 executor:activate 写入，重启后恢复） */
+  activeExecutor: 'mock',
+  /** need_action 超时（小时，0 = 关闭）与处置策略（O10） */
+  actionTimeoutHours: 48,
+  actionTimeoutPolicy: 'remind',
+  /** 执行器私有配置命名空间（O16）：{ [executorName]: { key: value | sealed } }，密钥经 vault 加密 */
+  executorConfig: {}
 };
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
 const TASK_VIEWS = ['list', 'board'];
@@ -52,6 +62,11 @@ const THEMES = ['light', 'dark', 'system'];
 
 function readSettings() {
   return { ...DEFAULT_SETTINGS, ...db.getSettings() };
+}
+
+/** 下发渲染层的设置视图：执行器配置中的密文以只读掩码呈现（O16） */
+function decorateSettings(settings) {
+  return { ...settings, executorConfig: decorateExecutorConfig(settings.executorConfig) };
 }
 
 /** 收敛渲染层传入的保存文件名：剥掉路径片段并过滤非法字符，防止对话框 defaultPath 被注入相对/绝对路径 */
@@ -84,9 +99,85 @@ function sanitizeSettings(patch = {}) {
       safe[key] = days;
       return;
     }
+    if (key === 'maxConcurrent') {
+      const cap = Number(patch[key]);
+      if (!Number.isInteger(cap) || cap < 1 || cap > 20) return;
+      safe[key] = cap;
+      return;
+    }
+    if (key === 'actionTimeoutHours') {
+      const hours = Number(patch[key]);
+      if (!Number.isInteger(hours) || hours < 0 || hours > 8760) return;
+      safe[key] = hours;
+      return;
+    }
+    if (key === 'actionTimeoutPolicy' && !['fail', 'continue', 'remind'].includes(patch[key])) return;
     safe[key] = typeof DEFAULT_SETTINGS[key] === 'boolean' ? Boolean(patch[key]) : patch[key];
   });
   return safe;
+}
+
+// ==================== 执行器私有配置（O16） ====================
+
+/** 敏感键命名约定：命中即 seal 落库，永不明文存储 */
+const SENSITIVE_CONFIG_KEY_RE = /(key|secret|token|password|credential)/i;
+
+/**
+ * 合并执行器配置补丁：{ [executorName]: { key: value } }。
+ * - 敏感键：字符串值经 vault.seal 落库；空字符串清除该键
+ * - 掩码回传（{ masked: true, mask }，见 decorateExecutorConfig）：保留库内原值，防止掩码覆盖密文
+ * - 其余键：字符串 ≤2048 字、布尔/数值透传
+ */
+function mergeExecutorConfig(patch = {}) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+  const current = readSettings().executorConfig || {};
+  const next = { ...current };
+  for (const [name, config] of Object.entries(patch).slice(0, 20)) {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      delete next[name];
+      continue;
+    }
+    const merged = { ...(next[name] || {}) };
+    for (const [key, value] of Object.entries(config).slice(0, 30)) {
+      if (typeof value === 'boolean' || typeof value === 'number') {
+        merged[key] = value;
+        continue;
+      }
+      const text = String(value ?? '');
+      if (value && typeof value === 'object' && value.masked === true) {
+        // 只读掩码回传 = 保留现有值（与自动化 Token 的 O6 契约同款语义）
+        continue;
+      }
+      if (!text) {
+        delete merged[key];
+        continue;
+      }
+      if (SENSITIVE_CONFIG_KEY_RE.test(key)) {
+        // 与自动化 Token 同款形态：{ sealed, mask }——密文落库、掩码供展示
+        merged[key] = { sealed: vault.seal(text.slice(0, 2048)), mask: vault.mask(text.slice(0, 2048)) };
+      } else {
+        merged[key] = text.slice(0, 2048);
+      }
+    }
+    next[name] = merged;
+  }
+  return next;
+}
+
+/** 下发渲染层的执行器配置：密文替换为只读掩码，掩码回传时库内原值得以保留 */
+function decorateExecutorConfig(executorConfig) {
+  const config = executorConfig || {};
+  return Object.fromEntries(
+    Object.entries(config).map(([name, entries]) => [
+      name,
+      Object.fromEntries(
+        Object.entries(entries || {}).map(([key, value]) => [
+          key,
+          value && typeof value === 'object' && value.sealed ? { masked: true, mask: value.mask || '' } : value
+        ])
+      )
+    ])
+  );
 }
 
 function handle(channel, handler) {
@@ -175,12 +266,12 @@ function register() {
       chatConnections: chatService.listConnections(),
       chatBindings: chatService.listBindings().items,
       chatStats: chatService.stats(),
-      settings,
+      settings: decorateSettings(settings),
       runtime: { apiServer: httpServer.getStatus() }
     };
   });
 
-  handle('settings:get', () => readSettings());
+  handle('settings:get', () => decorateSettings(readSettings()));
   handle('settings:update', (patch) => {
     const before = readSettings();
     const saved = db.setSettings(sanitizeSettings(patch));
@@ -193,13 +284,13 @@ function register() {
           const rolledBack = db.setSettings({ apiPort: before.apiPort });
           const restored = await httpServer.restart();
           bus.emit('app:runtime', { apiServer: restored });
-          return { ...rolledBack, apiPortRollback: before.apiPort };
+          return decorateSettings({ ...rolledBack, apiPortRollback: before.apiPort });
         }
         bus.emit('app:runtime', { apiServer: runtime });
-        return saved;
+        return decorateSettings(saved);
       });
     }
-    return saved;
+    return decorateSettings(saved);
   });
 
   // 员工资源
@@ -225,6 +316,8 @@ function register() {
   handle('task:create', (payload) => taskService.create(payload));
   handle('task:detail', ({ id } = {}) => taskService.detail(id));
   handle('task:cancel', ({ id, reason } = {}) => taskService.cancel(id, reason));
+  /** 重试失败/已取消任务（F1）：以新任务重新入队；fromStep='failed' 时断点重跑 */
+  handle('task:retry', ({ id, fromStep } = {}) => taskService.retry(id, { fromStep }));
   handle('task:ack', ({ id } = {}) => taskService.ack(id));
   /** 一键查收当前周期内全部待查收结果（看板「查收结果」页签，F8） */
   handle('task:ack-all', ({ period } = {}) => taskService.ackAll(period));
@@ -254,10 +347,32 @@ function register() {
   });
 
   // 执行器模式（设置中心）：Mock / 真实执行器切换；真实执行器注册后即可在此切换
-  handle('executor:list', () => ({ names: executorRegistry.listNames(), active: executorRegistry.getActiveName() }));
+  handle('executor:list', () => ({
+    names: executorRegistry.listNames(),
+    active: executorRegistry.getActiveName(),
+    configs: decorateExecutorConfig(readSettings().executorConfig)
+  }));
+  /** 切换执行器：持久化到设置（重启后恢复）+ 审计日志与事件（O16） */
   handle('executor:activate', ({ name } = {}) => {
-    executorRegistry.setActive(String(name || ''));
+    const target = String(name || '');
+    const from = executorRegistry.getActiveName();
+    try {
+      executorRegistry.setActive(target);
+    } catch (error) {
+      throw fail.notFound('执行器不存在或未注册');
+    }
+    db.setSettings({ activeExecutor: executorRegistry.getActiveName() });
+    console.log(`[executor] 执行器已切换：${from} → ${executorRegistry.getActiveName()}`);
+    bus.emit('runtime:executor-changed', { from, to: executorRegistry.getActiveName() });
     return { names: executorRegistry.listNames(), active: executorRegistry.getActiveName() };
+  });
+  /** 执行器私有配置（O16）：敏感键经 vault 加密落库，响应为只读掩码视图 */
+  handle('executor:configure', ({ name, config } = {}) => {
+    const target = String(name || '');
+    if (!executorRegistry.listNames().includes(target)) throw fail.notFound('执行器不存在或未注册');
+    const merged = mergeExecutorConfig({ [target]: config });
+    if (merged) db.setSettings({ executorConfig: merged });
+    return { name: target, config: decorateExecutorConfig(readSettings().executorConfig)[target] || {} };
   });
 
   // 能力与资源

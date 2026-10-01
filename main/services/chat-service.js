@@ -493,12 +493,111 @@ function stats() {
   };
 }
 
+// ==================== 出站回执与应答回流（F3） ====================
+
+let notifierWired = false;
+
+/** 订阅任务事件并把回执推送到聊天（幂等，main.js 启动时调用一次） */
+function startNotifier() {
+  if (notifierWired) return;
+  notifierWired = true;
+  bus.onCommand('task:action-requested', (payload) => {
+    try {
+      notifyTaskEvent(payload);
+    } catch (error) {
+      console.warn('[chat] 操作请求回执推送失败:', error.message || error);
+    }
+  });
+  bus.onCommand('task:finished', (payload) => {
+    try {
+      notifyTaskEvent(payload);
+    } catch (error) {
+      console.warn('[chat] 终态回执推送失败:', error.message || error);
+    }
+  });
+}
+
+/** 解析聊天来源任务对应的绑定 / 连接 / 适配器；非聊天任务或链路不可用返回 null */
+function resolveOutboundTarget(taskId) {
+  const task = db.find('tasks', taskId);
+  if (!task || task.trigger.type !== 'chat') return null;
+  const binding = db.find('chatbindings', task.trigger.refId);
+  if (!binding || !binding.enabled) return null;
+  const connection = db.find('chatconnections', binding.connectionId);
+  if (!connection) return null;
+  const adapter = imAdapter.resolve(connection.platform);
+  if (!adapter || typeof adapter.sendMessage !== 'function') return null;
+  return { task, binding, connection, adapter };
+}
+
+/** 出站回执：need_action 推送操作请求（支持交互卡片的平台走 deliverAction），终态推送结果摘要 */
+function notifyTaskEvent(payload = {}) {
+  const target = resolveOutboundTarget(payload.taskId);
+  if (!target) return;
+  const { task, binding, connection, adapter } = target;
+
+  // need_action：推送操作请求（支持交互卡片的平台走 deliverAction）
+  if (task.status === taskService.STATUS.needAction) {
+    const request = task.actionRequest;
+    if (!request) return;
+    if (typeof adapter.deliverAction === 'function') {
+      adapter.deliverAction(connection, binding.chatId, request);
+    } else {
+      adapter.sendMessage(connection, binding.chatId, `【需要操作】${request.title}——请在 VirtWorker 中处理`);
+    }
+    return;
+  }
+
+  // 终态：推送结果摘要（canceled 不推送——用户自己取消的无须回执）
+  let content;
+  if (task.status === taskService.STATUS.succeeded) {
+    content = `「${task.title}」已完成：${task.result?.summary || '结果已生成，请在 VirtWorker 中查收'}`;
+  } else if (task.status === taskService.STATUS.failed) {
+    content = `「${task.title}」执行失败：${task.error?.message || '未知原因'}`;
+  } else {
+    return;
+  }
+  adapter.sendMessage(connection, binding.chatId, content);
+}
+
+/**
+ * 应答回流（F3）：把聊天中的回复映射为该绑定在途任务的 need_action 应答。
+ * 选项类请求按 label/value 精确匹配，自由文本作为回答内容；
+ * 真实平台适配器在收到交互卡片回复 / 定向回复时调用，无在途操作请求时抛错提示。
+ */
+function answerPendingAction(bindingId, text) {
+  const binding = db.find('chatbindings', bindingId);
+  if (!binding) throw fail.notFound('聊天绑定不存在');
+  const task = db.find('tasks', binding.lastTaskId);
+  if (!task || task.status !== taskService.STATUS.needAction) {
+    throw fail.invalidState('该聊天当前没有等待操作的任务');
+  }
+  const request = task.actionRequest;
+  const value = String(text ?? '').trim();
+  if (!value) throw fail.validation('请填写回复内容');
+  let answer;
+  if (request.type === 'selection' || request.type === 'confirm') {
+    const option = (request.options || []).find((item) => item.value === value || item.label === value);
+    if (!option) {
+      throw fail.validation(`请回复有效选项：${(request.options || []).map((item) => item.label).join(' / ')}`);
+    }
+    answer = { value: option.value };
+  } else {
+    answer = { value: value.slice(0, 500) };
+  }
+  const result = taskService.answer({ taskId: task.id, answer });
+  bus.emit('chat:answered', { bindingId: binding.id, taskId: task.id });
+  return { taskId: task.id, answer: result.actionRequest.answer };
+}
+
 module.exports = {
   CHAT_TYPE_LABEL,
   GENERIC_MENTION,
   parseMention,
   platformCatalog,
   listChats,
+  startNotifier,
+  answerPendingAction,
   listConnections: () => allConnections().map(decorateConnection),
   createConnection,
   updateConnection,
