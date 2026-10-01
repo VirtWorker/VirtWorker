@@ -64,6 +64,14 @@ VW.modal = (() => {
     return Array.from(document.querySelectorAll('.modal-mask')).some((mask) => !mask.classList.contains('hidden'));
   }
 
+  /** 批量绑定「点击即关闭」触发器（OPT-9）：bindClose('task-modal', 'task-modal-close', 'task-modal-cancel')。
+   *  全站约 20 处同款三行样板收敛于此；带额外副作用的关闭按钮仍由调用方自行绑定。 */
+  function bindClose(modalId, ...triggerIds) {
+    triggerIds.forEach((triggerId) => {
+      document.getElementById(triggerId)?.addEventListener('click', () => close(modalId));
+    });
+  }
+
   document.addEventListener('click', (event) => {
     const mask = event.target.closest('.modal-mask');
     if (mask && event.target === mask) close(mask.id);
@@ -97,5 +105,5 @@ VW.modal = (() => {
     }
   });
 
-  return { open, close, isOpen, isAnyOpen };
+  return { open, close, isOpen, isAnyOpen, bindClose };
 })();

@@ -157,8 +157,7 @@ VW.views.capabilitiesFlows = (() => {
   function bind() {
     document.getElementById('new-flow-btn').addEventListener('click', () => openFlowModal(null));
     document.getElementById('flow-form').addEventListener('submit', submitFlow);
-    document.getElementById('flow-modal-close').addEventListener('click', () => VW.modal.close('flow-modal'));
-    document.getElementById('flow-modal-cancel').addEventListener('click', () => VW.modal.close('flow-modal'));
+    VW.modal.bindClose('flow-modal', 'flow-modal-close', 'flow-modal-cancel');
 
     document.getElementById('add-flow-node').addEventListener('click', () => {
       syncNodesFromForm();
@@ -206,14 +205,13 @@ VW.views.capabilitiesFlows = (() => {
         return VW.views.dashboard.openCreateTask(flow.id);
       }
       if (action === 'remove') {
-        if (!window.confirm('删除流程不会影响已产生的任务，确认删除？')) return undefined;
-        try {
-          await VW.api.flow.remove(id);
-          await VW.capCtx.refresh();
-          VW.toast.show('流程已删除');
-        } catch (error) {
-          VW.toast.fromError(error);
-        }
+        await VW.util.submitAction(
+          async () => {
+            await VW.api.flow.remove(id);
+            await VW.capCtx.refresh();
+          },
+          { confirm: '删除流程不会影响已产生的任务，确认删除？', success: '流程已删除' }
+        );
       }
       return undefined;
     });

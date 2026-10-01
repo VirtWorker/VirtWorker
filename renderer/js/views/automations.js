@@ -307,14 +307,8 @@ VW.views.automations = (() => {
     const openNew = () => openModal(null);
     document.getElementById('new-automation-btn').addEventListener('click', openNew);
     document.getElementById('automation-empty-action').addEventListener('click', openNew);
-    document.getElementById('automation-modal-close').addEventListener('click', () => VW.modal.close('automation-modal'));
-    document.getElementById('automation-modal-cancel').addEventListener('click', () => VW.modal.close('automation-modal'));
-    document.getElementById('automation-history-close').addEventListener('click', () =>
-      VW.modal.close('automation-history-modal')
-    );
-    document.getElementById('automation-history-ok').addEventListener('click', () =>
-      VW.modal.close('automation-history-modal')
-    );
+    VW.modal.bindClose('automation-modal', 'automation-modal-close', 'automation-modal-cancel');
+    VW.modal.bindClose('automation-history-modal', 'automation-history-close', 'automation-history-ok');
 
     const form = document.getElementById('automation-form');
     form.addEventListener('submit', submitForm);
@@ -380,25 +374,26 @@ VW.views.automations = (() => {
         return undefined;
       }
       if (button.dataset.act === 'regen-token') {
-        if (!window.confirm('确认重新生成 API Token？旧 Token 将立即失效，已分发的调用命令需要更新。')) return undefined;
-        try {
-          await VW.api.automation.regenToken(id);
-          VW.toast.show('已生成新 Token，请重新复制调用命令');
-          await refresh();
-        } catch (error) {
-          VW.toast.fromError(error);
-        }
+        await VW.util.submitAction(
+          async () => {
+            await VW.api.automation.regenToken(id);
+            await refresh();
+          },
+          {
+            confirm: '确认重新生成 API Token？旧 Token 将立即失效，已分发的调用命令需要更新。',
+            success: '已生成新 Token，请重新复制调用命令'
+          }
+        );
         return undefined;
       }
       if (button.dataset.act === 'remove') {
-        if (!window.confirm('确认删除该自动任务？已产生的任务记录不会被删除。')) return undefined;
-        try {
-          await VW.api.automation.remove(id);
-          VW.toast.show('自动任务已删除');
-          await refresh();
-        } catch (error) {
-          VW.toast.fromError(error);
-        }
+        await VW.util.submitAction(
+          async () => {
+            await VW.api.automation.remove(id);
+            await refresh();
+          },
+          { confirm: '确认删除该自动任务？已产生的任务记录不会被删除。', success: '自动任务已删除' }
+        );
       }
       return undefined;
     });

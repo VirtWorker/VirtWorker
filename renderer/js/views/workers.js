@@ -175,34 +175,35 @@ VW.views.workers = (() => {
 
   async function removeWorker(worker) {
     if (!worker) return;
-    if (
-      !window.confirm(
-        `确认删除 Worker「${worker.name}」？\n其名下聊天绑定会一并清理，执行者指向它的自动任务将被停用。`
-      )
-    )
-      return;
-    try {
-      const result = await VW.api.worker.remove(worker.id);
-      const notes = [];
-      if (result.disabledAutomations?.length) notes.push(`${result.disabledAutomations.length} 个自动任务已停用`);
-      if (result.removedBindings) notes.push(`${result.removedBindings} 条聊天绑定已清理`);
-      VW.toast.show(`Worker「${worker.name}」已删除${notes.length ? `（${notes.join('，')}）` : ''}`);
-      await refreshAll();
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(
+      async () => {
+        const result = await VW.api.worker.remove(worker.id);
+        const notes = [];
+        if (result.disabledAutomations?.length) notes.push(`${result.disabledAutomations.length} 个自动任务已停用`);
+        if (result.removedBindings) notes.push(`${result.removedBindings} 条聊天绑定已清理`);
+        await refreshAll();
+        return notes;
+      },
+      {
+        confirm: `确认删除 Worker「${worker.name}」？\n其名下聊天绑定会一并清理，执行者指向它的自动任务将被停用。`,
+        success: (notes) => `Worker「${worker.name}」已删除${notes.length ? `（${notes.join('，')}）` : ''}`
+      }
+    );
   }
 
   async function removeGroup(group) {
-    if (!window.confirm(`确认删除 Group「${group.name}」？执行者指向它的自动任务将被停用，成员 Worker 不受影响。`)) return;
-    try {
-      const result = await VW.api.group.remove(group.id);
-      const disabled = result.disabledAutomations?.length || 0;
-      VW.toast.show(`Group「${group.name}」已删除${disabled ? `（${disabled} 个自动任务已停用）` : ''}`);
-      await refreshAll();
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(
+      async () => {
+        const result = await VW.api.group.remove(group.id);
+        const disabled = result.disabledAutomations?.length || 0;
+        await refreshAll();
+        return disabled;
+      },
+      {
+        confirm: `确认删除 Group「${group.name}」？执行者指向它的自动任务将被停用，成员 Worker 不受影响。`,
+        success: (disabled) => `Group「${group.name}」已删除${disabled ? `（${disabled} 个自动任务已停用）` : ''}`
+      }
+    );
   }
 
   // ==================== 新建 / 编辑 Worker ====================
@@ -338,10 +339,8 @@ VW.views.workers = (() => {
       document.querySelector('.nav-item[data-page="capabilities"]').click();
       VW.views.capabilities.showSection('share');
     });
-    document.getElementById('worker-modal-close').addEventListener('click', () => VW.modal.close('worker-modal'));
-    document.getElementById('worker-modal-cancel').addEventListener('click', () => VW.modal.close('worker-modal'));
-    document.getElementById('group-modal-close').addEventListener('click', () => VW.modal.close('group-modal'));
-    document.getElementById('group-modal-cancel').addEventListener('click', () => VW.modal.close('group-modal'));
+    VW.modal.bindClose('worker-modal', 'worker-modal-close', 'worker-modal-cancel');
+    VW.modal.bindClose('group-modal', 'group-modal-close', 'group-modal-cancel');
 
     // OPT-5：管理页只依赖 manageSeg——page/侧边栏搜索等 ui 变化不再触发整页卡片重建
     store.on(['workerList', 'groups', 'ui.manageSeg'], render);

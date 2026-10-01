@@ -174,15 +174,17 @@ VW.views.shell = (() => {
   }
 
   async function purgeTasks() {
-    // 破坏性操作确认：与全站删除/取消类操作（window.confirm 惯例）对齐
-    if (!window.confirm('确认立即清理已结束且超过保留期限的历史任务？清理后不可恢复。')) return;
-    try {
-      const result = await VW.api.app.purgeTasks();
-      VW.toast.show(result.removed ? `已清理 ${result.removed} 条历史任务` : '没有需要清理的任务');
-      await Promise.all([refreshDataStats(), VW.views.dashboard.refresh({ silent: true })]);
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(
+      async () => {
+        const result = await VW.api.app.purgeTasks();
+        await Promise.all([refreshDataStats(), VW.views.dashboard.refresh({ silent: true })]);
+        return result;
+      },
+      {
+        confirm: '确认立即清理已结束且超过保留期限的历史任务？清理后不可恢复。',
+        success: (result) => (result.removed ? `已清理 ${result.removed} 条历史任务` : '没有需要清理的任务')
+      }
+    );
   }
 
   // ==================== 数据快照与任务归档 ====================
@@ -222,14 +224,11 @@ VW.views.shell = (() => {
       VW.toast.show('没有可恢复的备份快照');
       return;
     }
-    // 恢复会覆盖当前全部数据并由主进程重启应用加载，必须二次确认
-    if (!window.confirm(`恢复备份「${name}」将覆盖当前全部数据，恢复后应用会自动重启。确定继续？`)) return;
-    try {
-      await VW.api.app.restoreBackup(name);
-      VW.toast.show('备份已恢复，应用即将重启…');
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(() => VW.api.app.restoreBackup(name), {
+      // 恢复会覆盖当前全部数据并由主进程重启应用加载，必须二次确认
+      confirm: `恢复备份「${name}」将覆盖当前全部数据，恢复后应用会自动重启。确定继续？`,
+      success: '备份已恢复，应用即将重启…'
+    });
   }
 
   /** 导出全部任务历史（含时间线）为 JSON 归档文件，内容经 app:save-file 对话框落盘 */
@@ -251,8 +250,7 @@ VW.views.shell = (() => {
 
   function bindSettings() {
     document.getElementById('settings-btn').addEventListener('click', openSettings);
-    document.getElementById('settings-modal-close').addEventListener('click', () => VW.modal.close('settings-modal'));
-    document.getElementById('settings-modal-cancel').addEventListener('click', () => VW.modal.close('settings-modal'));
+    VW.modal.bindClose('settings-modal', 'settings-modal-close', 'settings-modal-cancel');
     document.getElementById('settings-modal-save').addEventListener('click', saveSettings);
     document.getElementById('setting-executor').addEventListener('change', (event) => activateExecutor(event.target.value));
     document.getElementById('llm-save-btn').addEventListener('click', saveLlmConfig);
@@ -297,8 +295,7 @@ VW.views.shell = (() => {
 
   function bindHistory() {
     document.getElementById('history-btn').addEventListener('click', openHistory);
-    document.getElementById('history-modal-close').addEventListener('click', () => VW.modal.close('history-modal'));
-    document.getElementById('history-modal-ok').addEventListener('click', () => VW.modal.close('history-modal'));
+    VW.modal.bindClose('history-modal', 'history-modal-close', 'history-modal-ok');
     document.getElementById('history-body').addEventListener('click', (event) => {
       const button = event.target.closest('[data-task]');
       if (!button) return;

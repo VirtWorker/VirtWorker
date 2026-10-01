@@ -241,16 +241,18 @@ VW.views.atworker = (() => {
 
   async function removeConnection(id) {
     const connection = store.state.chatConnections.find((item) => item.id === id);
-    if (!window.confirm(`确认删除连接「${connection ? connection.name : id}」？其聊天绑定与待审申请会一并删除。`)) return;
-    try {
-      await VW.api.chat.removeConnection(id);
-      VW.toast.show('连接已删除');
-      await refreshConnections();
-      renderConnections();
-      await refresh();
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(
+      async () => {
+        await VW.api.chat.removeConnection(id);
+        await refreshConnections();
+        renderConnections();
+        await refresh();
+      },
+      {
+        confirm: `确认删除连接「${connection ? connection.name : id}」？其聊天绑定与待审申请会一并删除。`,
+        success: '连接已删除'
+      }
+    );
   }
 
   // ==================== 开通向导 ====================
@@ -721,25 +723,21 @@ VW.views.atworker = (() => {
     if (button.dataset.act === 'simulate') return openSimulate(id);
     if (button.dataset.act === 'unbind') {
       const binding = store.state.chatBindingList.find((item) => item.id === id);
-      if (!window.confirm(`确认解绑「${binding ? binding.chatName : id}」？解绑后聊天里的消息不再转成任务。`)) return;
-      try {
-        await VW.api.chat.removeBinding(id);
-        VW.toast.show('已解绑');
-        await refresh();
-      } catch (error) {
-        VW.toast.fromError(error);
-      }
+      await VW.util.submitAction(
+        async () => {
+          await VW.api.chat.removeBinding(id);
+          await refresh();
+        },
+        {
+          confirm: `确认解绑「${binding ? binding.chatName : id}」？解绑后聊天里的消息不再转成任务。`,
+          success: '已解绑'
+        }
+      );
     }
     return undefined;
   }
 
   // ==================== 初始化 ====================
-
-  function bindModal(id, closeIds) {
-    closeIds.forEach((closeId) => {
-      document.getElementById(closeId).addEventListener('click', () => VW.modal.close(id));
-    });
-  }
 
   function init() {
     // 页面入口
@@ -749,12 +747,12 @@ VW.views.atworker = (() => {
     document.getElementById('simulate-message-btn').addEventListener('click', () => openSimulate());
 
     // 弹窗关闭
-    bindModal('chat-connection-modal', ['chat-connection-modal-close', 'chat-connection-cancel']);
-    bindModal('chat-conn-edit-modal', ['chat-conn-edit-modal-close', 'chat-conn-edit-cancel']);
-    bindModal('chat-wizard-modal', ['chat-wizard-modal-close']);
-    bindModal('chat-requests-modal', ['chat-requests-modal-close', 'chat-requests-ok']);
-    bindModal('chat-binding-modal', ['chat-binding-modal-close', 'chat-binding-cancel']);
-    bindModal('chat-simulate-modal', ['chat-simulate-modal-close', 'chat-simulate-cancel']);
+    VW.modal.bindClose('chat-connection-modal', 'chat-connection-modal-close', 'chat-connection-cancel');
+    VW.modal.bindClose('chat-conn-edit-modal', 'chat-conn-edit-modal-close', 'chat-conn-edit-cancel');
+    VW.modal.bindClose('chat-wizard-modal', 'chat-wizard-modal-close');
+    VW.modal.bindClose('chat-requests-modal', 'chat-requests-modal-close', 'chat-requests-ok');
+    VW.modal.bindClose('chat-binding-modal', 'chat-binding-modal-close', 'chat-binding-cancel');
+    VW.modal.bindClose('chat-simulate-modal', 'chat-simulate-modal-close', 'chat-simulate-cancel');
 
     // 表单
     document.getElementById('chat-connection-form').addEventListener('submit', submitConnection);

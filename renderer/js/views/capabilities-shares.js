@@ -93,8 +93,7 @@ VW.views.capabilitiesShares = (() => {
   }
 
   function bind() {
-    document.getElementById('share-modal-close').addEventListener('click', () => VW.modal.close('share-modal'));
-    document.getElementById('share-modal-ok').addEventListener('click', () => VW.modal.close('share-modal'));
+    VW.modal.bindClose('share-modal', 'share-modal-close', 'share-modal-ok');
     document.getElementById('copy-share-code-btn').addEventListener('click', async () => {
       if (!currentShare) return;
       try {
@@ -119,15 +118,14 @@ VW.views.capabilitiesShares = (() => {
     });
     document.getElementById('share-delete-btn').addEventListener('click', async () => {
       if (!currentShare) return;
-      if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
-      try {
-        await VW.api.share.remove(currentShare.id);
-        VW.modal.close('share-modal');
-        VW.toast.show('已取消分享');
-        await VW.capCtx.refreshShares();
-      } catch (error) {
-        VW.toast.fromError(error);
-      }
+      await VW.util.submitAction(
+        async () => {
+          await VW.api.share.remove(currentShare.id);
+          VW.modal.close('share-modal');
+          await VW.capCtx.refreshShares();
+        },
+        { confirm: '取消分享后分享码立即失效，确认删除该分享记录？', success: '已取消分享' }
+      );
     });
 
     // 按分享码导入

@@ -400,10 +400,11 @@ VW.views.dashboard = (() => {
     const message = fromStep === 'failed'
       ? '确认从失败步骤重试？将创建新任务并沿用此前步骤的结果。'
       : '确认重试该任务？将创建一个新任务重新入队。';
-    if (!window.confirm(message)) return;
-    const task = await VW.util.submitAction(() => VW.api.task.retry(id, fromStep));
+    const task = await VW.util.submitAction(() => VW.api.task.retry(id, fromStep), {
+      confirm: message,
+      success: (created) => `重试任务「${created.title}」已创建`
+    });
     if (!task) return;
-    VW.toast.show(`重试任务「${task.title}」已创建`);
     VW.modal.close('task-detail-modal');
     await refresh({ silent: true });
   }
@@ -411,23 +412,22 @@ VW.views.dashboard = (() => {
   /** 一键查收当前周期内全部待查收结果（F8）：批量且不可逆，操作前确认 */
   async function ackAll() {
     const count = store.state.queue.result.length;
-    if (!window.confirm(`确认一键查收当前周期内全部 ${count} 条任务结果？查收后将从队列移除。`)) return;
     await VW.util.submitAction(() => VW.api.task.ackAll({ period: store.state.filters.statsPeriod }), {
+      confirm: `确认一键查收当前周期内全部 ${count} 条任务结果？查收后将从队列移除。`,
       success: (result) => (result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果')
     });
     await refresh({ silent: true });
   }
 
   async function cancelTask(id) {
-    if (!window.confirm('确认取消该任务？取消后不可恢复。')) return;
-    try {
-      await VW.api.task.cancel(id, '用户在看板取消');
-      VW.toast.show('任务已取消');
-      VW.modal.close('task-detail-modal');
-      await refresh({ silent: true });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+    await VW.util.submitAction(
+      async () => {
+        await VW.api.task.cancel(id, '用户在看板取消');
+        VW.modal.close('task-detail-modal');
+        await refresh({ silent: true });
+      },
+      { confirm: '确认取消该任务？取消后不可恢复。', success: '任务已取消' }
+    );
   }
 
   /** 执行结果中体现实际用到的能力与知识引用 */
@@ -695,8 +695,7 @@ VW.views.dashboard = (() => {
         submitAnswer(document.getElementById('task-detail-body'), detailState.task, detailState.actionRequest);
       }
     });
-    document.getElementById('task-detail-close').addEventListener('click', () => VW.modal.close('task-detail-modal'));
-    document.getElementById('task-detail-ok').addEventListener('click', () => VW.modal.close('task-detail-modal'));
+    VW.modal.bindClose('task-detail-modal', 'task-detail-close', 'task-detail-ok');
     document.getElementById('task-detail-cancel-task').addEventListener('click', () => {
       if (detailState) cancelTask(detailState.task.id);
     });
@@ -707,8 +706,7 @@ VW.views.dashboard = (() => {
     // 新建任务
     document.getElementById('new-task-btn').addEventListener('click', () => openCreateTask());
     document.getElementById('task-form').addEventListener('submit', submitCreate);
-    document.getElementById('task-modal-close').addEventListener('click', () => VW.modal.close('task-modal'));
-    document.getElementById('task-modal-cancel').addEventListener('click', () => VW.modal.close('task-modal'));
+    VW.modal.bindClose('task-modal', 'task-modal-close', 'task-modal-cancel');
 
     // 派发者下拉里的 Worker/Group 列表变化时同步刷新
     store.on(['workers', 'groups'], () => {

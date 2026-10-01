@@ -120,8 +120,7 @@ VW.views.capabilitiesKnowledge = (() => {
     document.getElementById('new-knowledge-btn').addEventListener('click', openKnowledgeModal);
     document.getElementById('pick-directory-btn').addEventListener('click', pickDirectory);
     document.getElementById('knowledge-form').addEventListener('submit', submitKnowledge);
-    document.getElementById('knowledge-modal-close').addEventListener('click', () => VW.modal.close('knowledge-modal'));
-    document.getElementById('knowledge-modal-cancel').addEventListener('click', () => VW.modal.close('knowledge-modal'));
+    VW.modal.bindClose('knowledge-modal', 'knowledge-modal-close', 'knowledge-modal-cancel');
 
     const list = document.getElementById('knowledge-list');
     list.addEventListener('click', async (event) => {

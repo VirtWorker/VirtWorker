@@ -114,9 +114,11 @@ VW.util = (() => {
   /**
    * 操作提交样板（O14）：await action → 成功提示 / 失败 toast。
    * success 可为文案字符串或 (result) => string；rethrow 时调用方可追加处理（如刷新）。
-   * 破坏性操作的确认（window.confirm）由调用方在 action 之前自行判断。
+   * confirm 传破坏性操作的确认文案（OPT-9 收编）：用户取消则静默跳过（返回 undefined，
+   * 与失败路径同型），替代此前散落各视图的「window.confirm + return」样板。
    */
-  async function submitAction(action, { success, rethrow = false } = {}) {
+  async function submitAction(action, { success, rethrow = false, confirm = '' } = {}) {
+    if (confirm && !window.confirm(confirm)) return undefined;
     try {
       const result = await action();
       if (success) VW.toast.show(typeof success === 'function' ? success(result) : success);

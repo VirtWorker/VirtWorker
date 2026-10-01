@@ -396,14 +396,12 @@ VW.views.capabilities = (() => {
     });
 
     document.getElementById('connector-form').addEventListener('submit', submitConnector);
-    document.getElementById('connector-modal-close').addEventListener('click', () => VW.modal.close('connector-modal'));
-    document.getElementById('connector-modal-cancel').addEventListener('click', () => VW.modal.close('connector-modal'));
+    VW.modal.bindClose('connector-modal', 'connector-modal-close', 'connector-modal-cancel');
   }
 
   function bindMountEvents() {
     document.getElementById('mount-modal-save').addEventListener('click', saveMount);
-    document.getElementById('mount-modal-close').addEventListener('click', () => VW.modal.close('mount-modal'));
-    document.getElementById('mount-modal-cancel').addEventListener('click', () => VW.modal.close('mount-modal'));
+    VW.modal.bindClose('mount-modal', 'mount-modal-close', 'mount-modal-cancel');
     // 切换 Worker 时重新勾选其已挂载的能力
     document.getElementById('mount-worker').addEventListener('change', (event) => renderMountGroups(event.target.value));
   }

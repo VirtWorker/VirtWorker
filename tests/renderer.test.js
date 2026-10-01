@@ -5,7 +5,7 @@
  * 用 happy-dom 提供 window/document，直接加载浏览器 IIFE 模块（与 bundle 同一份源码）。
  */
 
-import { describe, test, expect, beforeAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 
 let VW;
 
@@ -217,6 +217,39 @@ describe('util.withSubmitting（OPT-4：表单提交在途锁）', () => {
     expect(toasted.length).toBe(1);
     expect(toasted[0].message).toBe('创建失败');
     form.remove();
+  });
+});
+
+describe('util.submitAction 的 confirm 选项（OPT-9 收编）', () => {
+  const originalConfirm = window.confirm;
+  afterAll(() => {
+    window.confirm = originalConfirm;
+  });
+
+  test('用户取消时静默跳过：action 不执行、不提示、返回 undefined', async () => {
+    window.confirm = () => false;
+    const toasted = [];
+    window.VW.toast = { show: (msg) => toasted.push(msg), fromError: () => {} };
+    let ran = 0;
+    const result = await VW.util.submitAction(
+      async () => {
+        ran += 1;
+        return 'ok';
+      },
+      { confirm: '确认？', success: '已完成' }
+    );
+    expect(ran).toBe(0);
+    expect(result).toBeUndefined();
+    expect(toasted.length).toBe(0);
+  });
+
+  test('用户确认时正常执行并提示成功', async () => {
+    window.confirm = () => true;
+    const toasted = [];
+    window.VW.toast = { show: (msg) => toasted.push(msg), fromError: () => {} };
+    const result = await VW.util.submitAction(async () => 'done', { confirm: '确认？', success: '已完成' });
+    expect(result).toBe('done');
+    expect(toasted).toEqual(['已完成']);
   });
 });
 
