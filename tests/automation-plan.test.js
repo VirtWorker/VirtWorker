@@ -1,10 +1,11 @@
 /**
  * 自动任务计划推算测试（computeNextRun 纯函数）
  * 覆盖定时触发的核心时间推算：间隔/每天/每周/仅一次，含过期与边界。
+ * 另含 API Token 只读掩码契约测试（O6）。
  */
 
-import { describe, test, expect } from 'vitest';
-import { automationService } from './setup.js';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { initTempDb, cleanupTempDb, db, workerService, automationService } from './setup.js';
 
 const { computeNextRun } = automationService;
 
@@ -45,5 +46,76 @@ describe('computeNextRun 计划推算', () => {
   test('非 schedule 类型返回 null', () => {
     expect(computeNextRun({ type: 'event', event: { source: 'task_succeeded' } })).toBe(null);
     expect(computeNextRun(null)).toBe(null);
+  });
+});
+
+describe('API Token 只读掩码契约（O6）：掩码回传不得静默轮换凭据', () => {
+  let dir;
+
+  beforeAll(() => {
+    dir = initTempDb();
+  });
+
+  afterAll(() => {
+    cleanupTempDb(dir);
+  });
+
+  beforeEach(() => {
+    ['workers', 'automations'].forEach((name) => db.removeWhere(name, () => true));
+  });
+
+  function createApiAutomation(name) {
+    const worker = workerService.createWorker({ name: `令牌执行者${Date.now().toString(36)}`.slice(0, 20) });
+    return automationService.create({
+      name,
+      executorId: worker.id,
+      trigger: { type: 'api' },
+      input: { goal: '目标' }
+    });
+  }
+
+  test('详情下发的掩码对象原样回传时等价于「保留现有 Token」', () => {
+    const created = createApiAutomation(`掩码回传${Date.now().toString(36)}`);
+    const storedBefore = db.find('automations', created.id).trigger.api.token;
+
+    // 模拟「编辑→原样回传详情」的常规客户端模式（修复前这会生成新 Token 静默轮换）
+    automationService.update(created.id, {
+      trigger: { type: 'api', api: { token: created.trigger.api } }
+    });
+
+    const storedAfter = db.find('automations', created.id).trigger.api.token;
+    expect(storedAfter).toEqual(storedBefore); // 密文不变 = Token 未被轮换
+  });
+
+  test('create/update 直接传入掩码对象被显式拒绝（不静默生成新 Token）', () => {
+    const worker = workerService.createWorker({ name: `掩码拒绝${Date.now().toString(36)}`.slice(0, 20) });
+    expect(() =>
+      automationService.create({
+        name: `掩码新建${Date.now().toString(36)}`,
+        executorId: worker.id,
+        trigger: { type: 'api', api: { token: { masked: true, mask: 'vw_ab***', mode: 'base64' } } },
+        input: { goal: '目标' }
+      })
+    ).toThrow(/掩码/);
+  });
+
+  test('触发类型切离 api 时归档 Token 密文，切回时恢复而不是静默换新', () => {
+    const created = createApiAutomation(`类型切换${Date.now().toString(36)}`);
+    const original = db.find('automations', created.id).trigger.api.token;
+    expect(created.trigger.api.masked).toBe(true); // 详情输出带只读标记
+    expect(created.retiredApiToken).toBeUndefined(); // 归档密文绝不下发渲染层
+
+    automationService.update(created.id, {
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } }
+    });
+    const switched = db.find('automations', created.id);
+    expect(switched.trigger.type).toBe('schedule');
+    expect(switched.retiredApiToken).toEqual(original); // 归档保留密文
+
+    automationService.update(created.id, { trigger: { type: 'api' } });
+    const restored = db.find('automations', created.id);
+    expect(restored.trigger.type).toBe('api');
+    expect(restored.trigger.api.token).toEqual(original); // 恢复旧 Token，上游调用方不受影响
+    expect(restored.retiredApiToken).toBeNull();
   });
 });

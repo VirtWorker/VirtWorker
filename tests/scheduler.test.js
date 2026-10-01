@@ -81,6 +81,60 @@ describe('调度计划推进（P1-10）', () => {
     expect(next.nextRunAt).toBe(expected);
   });
 
+  test('interval 长停机追赶上限：计划点落后超过一个完整间隔时，下次直接以当前时刻重排（O3）', () => {
+    const worker = workerService.createWorker({ name: `停机执行者${Date.now().toString(36)}`.slice(0, 20) });
+    const automation = automationService.create({
+      name: `停机任务${Date.now().toString(36)}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule', schedule: { mode: 'interval', everyMinutes: 30 } },
+      input: { goal: '目标' }
+    });
+    // 计划触发点在 45 分钟前（应用停开数天后补跑的形态）：
+    // 若仍以过期点为基准，due + 30min 仍在过去，调度器会以最小定时器间隔连续触发制造任务洪峰
+    const due = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    db.update('automations', automation.id, { nextRunAt: due });
+
+    const before = Date.now();
+    const next = automationService.markFired(automation.id, 'tk_catchup', { reason: '补跑错过的定时' });
+    const nextMs = new Date(next.nextRunAt).getTime();
+
+    // 下次触发必须在未来（now + 30min 附近）——补跑只发生本次这一次
+    expect(nextMs).toBeGreaterThan(before);
+    expect(nextMs).toBeLessThanOrEqual(before + 31 * 60 * 1000);
+  });
+
+  test('定时触发重叠守卫：上一轮任务仍在进行时跳过本轮，不堆积任务（O3）', () => {
+    const worker = workerService.createWorker({ name: `重叠执行者${Date.now().toString(36)}`.slice(0, 20) });
+    const automation = automationService.create({
+      name: `重叠任务${Date.now().toString(36)}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule', schedule: { mode: 'interval', everyMinutes: 30 } },
+      input: { goal: '重叠目标' }
+    });
+    // 伪造上一轮任务仍在执行
+    db.insert('tasks', {
+      id: 'tk_still_running',
+      title: '上一轮任务',
+      status: 'running',
+      assignee: { type: 'worker', id: worker.id, name: worker.name },
+      createdAt: nowIso()
+    });
+    db.update('automations', automation.id, { lastTaskId: 'tk_still_running', nextRunAt: new Date(Date.now() - 60 * 1000).toISOString() });
+
+    const fired = scheduler.fire(db.find('automations', automation.id), '定时触发');
+
+    expect(fired).toBeNull(); // 跳过本轮，不创建新任务
+    expect(
+      db.query('tasks', (task) => task.trigger?.refId === automation.id).length
+    ).toBe(0);
+
+    // 上一轮结束后不再拦截
+    db.update('tasks', 'tk_still_running', { status: 'succeeded' });
+    const retry = scheduler.fire(db.find('automations', automation.id), '定时触发');
+    expect(retry).toBeTruthy();
+    expect(retry.trigger.refId).toBe(automation.id);
+  });
+
   test('仅一次自动任务错过且补跑关闭时，推进计划自动停用（不再产生僵尸配置）', () => {
     const worker = workerService.createWorker({ name: `一次性执行者${Date.now().toString(36)}`.slice(0, 20) });
     const automation = automationService.create({

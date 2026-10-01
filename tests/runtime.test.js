@@ -43,6 +43,11 @@ async function waitForStatus(taskId, status, timeoutMs = 2000) {
   throw new Error(`等待任务 ${taskId} 进入 ${status} 超时，当前：${db.find('tasks', taskId)?.status}`);
 }
 
+/** 等待派发链路的微任务（异步步骤计划生成 → markRunning 落库）完成后再做同步观察 */
+async function settle(ms = 30) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 beforeAll(() => {
   dir = initTempDb();
   executor.register(fastExecutor, { activate: true });
@@ -93,8 +98,8 @@ describe('task-runtime 端到端', () => {
     executor.setActive('fast-test');
   });
 
-  test('并发上限：同时运行的任务数不超过 MAX_CONCURRENT', () => {
-    // 用慢执行器让任务保持 running，便于同步观察并发占用
+  test('并发上限：同时运行的任务数不超过 MAX_CONCURRENT', async () => {
+    // 用慢执行器让任务保持 running，便于观察并发占用
     const hold = { ...fastExecutor, name: 'hold-test', stepDelay: () => 5000 };
     executor.register(hold);
     executor.setActive('hold-test');
@@ -105,6 +110,8 @@ describe('task-runtime 端到端', () => {
     for (let i = 0; i < runtime.MAX_CONCURRENT + 2; i += 1) {
       created.push(taskService.create({ goal: `并发任务 ${i}`, assigneeId: worker.id }));
     }
+    // dispatch 已异步化（步骤计划允许异步生成）：等 markRunning 落库后再观察
+    await settle();
 
     const running = created.filter((t) => db.find('tasks', t.id).status === 'running').length;
     const queued = created.filter((t) => db.find('tasks', t.id).status === 'queued').length;
@@ -172,14 +179,26 @@ describe('task-runtime 端到端', () => {
     executor.setActive('fast-test');
   });
 
-  test('派发兜底：执行者 Worker 被删除后，任务应失败而非永久排队', async () => {
+  test('派发兜底：执行者 Worker 被删除后在途任务被级联取消而非永久排队（O4）', async () => {
     const worker = workerService.createWorker({ name: '将被删除的执行者' });
     workerService.updateWorker(worker.id, { status: 'offline' });
     const task = taskService.create({ goal: '孤儿任务', assigneeId: worker.id });
     expect(db.find('tasks', task.id).status).toBe('queued');
 
-    // 排队期间执行者被删除；重新派发（启动恢复/退避重试都会走到）应判失败而非无限离线重试
+    // 服务层级联（O4）：删除执行者时在途任务立即取消，不再等退避重试才失败
     workerService.removeWorker(worker.id);
+    expect(db.find('tasks', task.id).status).toBe('canceled');
+  });
+
+  test('运行时兜底：直接派发执行者已删除的任务时落为 failed 而非永久排队', async () => {
+    const worker = workerService.createWorker({ name: '兜底执行者' });
+    workerService.updateWorker(worker.id, { status: 'offline' });
+    const task = taskService.create({ goal: '兜底任务', assigneeId: worker.id });
+    expect(db.find('tasks', task.id).status).toBe('queued');
+
+    // 模拟绕过服务层级联的遗留场景（如历史数据）：任务仍指向已删除的执行者，
+    // dispatch 的执行者缺失检查应立即落为失败，而不是无限离线重试
+    db.remove('workers', worker.id);
     runtime.dispatch(task.id);
 
     const finished = await waitForStatus(task.id, 'failed');
@@ -261,8 +280,7 @@ describe('执行异常路径（并发槽位必须释放，否则失败任务累�
 
     executor.setActive('fast-test');
     const survivor = taskService.create({ goal: '幸存任务', assigneeId: worker.id });
-    await waitForStatus(survivor.id, 'running');
-    await waitForStatus(survivor.id, 'succeeded');
+    await waitForStatus(survivor.id, 'succeeded'); // 成功收口即证明槽位已释放
   });
 
   test('runStep 挂起超过执行器超时时间后任务按 STEP_TIMEOUT 失败并释放槽位', async () => {
@@ -283,8 +301,10 @@ describe('执行异常路径（并发槽位必须释放，否则失败任务累�
     expect(done.error.code).toBe('STEP_TIMEOUT');
 
     executor.setActive('fast-test');
+    // 派发已异步化，快速执行器可能在一次轮询间隔内跑完全程：
+    // 用「成功收口」断言槽位已释放、新任务可正常派发
     const next = taskService.create({ goal: '超时后恢复', assigneeId: worker.id });
-    await waitForStatus(next.id, 'running');
+    await waitForStatus(next.id, 'succeeded');
   });
 });
 
@@ -387,6 +407,7 @@ describe('need_action 暂停不占用并发槽位（P1-7）', () => {
     for (let i = 0; i < runtime.MAX_CONCURRENT; i += 1) {
       holders.push(taskService.create({ goal: `占满 ${i}`, assigneeId: worker.id }));
     }
+    await settle();
     holders.forEach((task) => expect(db.find('tasks', task.id).status).toBe('running'));
 
     // 提交操作恢复任务：状态置 running 但槽位满 → 排队等待，不产生任何执行推进
@@ -419,7 +440,7 @@ describe('等待队列按优先级派发（P1-13）', () => {
     runtime.shutdown(); // 清空上一用例批的模块级中间态
   });
 
-  test('urgent 先于 low 获得释放的槽位，同级按创建顺序', () => {
+  test('urgent 先于 low 获得释放的槽位，同级按创建顺序', async () => {
     const hold = { ...fastExecutor, name: 'prio-hold', stepDelay: () => 5000 };
     executor.register(hold);
     executor.setActive('prio-hold');
@@ -438,10 +459,12 @@ describe('等待队列按优先级派发（P1-13）', () => {
     expect(db.find('tasks', urgent.id).status).toBe('queued');
 
     taskService.cancel(holders[0].id, '释放槽位');
+    await settle(); // 等待 drainWaiting 的异步派发完成
     expect(db.find('tasks', urgent.id).status).toBe('running');
     expect(db.find('tasks', low.id).status).toBe('queued');
 
     taskService.cancel(holders[1].id, '释放槽位');
+    await settle();
     expect(db.find('tasks', low.id).status).toBe('running');
 
     cleanupTasks([...holders, urgent, low]);
@@ -456,6 +479,60 @@ describe('等待队列按优先级派发（P1-13）', () => {
       }
     });
   }
+});
+
+describe('执行器契约异步一致性（O2）：全部契约方法支持 async 实现', () => {
+  test('buildSteps/maybeAction/buildResult 返回 Promise 时任务仍完整执行到 succeeded', async () => {
+    db.removeWhere('tasks', () => true);
+    const asyncExecutor = {
+      name: 'async-test',
+      // 修复前运行时不 await 这些方法：Promise 恒为真值会让 maybeAction 误判为需要操作、
+      // steps 变成 Promise 对象（length undefined）、result 整个是 Promise 落库
+      buildSteps: async () => [
+        { step: 1, title: '异步步骤一', status: 'pending', startedAt: null, finishedAt: null, log: '', citations: [] },
+        { step: 2, title: '异步步骤二', status: 'pending', startedAt: null, finishedAt: null, log: '', citations: [] }
+      ],
+      buildFlowSteps: async (task, plan) => asyncExecutor.buildSteps(task, plan),
+      stepDelay: () => 1,
+      runStep: async (task, step) => ({ log: `异步完成 ${step.title}`, citations: [] }),
+      maybeAction: async () => null,
+      buildResult: async () => ({ summary: 'async-done', text: '', artifacts: [], capabilities: {} })
+    };
+    executor.register(asyncExecutor);
+    executor.setActive('async-test');
+
+    const worker = workerService.createWorker({ name: '异步执行者' });
+    const task = taskService.create({ goal: '异步契约目标', assigneeId: worker.id });
+    const finished = await waitForStatus(task.id, 'succeeded');
+
+    expect(finished.steps.length).toBe(2); // Promise 落库会变成空对象，length 为 undefined
+    expect(finished.steps.every((step) => step.status === 'done')).toBe(true);
+    expect(finished.result.summary).toBe('async-done');
+    executor.setActive('fast-test');
+  });
+
+  test('async maybeAction 返回操作请求时正常进入 need_action 并恢复', async () => {
+    const worker = workerService.createWorker({ name: '异步审批执行者' });
+    const pausing = {
+      ...fastExecutor,
+      name: 'async-pausing',
+      stepDelay: () => 5,
+      maybeAction: async (task, step, ctx) =>
+        step.step === 1 && !ctx.actionUsed
+          ? { type: 'confirm', title: '异步确认？', options: [{ value: 'yes', label: '继续' }], defaultValue: 'yes' }
+          : null
+    };
+    executor.register(pausing);
+    executor.setActive('async-pausing');
+
+    const task = taskService.create({ goal: '异步暂停目标', assigneeId: worker.id });
+    await waitForStatus(task.id, 'need_action');
+    taskService.answer({ taskId: task.id, answer: { value: 'yes' } });
+
+    const finished = await waitForStatus(task.id, 'succeeded');
+    expect(finished.actionRequest.answer.value).toBe('yes');
+    executor.setActive('fast-test');
+  });
 });
 
 describe('执行器锁定（P1-14）', () => {

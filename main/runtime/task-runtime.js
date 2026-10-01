@@ -57,6 +57,19 @@ function start() {
       }
     }
   });
+  // 兜底：执行者被删除时，等待队列/离线重试中的任务立即重新派发一次，
+  // 由 resolveExecution 的执行者缺失检查尽快落为失败（服务层级联取消是主路径，这里兜住漏网任务）
+  bus.on(({ type }) => {
+    if (type !== 'worker:removed') return;
+    for (const taskId of [...retryTimers.keys()]) {
+      clearTimer(retryTimers, taskId);
+      dispatch(taskId);
+    }
+    for (const taskId of [...waiting]) {
+      waiting.delete(taskId);
+      dispatch(taskId);
+    }
+  });
   recover();
 }
 
@@ -169,17 +182,16 @@ function resolveExecution(task) {
 function dispatch(taskId) {
   if (contexts.has(taskId)) return; // 防止重复派发导致并行执行
   // 派发链路（解析执行方式、构建步骤、标记运行）任何一环抛错都必须把任务落为失败，
-  // 否则异常只会被事件总线的 command 吞掉，任务将永远停留在"排队中"
-  try {
-    dispatchUnsafe(taskId);
-  } catch (error) {
+  // 否则异常只会被事件总线的 command 吞掉，任务将永远停留在"排队中"。
+  // dispatch 为 async：真实执行器的 buildSteps 是异步的；bus.command 已兼容 Promise 拒绝
+  return dispatchUnsafe(taskId).catch((error) => {
     console.error(`[runtime] 任务 ${taskId} 派发失败:`, error);
     release(taskId); // markRunning 前已占用并发槽位，异常时必须释放，否则槽位泄漏
     safeFailTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '派发失败' });
-  }
+  });
 }
 
-function dispatchUnsafe(taskId) {
+async function dispatchUnsafe(taskId) {
   const task = taskService.getTask(taskId);
   if (!task) return;
   // running 状态的重新接管（启动恢复 / 暂停后排队）：从第一个未完成步骤继续
@@ -206,7 +218,16 @@ function dispatchUnsafe(taskId) {
 
   contexts.set(taskId, createContext({ executor }));
   const isFlow = execution.kind === 'flow';
-  const steps = isFlow ? executor.buildFlowSteps(task, execution.plan) : executor.buildSteps(task, execution.worker);
+  // 契约统一 await：步骤计划允许异步生成（真实 LLM 执行器常见）；同步实现零成本兼容
+  const steps = await (isFlow
+    ? executor.buildFlowSteps(task, execution.plan)
+    : executor.buildSteps(task, execution.worker));
+  // await 期间任务可能已被取消/删除：非排队态不得再标记运行（与 pump 的 afterRun 守卫同款）
+  const fresh = taskService.getTask(taskId);
+  if (!fresh || fresh.status !== taskService.STATUS.queued) {
+    release(taskId);
+    return;
+  }
   const message = isFlow
     ? `已按 WorkerFlow「${execution.plan.flow.name}」启动，共 ${steps.length} 个节点`
     : `已派发给「${execution.worker.name}」`;
@@ -312,7 +333,7 @@ async function pump(taskId) {
       if (task.status !== taskService.STATUS.running) return; // 暂停/取消：槽位已由 requestAction/stop 释放
 
       const step = task.steps.find((item) => item.status !== 'done');
-      if (!step) return finish(taskId);
+      if (!step) return await finish(taskId); // await 保持在 try 内：收口抛错仍走本循环的异常兜底
 
       taskService.startStep(taskId, step.step);
       await sleep(executor.stepDelay(), ctx.controller.signal);
@@ -321,7 +342,7 @@ async function pump(taskId) {
       if (!fresh) return release(taskId);
       if (fresh.status !== taskService.STATUS.running) return;
 
-      const action = executor.maybeAction(fresh, step, { actionUsed: ctx.actionUsed });
+      const action = await executor.maybeAction(fresh, step, { actionUsed: ctx.actionUsed });
 
       if (action) {
         ctx.actionUsed = true;
@@ -367,7 +388,7 @@ function resume(taskId) {
   dispatch(taskId);
 }
 
-function finish(taskId) {
+async function finish(taskId) {
   const ctx = contexts.get(taskId);
   if (ctx?.timer) clearTimeout(ctx.timer);
   contexts.delete(taskId);
@@ -378,7 +399,8 @@ function finish(taskId) {
   if (!task || task.status !== taskService.STATUS.running) return;
   const executor = ctx.executor || executorRegistry.getActive();
   const worker = task.assignee.type === 'flow' ? null : workerService.resolveExecutorWorker(task.assignee);
-  taskService.succeed(taskId, executor.buildResult(task, worker));
+  // 契约统一 await：结果汇总允许异步（真实 LLM 执行器需要等待最终响应）
+  taskService.succeed(taskId, await executor.buildResult(task, worker));
 }
 
 function stop(taskId) {

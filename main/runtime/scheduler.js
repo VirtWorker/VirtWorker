@@ -74,6 +74,21 @@ function tryAdvance(automation) {
 
 /** 触发一个自动任务：装配输入 → 创建任务 → 推进计划 */
 function fire(automation, reason, overrides = {}) {
+  // 重叠守卫（仅定时触发）：上一轮任务仍在排队/执行/待操作时跳过本轮，
+  // 防止短周期 + 慢执行器/离线执行者期间任务无限堆积。
+  // 不推进计划：nextRunAt 保持过期，上一轮结束后由下一个 tick（≤60s）自然补上；
+  // 事件/API 触发不受此守卫限制——那是调用方的显式意图
+  if (automation.trigger.type === 'schedule' && automation.lastTaskId) {
+    const last = taskService.getTask(automation.lastTaskId);
+    if (
+      last &&
+      [...taskService.ACTIVE_STATUS, taskService.STATUS.needAction].includes(last.status)
+    ) {
+      console.log(`[scheduler] 自动任务「${automation.name}」上一轮任务仍在进行，本轮跳过`);
+      return null;
+    }
+  }
+
   const task = taskService.create({
     goal: overrides.goal || automation.input.goal,
     assigneeId: automation.executor.id,

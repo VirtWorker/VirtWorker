@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('virtworker', {
     list: (query) => invoke('task:list', query),
     stats: (query) => invoke('task:stats', query),
     queue: (query) => invoke('task:queue', query),
+    export: (query) => invoke('task:export', query),
     create: (payload) => invoke('task:create', payload),
     detail: (id) => invoke('task:detail', { id }),
     cancel: (id, reason) => invoke('task:cancel', { id, reason }),
@@ -108,6 +109,10 @@ contextBridge.exposeInMainWorld('virtworker', {
     relaunch: () => invoke('app:relaunch'),
     purgePreview: () => invoke('app:purge-preview'),
     purgeTasks: () => invoke('app:purge-tasks'),
+    backupNow: () => invoke('app:backup-now'),
+    backupList: () => invoke('app:backup-list'),
+    openBackupsDir: () => invoke('app:open-backups-dir'),
+    restoreBackup: (name) => invoke('app:restore-backup', { name }),
     saveFile: (payload) => invoke('app:save-file', payload),
     openFile: () => invoke('app:open-file'),
     copyText: (text) => invoke('app:copy-text', { text })

@@ -478,6 +478,26 @@ function notifyFinished(task) {
   });
 }
 
+/** 级联取消：执行者（Worker/Group）被删除或成员被清空时，取消其名下在途任务。
+ *  不取消的话任务要等槽位释放或离线退避重试才失败，成为"延迟僵尸"，
+ *  甚至会以已删除执行者的名义继续执行。逐条容错：终态竞争等异常只记录不中断级联。 */
+function cancelActiveByAssignees(assigneeIds, reason) {
+  const ids = (Array.isArray(assigneeIds) ? assigneeIds : []).filter(Boolean);
+  if (!ids.length) return [];
+  const canceled = [];
+  db.query('tasks', (task) => ids.includes(task.assignee?.id) && ACTIVE_STATUS.includes(task.status)).forEach(
+    (task) => {
+      try {
+        cancel(task.id, reason);
+        canceled.push(task.id);
+      } catch (error) {
+        console.error(`[task] 级联取消任务 ${task.id} 失败:`, error.message || error);
+      }
+    }
+  );
+  return canceled;
+}
+
 /** 仅记录时间线（如执行者离线等待），不改变任务状态 */
 function recordEvent(id, message) {
   const next = mutate(id, (t) => appendEvent(t, 'log', message));
@@ -507,6 +527,16 @@ function purgeExpired(days = 90, now = Date.now()) {
   return { removed: items.length, retention };
 }
 
+/** 导出任务历史（含完整时间线）：与 list 共用筛选口径，供归档与外部报表。
+ *  强制忽略分页参数（导出即全量口径），period 传空字符串表示导出全部历史。 */
+function exportTasks(filter = {}) {
+  const { page, pageSize, ...rest } = filter;
+  const { items, total } = list({ ...rest, limit: 0 });
+  // tasks 集合不含时间线（v2 起拆分），导出时按 detail 口径并入
+  const records = items.map((task) => ({ ...task, events: listEvents(task.id) }));
+  return { exportedAt: nowIso(), count: records.length, total, records };
+}
+
 /** 预览可清理数量（设置中心展示用） */
 function purgePreview(days = 90, now = Date.now()) {
   const { retention, items } = expiredTasks(days, now);
@@ -528,6 +558,7 @@ module.exports = {
   answer,
   getTask,
   resolveAssignee,
+  cancelActiveByAssignees,
   markRunning,
   startStep,
   completeStep,
@@ -535,6 +566,7 @@ module.exports = {
   succeed,
   failTask,
   recordEvent,
+  exportTasks,
   purgeExpired,
   purgePreview
 };

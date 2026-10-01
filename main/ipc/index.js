@@ -23,6 +23,16 @@ const { fail } = require('../util/errors');
 
 const API_VERSION = 1;
 
+/** 重启请求标志：app:relaunch 登记，before-quit 时由 main.js 经 consumeRelaunchRequest() 消费 */
+let relaunchRequested = false;
+
+/** 取走并复位重启请求（取走过即复位，防止 window-all-closed 等其他退出路径误触发 relaunch） */
+function consumeRelaunchRequest() {
+  const requested = relaunchRequested;
+  relaunchRequested = false;
+  return requested;
+}
+
 const DEFAULT_SETTINGS = {
   taskView: 'list',
   period: 'month',
@@ -162,6 +172,8 @@ function register() {
   handle('task:stats', ({ period } = {}) => taskService.stats(period));
   /** 看板队列表：需要操作 / 待查收结果在主进程一次算完，渲染层不再拉全量周期任务自行过滤 */
   handle('task:queue', ({ period } = {}) => taskService.queue(period));
+  /** 任务历史导出（含时间线）：与 list 共用筛选口径，内容经渲染层 app:save-file 落盘归档 */
+  handle('task:export', (query = {}) => taskService.exportTasks(query));
   handle('task:create', (payload) => taskService.create(payload));
   handle('task:detail', ({ id } = {}) => taskService.detail(id));
   handle('task:cancel', ({ id, reason } = {}) => taskService.cancel(id, reason));
@@ -270,12 +282,12 @@ function register() {
   handle('chat:simulate-inbound', (payload) => chatService.ingest(payload));
 
   // 文件对话框与本地维护
-  handle('app:save-file', async ({ suggestedName, content } = {}) => {
+  handle('app:save-file', async ({ suggestedName, content, title, filterName } = {}) => {
     const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
     const result = await dialog.showSaveDialog(parent, {
-      title: '导出资源包',
+      title: String(title || '导出资源包'),
       defaultPath: safeFileName(suggestedName, 'virtworker-resource.json'),
-      filters: [{ name: 'VirtWorker 资源包', extensions: ['json'] }]
+      filters: [{ name: String(filterName || 'VirtWorker 资源包'), extensions: ['json'] }]
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     fs.writeFileSync(result.filePath, String(content ?? ''), 'utf8');
@@ -321,9 +333,26 @@ function register() {
     const error = await shell.openPath(path.join(app.getPath('userData'), 'data'));
     return { opened: !error, error };
   });
+  // 数据快照备份（每日自动 + 手动）：.bak 只能回退一代写入损坏，快照防误删与逻辑损坏随时间扩散
+  handle('app:backup-now', () => db.backup());
+  handle('app:backup-list', () => ({ snapshots: db.listBackups(), keep: db.BACKUP_KEEP }));
+  handle('app:open-backups-dir', async () => {
+    const error = await shell.openPath(db.backupsRoot());
+    return { opened: !error, error };
+  });
+  handle('app:restore-backup', ({ name } = {}) => {
+    const result = db.restore(name);
+    // 恢复后必须重启加载新数据；quit 流程的 flush 在只读保护下不会覆盖刚恢复的文件
+    relaunchRequested = true;
+    app.quit();
+    return result;
+  });
   handle('app:relaunch', () => {
-    app.relaunch();
-    app.exit(0);
+    // app.exit(0) 会跳过 before-quit（db.flush / runtime / scheduler / 日志清理全部不执行），
+    // 是唯一绕过落盘的退出路径。改为登记重启请求后走 app.quit() 的完整退出流程，
+    // 由 main.js 在 before-quit 中消费标志并登记 app.relaunch()
+    relaunchRequested = true;
+    app.quit();
     return { relaunching: true };
   });
   handle('app:purge-preview', () => taskService.purgePreview(readSettings().taskRetentionDays));
@@ -342,4 +371,4 @@ function register() {
   });
 }
 
-module.exports = { register, API_VERSION };
+module.exports = { register, API_VERSION, consumeRelaunchRequest };

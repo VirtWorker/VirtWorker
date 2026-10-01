@@ -165,4 +165,85 @@ describe('schema v1→v2 迁移：任务时间线拆分（P3-30）', () => {
     expect(db.find('workers', 'wk_bak')).toBeTruthy();
     expect(db.find('workers', 'wk_x')).toBeNull();
   });
+
+  test('版本过高且无有效备份时进入只读保护，绝不写盘覆盖原数据（O5）', () => {
+    const roDir = path.join(dir, 'readonly');
+    fs.mkdirSync(path.join(roDir, 'data'), { recursive: true });
+    const future = { schemaVersion: 99, updatedAt: 'x', items: [{ id: 'wk_keep', name: '新版本写入的数据' }] };
+    fs.writeFileSync(path.join(roDir, 'data', 'workers.json'), JSON.stringify(future), 'utf8');
+
+    db.init(path.join(roDir, 'data'));
+    expect(db.isReadOnly()).toBe(true);
+    // 数据无法解析进内存（内存为空），但原文件必须原样保留
+    expect(db.find('workers', 'wk_keep')).toBeNull();
+
+    // 只读模式下一切写入被拒绝：flush 后主文件未被覆盖，也没有产生备份文件
+    db.insert('workers', { id: 'wk_new', name: '本会话数据', groupIds: [], capabilityIds: [] });
+    db.setSettings({ taskRetentionDays: 1 });
+    db.flush();
+    const raw = JSON.parse(fs.readFileSync(path.join(roDir, 'data', 'workers.json'), 'utf8'));
+    expect(raw.schemaVersion).toBe(99);
+    expect(raw.items[0].id).toBe('wk_keep');
+    expect(fs.existsSync(path.join(roDir, 'data', 'workers.json.bak'))).toBe(false);
+
+    // 重新 init（模拟应用升级后重启）复位只读保护
+    db.init(path.join(dir, 'data'));
+    expect(db.isReadOnly()).toBe(false);
+  });
+});
+
+describe('数据快照备份与恢复（F5）', () => {
+  beforeAll(() => {
+    // 前一个 describe 把 db 指向了别的目录，这里恢复主数据目录并复位只读
+    db.init(path.join(dir, 'data'));
+    db.removeWhere('workers', () => true);
+  });
+
+  test('backup 复制全部数据文件并轮换旧快照（保留 7 份）', () => {
+    db.insert('workers', { id: 'wk_snap', name: '快照数据', groupIds: [], capabilityIds: [] });
+    db.flush();
+
+    const first = db.backup();
+    expect(first.files).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(first.dir, 'workers.json'))).toBe(true);
+    expect(first.kept).toBe(1);
+
+    // 伪造 7 份过期快照，加上当前共 8 份 → 轮换后剩 7
+    const root = db.backupsRoot();
+    for (let i = 1; i <= 7; i += 1) {
+      fs.mkdirSync(path.join(root, `2026010${i}-000000`), { recursive: true });
+    }
+    const second = db.backup();
+    expect(second.kept).toBe(7);
+    const remaining = fs.readdirSync(root).filter((name) => /^\d{8}-\d{6}$/.test(name));
+    expect(remaining.length).toBe(7);
+  });
+
+  test('listBackups 新→旧排列；restore 覆盖数据目录并触发只读保护', () => {
+    const list = db.listBackups();
+    expect(list.length).toBeGreaterThan(0);
+    expect(list[0].files).toBeGreaterThan(0);
+    // 名称即时间序：倒序排列
+    const names = list.map((snap) => snap.name);
+    expect([...names].sort().reverse()).toEqual(names);
+
+    // 破坏当前数据 → 恢复最新快照 → 数据回来
+    db.removeWhere('workers', () => true);
+    db.flush();
+    expect(db.count('workers')).toBe(0);
+
+    const result = db.restore(list[0].name);
+    expect(result.restored).toBe(list[0].name);
+    expect(result.files).toBeGreaterThan(0);
+    expect(db.isReadOnly()).toBe(true); // 恢复后本会话禁止写盘，防内存态覆盖恢复结果
+
+    db.init(path.join(dir, 'data')); // 重启加载恢复的数据，只读复位
+    expect(db.isReadOnly()).toBe(false);
+    expect(db.find('workers', 'wk_snap')).toBeTruthy();
+  });
+
+  test('restore 校验快照名与存在性', () => {
+    expect(() => db.restore('../escape')).toThrow(/不合法/);
+    expect(() => db.restore('20990101-000000')).toThrow(/不存在/);
+  });
 });

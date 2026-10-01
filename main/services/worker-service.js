@@ -8,6 +8,7 @@ const bus = require('../runtime/event-bus');
 const flowService = require('./flow-service');
 const automationService = require('./automation-service');
 const chatService = require('./chat-service');
+const taskService = require('./task-service');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
@@ -174,29 +175,47 @@ function removeWorker(id) {
     });
 
   // 级联：停用执行者已失效的自动任务（直接绑定该 Worker，或绑定删除后成员清空的 Group）
-  const staleAutomations = automationService
-    .listAll()
-    .filter(
-      (automation) =>
-        automation.enabled &&
-        ((automation.executor.type === 'worker' && automation.executor.id === id) ||
-          (automation.executor.type === 'group' && emptiedGroupIds.includes(automation.executor.id)))
-    );
-  staleAutomations.forEach((automation) => {
-    automationService.update(automation.id, { enabled: false });
-    bus.emit('app:notice', {
-      level: 'warning',
-      title: `自动任务「${automation.name}」已停用`,
-      body: '其执行者 Worker 已被删除，请重新指定执行者后再启用'
-    });
+  const disabledAutomations = [
+    ...automationService.disableByExecutor(
+      { workerId: id },
+      '其执行者 Worker 已被删除，请重新指定执行者后再启用'
+    ),
+    ...automationService.disableByExecutor(
+      { groupIds: emptiedGroupIds },
+      '其执行者 Group 的成员已被清空，请重新指定执行者后再启用'
+    )
+  ];
+
+  // 级联：事件触发器里限定执行者指向被删 Worker 时清空限定（变为不限执行者）。
+  // 悬空后事件条件永不命中，自动化会静默失效且无任何提示
+  automationService.listAll().forEach((automation) => {
+    if (automation.trigger.type === 'event' && automation.trigger.event?.assigneeId === id) {
+      automationService.update(automation.id, {
+        trigger: { type: 'event', event: { source: automation.trigger.event.source, assigneeId: '' } }
+      });
+      bus.emit('app:notice', {
+        level: 'warning',
+        title: `自动任务「${automation.name}」已解除执行者限定`,
+        body: '其事件触发器限定的 Worker 已被删除，现在任意执行者的任务都能触发它'
+      });
+    }
   });
+
+  // 级联：取消该 Worker（及其被清空 Group）名下的在途任务。
+  // 否则任务要等到槽位释放或离线退避重试才失败，成为"延迟僵尸"，还会以幽灵执行者的名义继续执行
+  const canceledTasks = taskService.cancelActiveByAssignees([id, ...emptiedGroupIds], '执行者已被删除，任务自动取消');
 
   // 级联：清理该 Worker 的聊天绑定，避免 @Worker 入站消息命中悬空 workerId 后每条消息都报错
   const removedBindings = chatService.removeBindingsByWorker(id);
 
   db.remove('workers', id);
   bus.emit('worker:removed', { id });
-  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id), removedBindings };
+  return {
+    id,
+    disabledAutomations,
+    canceledTasks,
+    removedBindings
+  };
 }
 
 // ==================== Group ====================
@@ -276,8 +295,22 @@ function updateGroup(id, patch = {}) {
   next.memberIds.filter((memberId) => !group.memberIds.includes(memberId)).forEach((memberId) => attachGroup(memberId, id));
 
   db.update('groups', id, next);
+
+  // 级联：成员被清空的 Group 不再可派发——停用其自动任务并取消在途任务。
+  // 与 removeGroup/removeWorker 对称：否则调度器每次触发都因「该 Group 没有成员」失败
+  // 且用户无任何通知（fireSafely 只推进计划），自动化成为"启用中却永不成功"的静默故障
+  let disabledAutomations = [];
+  let canceledTasks = [];
+  if (group.memberIds.length && !next.memberIds.length) {
+    disabledAutomations = automationService.disableByExecutor(
+      { groupId: id },
+      '其执行者 Group 的成员已被清空，请重新指定执行者后再启用'
+    );
+    canceledTasks = taskService.cancelActiveByAssignees([id], '执行者 Group 的成员已被清空，任务自动取消');
+  }
+
   bus.emit('group:updated', decorateGroup(next));
-  return decorateGroup(next);
+  return { ...decorateGroup(next), disabledAutomations, canceledTasks };
 }
 
 function removeGroup(id) {
@@ -287,24 +320,14 @@ function removeGroup(id) {
 
   // 级联：停用执行者绑定该 Group 的自动任务（与 removeWorker 对称）。
   // 否则调度器每次触发都会因执行者缺失而失败，interval 模式下还会反复重试刷屏
-  const staleAutomations = automationService
-    .listAll()
-    .filter(
-      (automation) =>
-        automation.enabled && automation.executor.type === 'group' && automation.executor.id === id
-    );
-  staleAutomations.forEach((automation) => {
-    automationService.update(automation.id, { enabled: false });
-    bus.emit('app:notice', {
-      level: 'warning',
-      title: `自动任务「${automation.name}」已停用`,
-      body: '其执行者 Group 已被删除，请重新指定执行者后再启用'
-    });
-  });
+  const disabledAutomations = automationService.disableByExecutor(
+    { groupId: id },
+    '其执行者 Group 已被删除，请重新指定执行者后再启用'
+  );
 
   db.remove('groups', id);
   bus.emit('group:removed', { id });
-  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id) };
+  return { id, disabledAutomations };
 }
 
 function attachGroup(workerId, groupId) {

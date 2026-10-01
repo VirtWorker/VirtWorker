@@ -136,24 +136,14 @@ function update(id, patch = {}) {
 function remove(id) {
   getOrThrow(id);
   // 级联：停用引用该流程的自动任务（executor.type = flow），避免调度触发时任务因流程缺失而失败
-  const staleAutomations = automationService
-    .listAll()
-    .filter(
-      (automation) =>
-        automation.enabled && automation.executor.type === 'flow' && automation.executor.id === id
-    );
-  staleAutomations.forEach((automation) => {
-    automationService.update(automation.id, { enabled: false });
-    bus.emit('app:notice', {
-      level: 'warning',
-      title: `自动任务「${automation.name}」已停用`,
-      body: '其引用的 WorkerFlow 已删除，请重新指定执行者后再启用'
-    });
-  });
+  const disabledAutomations = automationService.disableByExecutor(
+    { flowId: id },
+    '其引用的 WorkerFlow 已删除，请重新指定执行者后再启用'
+  );
 
   db.remove('flows', id);
   bus.emit('flow:removed', { id });
-  return { id, disabledAutomations: staleAutomations.map((automation) => automation.id) };
+  return { id, disabledAutomations };
 }
 
 module.exports = { MAX_NODES, list, stats, detail, buildPlan, create, update, remove };

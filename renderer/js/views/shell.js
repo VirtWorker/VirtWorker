@@ -69,7 +69,7 @@ VW.views.shell = (() => {
       ? `运行中：http://127.0.0.1:${store.state.apiServer.port}`
       : `未启动${store.state.apiServer.error ? `：${store.state.apiServer.error}` : ''}`;
     VW.modal.open('settings-modal');
-    await Promise.all([refreshDataStats(), refreshExecutorSelect()]);
+    await Promise.all([refreshDataStats(), refreshExecutorSelect(), refreshBackups()]);
   }
 
   async function saveSettings() {
@@ -119,6 +119,70 @@ VW.views.shell = (() => {
     }
   }
 
+  // ==================== 数据快照与任务归档 ====================
+
+  /** 拉取快照列表填充恢复下拉；没有快照时按钮禁用 */
+  async function refreshBackups() {
+    const select = document.getElementById('backup-select');
+    if (!select) return;
+    try {
+      const { snapshots, keep } = await VW.api.app.backupList();
+      select.innerHTML = snapshots.length
+        ? snapshots
+            .map((snap) => `<option value="${escapeHtml(snap.name)}">${escapeHtml(snap.name)}（${snap.files} 个文件）</option>`)
+            .join('')
+        : '<option value="">暂无备份快照</option>';
+      document.getElementById('backup-hint').textContent = `每日自动备份，保留最近 ${keep} 份`;
+      VW.dropdown.refresh(select);
+    } catch (error) {
+      console.warn('[shell] 备份列表加载失败:', error.message);
+    }
+  }
+
+  async function backupNow() {
+    try {
+      const result = await VW.api.app.backupNow();
+      VW.toast.show(result.files ? `已备份 ${result.files} 个文件到 backups 目录` : '备份完成（数据目录为空）');
+      await refreshBackups();
+    } catch (error) {
+      VW.toast.fromError(error);
+    }
+  }
+
+  async function restoreBackup() {
+    const select = document.getElementById('backup-select');
+    const name = select?.value;
+    if (!name) {
+      VW.toast.show('没有可恢复的备份快照');
+      return;
+    }
+    // 恢复会覆盖当前全部数据并由主进程重启应用加载，必须二次确认
+    if (!window.confirm(`恢复备份「${name}」将覆盖当前全部数据，恢复后应用会自动重启。确定继续？`)) return;
+    try {
+      await VW.api.app.restoreBackup(name);
+      VW.toast.show('备份已恢复，应用即将重启…');
+    } catch (error) {
+      VW.toast.fromError(error);
+    }
+  }
+
+  /** 导出全部任务历史（含时间线）为 JSON 归档文件，内容经 app:save-file 对话框落盘 */
+  async function exportTasks() {
+    try {
+      const payload = await VW.api.task.export({ period: '' });
+      const stamp = new Date().toISOString().slice(0, 10);
+      const result = await VW.api.app.saveFile({
+        suggestedName: `virtworker-tasks-${stamp}.json`,
+        title: '导出任务历史',
+        filterName: 'VirtWorker 任务归档',
+        content: JSON.stringify(payload, null, 2)
+      });
+      if (!result.canceled) VW.toast.show(`已导出 ${payload.count} 条任务记录`);
+    } catch (error) {
+      VW.toast.fromError(error);
+    }
+  }
+
   function bindSettings() {
     document.getElementById('settings-btn').addEventListener('click', openSettings);
     document.getElementById('settings-modal-close').addEventListener('click', () => VW.modal.close('settings-modal'));
@@ -134,6 +198,17 @@ VW.views.shell = (() => {
         VW.toast.fromError(error);
       }
     });
+    document.getElementById('backup-now-btn').addEventListener('click', backupNow);
+    document.getElementById('open-backups-btn').addEventListener('click', async () => {
+      try {
+        const result = await VW.api.app.openBackupsDir();
+        if (!result.opened) VW.toast.show(result.error || '打开目录失败');
+      } catch (error) {
+        VW.toast.fromError(error);
+      }
+    });
+    document.getElementById('restore-backup-btn').addEventListener('click', restoreBackup);
+    document.getElementById('export-tasks-btn').addEventListener('click', exportTasks);
   }
 
   // ==================== 历史记录 ====================

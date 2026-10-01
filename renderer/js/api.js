@@ -33,6 +33,10 @@ VW.api = (() => {
       relaunch: () => call(bridge?.app?.relaunch),
       purgePreview: () => call(bridge?.app?.purgePreview),
       purgeTasks: () => call(bridge?.app?.purgeTasks),
+      backupNow: () => call(bridge?.app?.backupNow),
+      backupList: () => call(bridge?.app?.backupList),
+      openBackupsDir: () => call(bridge?.app?.openBackupsDir),
+      restoreBackup: (name) => call(bridge?.app?.restoreBackup, name),
       saveFile: (payload) => call(bridge?.app?.saveFile, payload),
       openFile: () => call(bridge?.app?.openFile)
     },
@@ -72,6 +76,7 @@ VW.api = (() => {
       list: (query) => call(bridge?.task?.list, query),
       stats: (query) => call(bridge?.task?.stats, query),
       queue: (query) => call(bridge?.task?.queue, query),
+      export: (query) => call(bridge?.task?.export, query),
       create: (payload) => call(bridge?.task?.create, payload),
       detail: (id) => call(bridge?.task?.detail, id),
       cancel: (id, reason) => call(bridge?.task?.cancel, id, reason),

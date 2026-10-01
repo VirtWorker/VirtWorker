@@ -30,7 +30,7 @@ const electronStub = {
     showSaveDialog: async () => ({ canceled: true })
   },
   shell: { openPath: async () => 'stub' },
-  app: { getPath: () => os.tmpdir(), relaunch: () => {}, exit: () => {} }
+  app: { getPath: () => os.tmpdir(), relaunch: () => {}, exit: () => {}, quit: () => {} }
 };
 const electronResolved = require.resolve('electron');
 const stubModule = new Module(electronResolved, null);
@@ -210,6 +210,50 @@ describe('IPC 契约：capability:create-knowledge 完整透传 payload', () => 
     });
     expect(replay.ok).toBe(false);
     expect(replay.error.message).toContain('目录未授权');
+  });
+});
+
+describe('IPC 契约：app:relaunch 走完整退出流程（O1 回归防护）', () => {
+  beforeAll(() => {
+    initTempDb();
+    ipc.register();
+  });
+
+  afterAll(() => {
+    db.flush();
+  });
+
+  test('app:relaunch 登记重启请求并调用 app.quit，绝不直接 app.exit 跳过 before-quit', async () => {
+    const calls = { quit: 0, exit: 0, relaunch: 0 };
+    electronStub.app.quit = () => {
+      calls.quit += 1;
+    };
+    electronStub.app.exit = () => {
+      calls.exit += 1;
+    };
+    electronStub.app.relaunch = () => {
+      calls.relaunch += 1;
+    };
+
+    const res = await invoke('app:relaunch');
+    expect(res.ok).toBe(true);
+    expect(calls.quit).toBe(1);
+    // 关键断言：app.exit(0) 会跳过 before-quit（db.flush 等清理全部不执行），必须杜绝
+    expect(calls.exit).toBe(0);
+    // main.js 的 before-quit 消费该标志后登记 app.relaunch()
+    expect(ipc.consumeRelaunchRequest()).toBe(true);
+    expect(ipc.consumeRelaunchRequest()).toBe(false); // 消费一次即复位
+  });
+
+  test('app:restore-backup 恢复后登记重启（恢复会话不落盘 + 重启加载新数据）', async () => {
+    const calls = { quit: 0 };
+    electronStub.app.quit = () => {
+      calls.quit += 1;
+    };
+    const res = await invoke('app:restore-backup', { name: '20990101-000000' });
+    expect(res.ok).toBe(false); // 不存在的快照被拒绝
+    expect(res.error.code).toBe('NOT_FOUND');
+    expect(calls.quit).toBe(0); // 失败时不应触发重启
   });
 });
 

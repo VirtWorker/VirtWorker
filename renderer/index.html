@@ -1085,6 +1085,16 @@
             <button type="button" class="btn btn-outline" id="purge-tasks-btn">立即清理</button>
             <span class="form-hint" id="purge-preview"></span>
           </div>
+          <div class="settings-actions">
+            <button type="button" class="btn btn-outline" id="backup-now-btn">立即备份</button>
+            <button type="button" class="btn btn-outline" id="open-backups-btn">备份目录</button>
+            <button type="button" class="btn btn-outline" id="export-tasks-btn">导出任务历史</button>
+            <span class="form-hint" id="backup-hint">每日自动备份，保留最近 7 份</span>
+          </div>
+          <div class="settings-actions">
+            <select id="backup-select" aria-label="选择备份快照"></select>
+            <button type="button" class="btn btn-outline" id="restore-backup-btn">恢复此备份</button>
+          </div>
         </div>
       </div>
       <div class="modal-footer">

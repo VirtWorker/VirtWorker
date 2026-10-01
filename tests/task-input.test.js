@@ -141,3 +141,34 @@ describe('taskService.queue 与列表分页（P3-21）', () => {
     expect(detail.task.events.every((event) => event.taskId === task.id)).toBe(true);
   });
 });
+
+describe('taskService.exportTasks 任务历史导出（F5）', () => {
+  let worker;
+
+  beforeEach(() => {
+    ['workers', 'tasks', 'taskevents'].forEach((name) => db.removeWhere(name, () => true));
+    worker = workerService.createWorker({ name: '导出执行者' });
+  });
+
+  test('导出全部历史（忽略分页参数），记录并入完整时间线', () => {
+    for (let i = 0; i < 3; i += 1) {
+      taskService.create({ goal: `导出任务 ${i}`, assigneeId: worker.id });
+    }
+
+    const payload = taskService.exportTasks({ period: '', page: 1, pageSize: 2 });
+
+    expect(payload.count).toBe(3); // page/pageSize 被忽略：导出即全量口径
+    expect(payload.total).toBe(3);
+    expect(payload.exportedAt).toBeTruthy();
+    payload.records.forEach((task) => {
+      expect(task.events.length).toBeGreaterThan(0); // 时间线并入（tasks 集合本身不含 events）
+      expect(task.events.every((event) => event.taskId === task.id)).toBe(true);
+    });
+  });
+
+  test('导出遵循筛选口径（period / status）', () => {
+    taskService.create({ goal: '筛选导出任务', assigneeId: worker.id });
+    const payload = taskService.exportTasks({ period: '', status: '已结束' });
+    expect(payload.count).toBe(0); // 刚创建的任务未结束，按「已结束」筛选导出为空
+  });
+});

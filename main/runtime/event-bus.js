@@ -33,7 +33,12 @@ function command(type, payload) {
   if (!handlers) return;
   handlers.forEach((handler) => {
     try {
-      handler(payload);
+      const result = handler(payload);
+      // 兼容 async 指令处理器（如 runtime.dispatch 已异步化）：
+      // 同步 try/catch 捕获不到 Promise 拒绝，放任不管会成为 unhandledRejection（日志层会记为 FATAL）
+      if (result && typeof result.catch === 'function') {
+        result.catch((error) => console.error('[bus] 指令处理失败:', type, error));
+      }
     } catch (error) {
       console.error('[bus] 指令处理失败:', type, error);
     }

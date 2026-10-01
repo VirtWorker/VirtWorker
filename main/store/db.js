@@ -1,9 +1,13 @@
 /**
  * JSON 集合存储（仅主进程使用）
  * - 内存缓存 + 原子写（*.tmp → fsync → rename），写入前轮换保留两代备份（*.bak / *.bak2）
- * - 读取失败或版本过高时回退备份，全部失败则以空集合启动，不阻塞应用但会发出告警
+ * - 读取失败或版本过高时回退备份，全部失败则以空集合启动，不阻塞应用但会发出告警；
+ *   若失败原因是「数据版本高于当前支持」（如从新版降级），则进入只读保护：
+ *   数据本身完好，绝不以空/旧内存状态写回覆盖原文件，直到应用升级后重新加载
  * - 写入节流：变更先落缓存，100ms 内的多次写合并为一次磁盘写入；
  *   写盘失败自动定时重试并通知（setNotify），进程退出前必须 flush()（缓存始终是读取的唯一来源）
+ * - 数据快照：backup() 把整个数据目录复制到 backups/<时间戳>/ 并轮换保留最近 N 份，
+ *   防「.bak 只能回退一代」覆盖不到的误删与逻辑损坏；restore() 恢复快照（配合只读保护 + 重启）
  * - 对外只暴露集合级接口，不体现实现细节，便于后续替换为 SQLite
  */
 
@@ -36,6 +40,10 @@ const FLUSH_RETRY_MS = 5 * 1000;
 const FLUSH_NOTIFY_INTERVAL_MS = 5 * 60 * 1000;
 /** notify 注册前产生的告警缓存上限 */
 const MAX_PENDING_NOTICES = 20;
+/** 快照保留份数：超出后按时间序轮换删除（每日自动备份 + 手动备份共用） */
+const BACKUP_KEEP = 7;
+/** 合法快照目录名（snapshotName 生成的 <日期>-<时间>） */
+const BACKUP_NAME_PATTERN = /^\d{8}-\d{6}$/;
 
 let baseDir = '';
 const cache = new Map();
@@ -45,6 +53,13 @@ const dirty = new Map();
 let flushTimer = null;
 let flushRetryTimer = null;
 let lastFlushNotifyAt = 0;
+/**
+ * 只读保护原因（null = 可写）。
+ * 触发场景：① 数据版本高于当前支持（降级/缺迁移定义）；② 恢复快照后等待重启。
+ * 只读模式下内存状态可继续运行本次会话，但 persist/flush 一律拒绝写盘，
+ * 防止空数据或过期内存状态覆盖磁盘上的完好数据。
+ */
+let readOnlyReason = null;
 /** 存储异常对外通知回调（main.js 注入，经事件总线转发渲染层）；注册前的告警先入队 */
 let notifyFn = null;
 const pendingNotices = [];
@@ -58,8 +73,8 @@ function drainNotices() {
   return pendingNotices.splice(0, pendingNotices.length);
 }
 
-function notifyStorageIssue(message) {
-  const notice = { level: 'error', title: '数据存储异常', message };
+function notifyStorageIssue(message, title = '数据存储异常') {
+  const notice = { level: 'error', title, message };
   if (notifyFn) {
     try {
       notifyFn(notice);
@@ -68,6 +83,20 @@ function notifyStorageIssue(message) {
     }
   }
   if (pendingNotices.length < MAX_PENDING_NOTICES) pendingNotices.push(notice);
+}
+
+/**
+ * 进入只读保护（幂等）：首次调用记录原因并告警，此后所有写盘被拒绝。
+ * 只在重新 init()（应用升级后重启 / 测试重装）时复位。
+ */
+function enterReadOnly(reason) {
+  if (readOnlyReason) return;
+  readOnlyReason = reason;
+  notifyStorageIssue(reason, '数据已进入只读保护');
+}
+
+function isReadOnly() {
+  return Boolean(readOnlyReason);
 }
 
 function fileOf(name) {
@@ -88,6 +117,7 @@ function tryRead(file) {
 function loadItems(name) {
   const file = fileOf(name);
   let sawFile = false;
+  let sawStaleVersion = false;
   for (const candidate of [file, `${file}.bak`, `${file}.bak2`]) {
     if (!fs.existsSync(candidate)) continue;
     sawFile = true;
@@ -102,7 +132,16 @@ function loadItems(name) {
     }
     const result = schema.readCollection(payload, name);
     if (result.ok) return { items: result.items, legacyEvents };
+    if (result.code === 'stale_code') sawStaleVersion = true;
     console.error(`[store] ${path.basename(candidate)} 不可用:`, result.reason);
+  }
+  if (sawStaleVersion) {
+    // 数据由更新版本的应用写入（如从新版降级）：文件本身完好，
+    // 绝不能以空数据启动后把内存态写回覆盖原文件——进入只读保护，提示用户升级应用
+    enterReadOnly(
+      `「${name}.json」的数据版本高于当前应用支持的范围，已暂停写入以保护原数据。请升级应用后再使用，原数据不会丢失`
+    );
+    return { items: [], legacyEvents: null };
   }
   // 文件存在但全部不可读：以空集合启动不阻塞应用，但必须让用户知情（静默丢数据不可接受）
   if (sawFile) notifyStorageIssue(`${name}.json 及其备份均无法读取，已以空数据启动`);
@@ -112,6 +151,7 @@ function loadItems(name) {
 function loadSettings() {
   const file = fileOf('settings');
   let sawFile = false;
+  let sawStaleVersion = false;
   for (const candidate of [file, `${file}.bak`, `${file}.bak2`]) {
     if (!fs.existsSync(candidate)) continue;
     sawFile = true;
@@ -119,7 +159,12 @@ function loadSettings() {
     if (!payload) continue;
     const result = schema.readSettings(payload);
     if (result.ok) return result.items;
+    if (result.code === 'stale_code') sawStaleVersion = true;
     console.error(`[store] ${path.basename(candidate)} 不可用:`, result.reason);
+  }
+  if (sawStaleVersion) {
+    enterReadOnly('「settings.json」的数据版本高于当前应用支持的范围，已暂停写入以保护原数据，请升级应用后再使用');
+    return {};
   }
   if (sawFile) notifyStorageIssue('settings.json 及其备份均无法读取，已恢复默认设置');
   return {};
@@ -153,8 +198,10 @@ function writeCollection(name, items) {
 /**
  * 标记集合为脏并调度合并写入：同一窗口内的多次变更只写一次磁盘。
  * 缓存已同步更新，读取路径不受写入时机影响；进程退出前调用 flush() 落盘。
+ * 只读保护下拒绝标记脏：内存可继续运行会话，但磁盘上的完好数据绝不被覆盖。
  */
 function persist(name, items) {
+  if (readOnlyReason) return;
   dirty.set(name, items);
   scheduleFlush();
 }
@@ -172,8 +219,10 @@ function scheduleFlush() {
 /**
  * 立即把所有脏集合落盘；失败的集合保留在 dirty 中并自动定时重试。
  * 进程退出前必须调用（before-quit）；持续失败时按限频节奏通知用户。
+ * 只读保护下直接跳过（persist 已拒绝标记脏，这里兜底防止退出路径的任何写盘）。
  */
 function flush() {
+  if (readOnlyReason) return;
   if (flushTimer) {
     clearTimeout(flushTimer);
     flushTimer = null;
@@ -214,6 +263,7 @@ function flush() {
 function init(dir) {
   baseDir = dir;
   fs.mkdirSync(baseDir, { recursive: true });
+  readOnlyReason = null; // 重新初始化（应用升级后重启 / 测试重装）即复位只读保护
   let legacyEvents = null;
   COLLECTIONS.forEach((name) => {
     const loaded = loadItems(name);
@@ -347,6 +397,105 @@ function setSettings(patch) {
   return clone(settings);
 }
 
+// ==================== 数据快照备份（F5）====================
+
+/** 快照根目录：与数据目录同级（userData/backups），不混入集合读写路径 */
+function backupsRoot() {
+  return path.join(path.dirname(baseDir), 'backups');
+}
+
+function snapshotName(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  );
+}
+
+/** 按名称（即时间序）倒序列出现有快照 */
+function listSnapshotNames() {
+  try {
+    return fs.readdirSync(backupsRoot()).filter((name) => BACKUP_NAME_PATTERN.test(name)).sort().reverse();
+  } catch (error) {
+    return [];
+  }
+}
+
+/** 快照轮换：保留最近 BACKUP_KEEP 份，返回轮换后的保留份数 */
+function rotateBackups() {
+  const snapshots = listSnapshotNames();
+  snapshots.slice(BACKUP_KEEP).forEach((name) => {
+    try {
+      fs.rmSync(path.join(backupsRoot(), name), { recursive: true, force: true });
+    } catch (error) {
+      console.error(`[store] 清理旧快照 ${name} 失败:`, error.message);
+    }
+  });
+  return Math.min(snapshots.length, BACKUP_KEEP);
+}
+
+/**
+ * 整目录快照：复制数据目录全部文件到 backups/<时间戳>/。
+ * .bak 备份只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散；
+ * 只复制不写主数据，只读保护下同样安全。失败仅告警，不中断调用方。
+ */
+function backup() {
+  if (!baseDir) return { dir: '', files: 0, kept: 0 };
+  const target = path.join(backupsRoot(), snapshotName(new Date()));
+  fs.mkdirSync(target, { recursive: true });
+  let files = 0;
+  for (const name of fs.readdirSync(baseDir)) {
+    if (name.endsWith('.tmp')) continue; // 写入未完成的临时文件不进快照
+    try {
+      const src = path.join(baseDir, name);
+      if (!fs.statSync(src).isFile()) continue;
+      fs.copyFileSync(src, path.join(target, name));
+      files += 1;
+    } catch (error) {
+      console.error(`[store] 快照跳过 ${name}:`, error.message);
+    }
+  }
+  return { dir: target, files, kept: rotateBackups() };
+}
+
+/** 快照列表（新→旧），供恢复入口下拉展示 */
+function listBackups() {
+  return listSnapshotNames().map((name) => {
+    let files = 0;
+    try {
+      files = fs.readdirSync(path.join(backupsRoot(), name)).length;
+    } catch (error) {
+      // 目录被并发轮换清理时按 0 计
+    }
+    return { name, files };
+  });
+}
+
+/**
+ * 恢复快照：把快照内文件覆盖回数据目录，随后由调用方重启应用加载。
+ * 恢复前进入只读保护：本会话的内存状态（已与磁盘不一致）绝不落盘覆盖刚恢复的文件，
+ * before-quit 的 flush 在只读模式下为空操作，重启后 init 重新加载恢复的数据并复位只读。
+ */
+function restore(name) {
+  const snapshot = String(name ?? '');
+  if (!BACKUP_NAME_PATTERN.test(snapshot)) throw fail.validation('备份快照名不合法');
+  const source = path.join(backupsRoot(), snapshot);
+  if (!fs.existsSync(source)) throw fail.notFound('备份快照不存在');
+  enterReadOnly(`正在恢复备份「${snapshot}」，本会话已暂停写入，重启后生效`);
+  let files = 0;
+  for (const entry of fs.readdirSync(source)) {
+    const src = path.join(source, entry);
+    try {
+      if (!fs.statSync(src).isFile()) continue;
+      fs.copyFileSync(src, path.join(baseDir, entry));
+      files += 1;
+    } catch (error) {
+      console.error(`[store] 恢复跳过 ${entry}:`, error.message);
+    }
+  }
+  return { restored: snapshot, files };
+}
+
 module.exports = {
   init,
   all,
@@ -365,5 +514,11 @@ module.exports = {
   flush,
   setNotify,
   drainNotices,
+  isReadOnly,
+  backup,
+  listBackups,
+  restore,
+  backupsRoot,
+  BACKUP_KEEP,
   COLLECTIONS
 };

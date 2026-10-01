@@ -50,9 +50,26 @@ function bootstrapServices() {
     scheduler.start(); // 启动补跑错过的定时任务并排程
     httpServer.start(); // API 触发的本地端点（仅回环地址）
     purgeExpiredTasks(); // 按保留策略清理历史任务
+    startDailyBackup(); // 数据快照：每日自动备份
   } catch (error) {
     console.error('[main] 领域服务初始化失败:', error);
   }
+}
+
+/** 数据快照：启动即备份一次，此后每 24 小时一次。
+ *  .bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）。 */
+function startDailyBackup() {
+  const run = () => {
+    try {
+      const result = db.backup();
+      if (result.files) console.log(`[main] 数据快照完成：${result.files} 个文件 → ${result.dir}`);
+    } catch (error) {
+      console.error('[main] 数据快照失败:', error.message);
+    }
+  };
+  run();
+  const timer = setInterval(run, 24 * 60 * 60 * 1000);
+  timer.unref?.(); // 不阻塞进程退出
 }
 
 /** 保留策略：清理已结束且已查收、且超出保留期的任务，避免数据无限增长 */
@@ -228,6 +245,11 @@ app.on('window-all-closed', () => {
 
 // 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流
 app.on('before-quit', () => {
+  // 「重启应用」不再走 app.exit(0)（会跳过本钩子导致脏缓存不落盘）：
+  // 在完整清理后登记 relaunch，退出流程继续并自动拉起新实例
+  if (ipc.consumeRelaunchRequest()) {
+    app.relaunch();
+  }
   runtime.shutdown();
   scheduler.stop();
   httpServer.stop();

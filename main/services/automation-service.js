@@ -149,10 +149,26 @@ function normalizeTrigger(input = {}) {
   return { type, api: { token: buildApiCredential(input.api?.token) } };
 }
 
+/** 判断是否为详情接口（decorate）下发的只读 Token 掩码对象。
+ *  掩码形态：{ masked: true, mask, mode }（历史版本无 masked 标记，按「有 mask 无 sealed」兼容识别）；
+ *  库内密文形态：{ sealed, mask, mode }；旧版明文为字符串。三者不可混淆。 */
+function isMaskedToken(token) {
+  return Boolean(
+    token &&
+      typeof token === 'object' &&
+      !token.sealed &&
+      (token.masked === true || typeof token.mask === 'string')
+  );
+}
+
 /** API Token：seal 后落盘（与 IM/连接器凭据同一保险箱标准，不再明文）。
  *  已是加密对象（编辑保留旧 Token）原样透传；兼容读取迁移前的明文字符串。 */
 function buildApiCredential(existing) {
   if (existing && typeof existing === 'object' && existing.sealed) return existing;
+  if (isMaskedToken(existing)) {
+    // 把只读掩码当作新明文 Token 保存的实际效果是「凭据被静默轮换」——最难排查的一类故障，必须显式拒绝
+    throw fail.validation('不能把 Token 掩码作为新 Token 保存：请保留原值（省略 token 字段）或重新生成 Token');
+  }
   const plain = typeof existing === 'string' && existing ? existing : `vw_${randomBytes(12).toString('hex')}`;
   const sealed = vault.seal(plain);
   return { sealed, mask: vault.mask(plain), mode: sealed.mode };
@@ -166,13 +182,14 @@ function revealApiToken(automation) {
   return vault.open(token.sealed);
 }
 
-/** 重新生成 API Token：旧 Token 立即失效（泄漏后的换锁入口） */
+/** 重新生成 API Token：旧 Token 立即失效（泄漏后的换锁入口），归档一并作废 */
 function regenerateToken(id) {
   const automation = getOrThrow(id);
   if (automation.trigger.type !== 'api') throw fail.invalidState('仅 API 触发的自动任务可以重新生成 Token');
   const next = {
     ...automation,
     trigger: { ...automation.trigger, api: { token: buildApiCredential(null) } },
+    retiredApiToken: null,
     updatedAt: nowIso()
   };
   db.update('automations', id, next);
@@ -204,25 +221,29 @@ function getOrThrow(id) {
 }
 
 function decorate(automation) {
-  const isApi = automation.trigger.type === 'api';
-  // API Token 的密文/明文都不下发渲染层，只给掩码（复制调用命令经专用通道在主进程完成）
+  // retiredApiToken 是归档的 Token 密文（触发类型切离 api 时保留），绝不下发渲染层
+  const { retiredApiToken, ...rest } = automation;
+  const isApi = rest.trigger.type === 'api';
+  // API Token 的密文/明文都不下发渲染层，只给掩码（复制调用命令经专用通道在主进程完成）；
+  // masked 标记声明这是只读对象：客户端原样回传时等价于「保留现有 Token」，不会被当作新明文
   const trigger = isApi
     ? {
-        ...automation.trigger,
+        ...rest.trigger,
         api: {
-          mask: automation.trigger.api?.token?.mask || '',
-          mode: automation.trigger.api?.token?.mode || ''
+          masked: true,
+          mask: rest.trigger.api?.token?.mask || '',
+          mode: rest.trigger.api?.token?.mode || ''
         }
       }
-    : automation.trigger;
+    : rest.trigger;
   return {
-    ...automation,
+    ...rest,
     trigger,
-    triggerLabel: TRIGGER_LABEL[automation.trigger.type],
-    triggerText: describeTrigger(automation.trigger),
-    tokenMask: isApi ? automation.trigger.api?.token?.mask || '' : '',
+    triggerLabel: TRIGGER_LABEL[rest.trigger.type],
+    triggerText: describeTrigger(rest.trigger),
+    tokenMask: isApi ? rest.trigger.api?.token?.mask || '' : '',
     /** 端点信息只在 API 触发时下发给界面，便于用户复制 */
-    endpoint: isApi ? `/automations/${automation.id}/run` : null
+    endpoint: isApi ? `/automations/${rest.id}/run` : null
   };
 }
 
@@ -324,8 +345,28 @@ function update(id, patch = {}) {
     next.executor = { type: executor.type, id: executor.id, name: executor.name };
   }
   if (patch.trigger !== undefined) {
+    const incoming = { ...patch.trigger };
+    if (isMaskedToken(incoming.api?.token)) {
+      // 客户端把详情接口下发的只读掩码原样回传（「编辑→原样保存」的常规客户端模式）：
+      // 等价于「保留现有 Token」，绝不能当作新明文走 seal（那会静默轮换凭据）
+      incoming.api = automation.trigger.api;
+    }
+    // 触发类型切离 api：归档旧 Token 密文，避免切换即凭据丢失
+    if (automation.trigger.type === 'api' && incoming.type !== 'api') {
+      next.retiredApiToken = automation.trigger.api?.token || null;
+    }
+    // 切回 api 且未提供新 Token：优先恢复归档的旧 Token（此时库内已无现役 api 配置，
+    // 不恢复的话 buildApiCredential 会静默生成新 Token，上游调用方全部 401）
+    if (incoming.type === 'api' && automation.trigger.type !== 'api') {
+      if (incoming.api?.token) {
+        next.retiredApiToken = null; // 显式提供了新 Token，归档作废
+      } else if (automation.retiredApiToken) {
+        incoming.api = { token: automation.retiredApiToken };
+        next.retiredApiToken = null;
+      }
+    }
     // 保留已有 API Token，避免编辑时静默更换凭据
-    next.trigger = normalizeTrigger({ api: automation.trigger.api, ...patch.trigger });
+    next.trigger = normalizeTrigger({ api: automation.trigger.api, ...incoming });
   }
   if (patch.enabled !== undefined) next.enabled = Boolean(patch.enabled);
 
@@ -349,6 +390,35 @@ function remove(id) {
   return { id };
 }
 
+/**
+ * 停用执行者已失效的自动任务：删除 Worker / 删除或清空 Group / 删除 Flow 的统一级联入口。
+ * 失效自动化若保持启用，调度器每次触发都会失败且用户无感知（「启用中却永不成功」的静默故障态），
+ * 必须显式停用并通知。返回被停用的自动化 id 列表（供删除接口回传与测试断言）。
+ */
+function disableByExecutor(matcher = {}, reason = '') {
+  const groupIds = Array.isArray(matcher.groupIds) ? matcher.groupIds : matcher.groupId ? [matcher.groupId] : [];
+  const disabled = [];
+  listAll()
+    .filter((automation) => {
+      if (!automation.enabled) return false;
+      const executor = automation.executor || {};
+      if (matcher.workerId && executor.type === 'worker' && executor.id === matcher.workerId) return true;
+      if (groupIds.length && executor.type === 'group' && groupIds.includes(executor.id)) return true;
+      if (matcher.flowId && executor.type === 'flow' && executor.id === matcher.flowId) return true;
+      return false;
+    })
+    .forEach((automation) => {
+      update(automation.id, { enabled: false });
+      bus.emit('app:notice', {
+        level: 'warning',
+        title: `自动任务「${automation.name}」已停用`,
+        body: reason || '其执行者已失效，请重新指定执行者后再启用'
+      });
+      disabled.push(automation.id);
+    });
+  return disabled;
+}
+
 // ==================== 运行时回调 ====================
 
 /** 触发成功后推进计划：记录运行次数、最近运行时间与下次触发时间 */
@@ -356,12 +426,16 @@ function markFired(id, taskId, meta = {}) {
   const automation = getOrThrow(id);
   const isOnce = automation.trigger.type === 'schedule' && automation.trigger.schedule.mode === 'once';
   // interval 从「计划触发时刻」起算下次时间，避免每次顺延导致周期逐渐漂移；
-  // hourly/daily/weekly 锚定墙上时钟无漂移，保持从当前时刻起算
+  // hourly/daily/weekly 锚定墙上时钟无漂移，保持从当前时刻起算。
+  // 长停机追赶上限：计划触发点落后已超过一个完整间隔（应用停开数天后补跑的形态）时，
+  // 不再以过期时刻为基准逐周期补账——那会让调度器以最小定时器间隔连续触发制造任务洪峰，
+  // 而是直接以当前时刻重排，保证「错过的只补本次这一次」
   const previousDue = automation.nextRunAt ? new Date(automation.nextRunAt) : null;
-  const base =
-    automation.trigger.schedule?.mode === 'interval' && previousDue && !Number.isNaN(previousDue.getTime())
-      ? previousDue
-      : undefined;
+  let base;
+  if (automation.trigger.schedule?.mode === 'interval' && previousDue && !Number.isNaN(previousDue.getTime())) {
+    const everyMs = clampInt(automation.trigger.schedule.everyMinutes, 1, 1440, 30) * 60 * 1000;
+    base = previousDue.getTime() + everyMs > Date.now() ? previousDue : undefined;
+  }
   const next = {
     ...automation,
     lastRunAt: nowIso(),
@@ -442,6 +516,7 @@ module.exports = {
   update,
   toggle,
   remove,
+  disableByExecutor,
   markFired,
   advanceSchedule,
   dueSchedules,

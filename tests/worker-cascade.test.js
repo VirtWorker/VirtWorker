@@ -12,7 +12,8 @@ import {
   workerService,
   automationService,
   flowService,
-  chatService
+  chatService,
+  taskService
 } from './setup.js';
 
 let dir;
@@ -91,6 +92,81 @@ describe('removeWorker 级联处理', () => {
 
     expect(result.disabledAutomations).toEqual([]);
     expect(db.find('automations', automation.id).enabled).toBe(true);
+  });
+});
+
+describe('removeWorker / updateGroup / 事件触发器级联（O4 补齐）', () => {
+  beforeEach(() => {
+    ['workers', 'groups', 'automations', 'flows', 'capabilities', 'tasks', 'taskevents'].forEach((name) =>
+      db.removeWhere(name, () => true)
+    );
+  });
+
+  test('删除 Worker 会取消其名下在途任务，不再产生"延迟僵尸"（O4）', () => {
+    const worker = workerService.createWorker({ name: '在途执行者' });
+    const queued = taskService.create({ goal: '排队中的任务', assigneeId: worker.id });
+    const finished = taskService.create({ goal: '已完成的任务', assigneeId: worker.id });
+    db.update('tasks', finished.id, { status: 'succeeded' }); // 终态任务不受级联影响
+
+    const result = workerService.removeWorker(worker.id);
+
+    expect(result.canceledTasks).toEqual([queued.id]);
+    expect(db.find('tasks', queued.id).status).toBe('canceled');
+    expect(db.find('tasks', finished.id).status).toBe('succeeded');
+  });
+
+  test('updateGroup 清空成员会停用绑定该 Group 的自动任务并取消在途任务（O4）', () => {
+    const w1 = workerService.createWorker({ name: '将被移出的成员' });
+    const group = workerService.createGroup({ name: '清空测试组', memberIds: [w1.id] });
+    const automation = automationService.create({
+      name: '清空组任务',
+      executorId: group.id,
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } },
+      input: { goal: '组目标' }
+    });
+    const task = taskService.create({ goal: '组在途任务', assigneeId: group.id });
+
+    const result = workerService.updateGroup(group.id, { memberIds: [] });
+
+    // 修复前：清空成员不停用自动化，调度器每次触发都因「该 Group 没有成员」失败且用户无感知
+    expect(result.disabledAutomations).toEqual([automation.id]);
+    expect(db.find('automations', automation.id).enabled).toBe(false);
+    expect(result.canceledTasks).toEqual([task.id]);
+    expect(db.find('tasks', task.id).status).toBe('canceled');
+  });
+
+  test('updateGroup 未清空成员时不触发级联', () => {
+    const w1 = workerService.createWorker({ name: '保留成员' });
+    const w2 = workerService.createWorker({ name: '新增成员' });
+    const group = workerService.createGroup({ name: '正常调整组', memberIds: [w1.id] });
+    const automation = automationService.create({
+      name: '正常组任务',
+      executorId: group.id,
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } },
+      input: { goal: '组目标' }
+    });
+
+    const result = workerService.updateGroup(group.id, { memberIds: [w1.id, w2.id] });
+
+    expect(result.disabledAutomations).toEqual([]);
+    expect(db.find('automations', automation.id).enabled).toBe(true);
+  });
+
+  test('删除 Worker 会清空事件触发器中指向它的限定执行者（避免静默失效）（O4）', () => {
+    const w1 = workerService.createWorker({ name: '事件限定者' });
+    const w2 = workerService.createWorker({ name: '其他执行者' });
+    const automation = automationService.create({
+      name: '事件限定任务',
+      executorId: w2.id,
+      trigger: { type: 'event', event: { source: 'task_succeeded', assigneeId: w1.id } },
+      input: { goal: '事件目标' }
+    });
+
+    workerService.removeWorker(w1.id);
+
+    const stored = db.find('automations', automation.id);
+    expect(stored.enabled).toBe(true); // 事件自动化本身不受影响
+    expect(stored.trigger.event.assigneeId).toBe(''); // 限定已清空，不再悬空
   });
 });
 
