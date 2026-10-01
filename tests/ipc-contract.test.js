@@ -45,10 +45,10 @@ const db = require('../main/store/db');
 const { initTempDb, cleanupTempDb } = await import('./setup.js');
 
 /** 模拟渲染层 invoke：直接调用注册到 ipcMain 的 handler */
-function invoke(channel, payload) {
+function invoke(channel, payload, event = {}) {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`通道未注册: ${channel}`);
-  return handler({}, payload);
+  return handler(event, payload);
 }
 
 /** 创建一个包含可索引文本文件的临时目录 */
@@ -82,6 +82,34 @@ describe('IPC 契约：统一响应包', () => {
     expect(res.error.code).toBe('INTERNAL');
     expect(res.error.message).toBe('系统内部错误，请重试');
     expect(res.error.details).toBeNull();
+  });
+
+  test('sender 信任校验：无 Electron 事件的测试直调被放行（BUG-5）', async () => {
+    const res = await invoke('settings:get');
+    expect(res.ok).toBe(true);
+  });
+
+  test('sender 信任校验：主窗口顶层 file:// frame 被放行（BUG-5）', async () => {
+    const mainFrameEvent = { sender: { id: 1 }, senderFrame: { parent: null, url: 'file:///C:/app/renderer/index.html' } };
+    const res = await invoke('settings:get', undefined, mainFrameEvent);
+    expect(res.ok).toBe(true);
+  });
+
+  test('sender 信任校验：iframe / 非 file 协议 / 缺 frame 的一律拒绝（BUG-5）', async () => {
+    const iframeEvent = { sender: { id: 1 }, senderFrame: { parent: { parent: null }, url: 'file:///C:/app/renderer/index.html' } };
+    const iframeRes = await invoke('settings:get', undefined, iframeEvent);
+    expect(iframeRes.ok).toBe(false);
+    expect(iframeRes.error.code).toBe('FORBIDDEN');
+
+    const httpEvent = { sender: { id: 1 }, senderFrame: { parent: null, url: 'https://evil.example.com/' } };
+    const httpRes = await invoke('settings:get', undefined, httpEvent);
+    expect(httpRes.ok).toBe(false);
+    expect(httpRes.error.code).toBe('FORBIDDEN');
+
+    const disposedEvent = { sender: { id: 1 }, senderFrame: null };
+    const disposedRes = await invoke('settings:get', undefined, disposedEvent);
+    expect(disposedRes.ok).toBe(false);
+    expect(disposedRes.error.code).toBe('FORBIDDEN');
   });
 });
 

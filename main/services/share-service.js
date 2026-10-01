@@ -198,12 +198,11 @@ function importWorker(payload) {
 
   const warnings = [];
   const matched = [];
+  const capabilities = db.all('capabilities'); // 一次取出：避免逐条全集合深拷贝
   (payload.capabilities || []).forEach((item) => {
-    const local = db
-      .all('capabilities')
-      .find((capability) =>
-        item.connectorKey ? capability.connectorKey === item.connectorKey : capability.title === item.title && capability.type === item.type
-      );
+    const local = capabilities.find((capability) =>
+      item.connectorKey ? capability.connectorKey === item.connectorKey : capability.title === item.title && capability.type === item.type
+    );
     if (!local) {
       warnings.push(`本机未安装${TYPE_LABEL[item.type] || '能力'}「${item.title}」，已跳过`);
       return;
@@ -223,7 +222,11 @@ function importFlow(payload) {
   const nodes = payload.nodes || [];
   if (!nodes.length) throw fail.validation('资源包中没有流程节点');
 
-  const missing = nodes.filter((node) => !db.all('workers').some((worker) => worker.name === node.workerName));
+  // 一次取出建索引：此前在 filter/map 内反复 db.all('workers')（每次全集合深拷贝），O(N×M)
+  const workers = db.all('workers');
+  const workerByName = new Map(workers.map((worker) => [worker.name, worker]));
+
+  const missing = nodes.filter((node) => !workerByName.has(node.workerName));
   if (missing.length) {
     throw fail.validation(`请先创建这些 Worker：${[...new Set(missing.map((node) => node.workerName || '（未命名）'))].join('、')}`);
   }
@@ -240,7 +243,7 @@ function importFlow(payload) {
     nodes: nodes.map((node) => ({
       title: node.title,
       instruction: node.instruction,
-      workerId: db.all('workers').find((worker) => worker.name === node.workerName).id,
+      workerId: workerByName.get(node.workerName).id,
       // 跨设备包用名称引用重映射；旧包/本机分享码无 refs 时退回按本机 ID 过滤
       capabilityIds: node.capabilityRefs
         ? fromCapabilityRefs(node.capabilityRefs, warnings)

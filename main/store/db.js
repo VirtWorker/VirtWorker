@@ -140,8 +140,10 @@ function loadItems(name) {
     const payload = tryRead(candidate);
     if (!payload) continue;
     // v1 → v2 跨集合迁移：tasks 的内嵌 events 必须在 schema 剥离前提取（否则时间线丢失）
+    // 注意 NaN（schemaVersion 缺失）：Number(undefined) 与 2 比较为 false，必须显式覆盖，
+    // 否则缺失版本号的 v1 文件会按 v2 处理、schema 剥离 events 后时间线静默丢失
     let legacyEvents = null;
-    if (name === 'tasks' && Number(payload.schemaVersion) < 2 && Array.isArray(payload.items)) {
+    if (name === 'tasks' && !(Number(payload.schemaVersion) >= 2) && Array.isArray(payload.items)) {
       legacyEvents = payload.items.flatMap((task) =>
         Array.isArray(task?.events) ? task.events.map((event) => ({ ...event })) : []
       );

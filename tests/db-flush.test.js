@@ -190,6 +190,32 @@ describe('schema v1→v2 迁移：任务时间线拆分（P3-30）', () => {
     db.init(path.join(dir, 'data'));
     expect(db.isReadOnly()).toBe(false);
   });
+
+  test('schemaVersion 缺失的 v1 tasks 文件仍迁移内嵌时间线（NaN 边缘，BUG-7）', () => {
+    const nanDir = path.join(dir, 'nan-version');
+    fs.mkdirSync(path.join(nanDir, 'data'), { recursive: true });
+    // 故意不写 schemaVersion 字段：Number(undefined)=NaN，旧判断 NaN<2 为 false 会跳过提取，
+    // 而 schema.upgrade 把缺失版本按 v1 处理剥离 events → 时间线静默丢失
+    const legacy = {
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      items: [
+        {
+          id: 'tk_nan',
+          title: '无版本号旧任务',
+          status: 'succeeded',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          events: [{ id: 'ev_nan1', taskId: 'tk_nan', type: 'created', message: '创建', at: '2026-01-01T00:00:01.000Z' }]
+        }
+      ]
+    };
+    fs.writeFileSync(path.join(nanDir, 'data', 'tasks.json'), JSON.stringify(legacy), 'utf8');
+
+    db.init(path.join(nanDir, 'data'));
+    expect(db.query('taskevents', (event) => event.taskId === 'tk_nan').map((event) => event.id)).toEqual(['ev_nan1']);
+    expect(db.find('tasks', 'tk_nan')).not.toHaveProperty('events'); // schema 照常剥离内嵌字段
+
+    db.init(path.join(dir, 'data')); // 恢复主数据目录
+  });
 });
 
 describe('数据快照备份与恢复（F5）', () => {

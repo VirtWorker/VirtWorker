@@ -121,6 +121,45 @@ describe('http-server Token 鉴权', () => {
     const noToken = await request(port, { path: '/automations/at_none/run', method: 'POST', headers: { 'X-VirtWorker-Token': token } });
     expect(noToken.statusCode).toBe(404);
   });
+
+  test('连续认证失败达阈值后进入冷却一律 429，重启端点复位（BUG-13）', async () => {
+    dir = dir || initTempDb();
+    await httpServer.restart(); // 复位限速状态（start 时清零），换独立端口避免污染前序用例
+    const port = 20000 + (process.pid % 20000) + 2;
+    db.setSettings({ apiPort: port });
+    await httpServer.restart();
+    try {
+      const { id, token } = makeApiAutomation();
+      for (let i = 0; i < 10; i += 1) {
+        const res = await request(port, {
+          path: `/automations/${id}/run`,
+          method: 'POST',
+          headers: { 'X-VirtWorker-Token': 'vw_wrong_token' }
+        });
+        expect(res.statusCode).toBe(401);
+      }
+      // 达到阈值后冷却：连不存在的自动化 ID 的枚举探测也一并 429，正确 Token 也暂被拒
+      const blockedProbe = await request(port, { path: '/automations/at_none/run', method: 'POST' });
+      expect(blockedProbe.statusCode).toBe(429);
+      const blockedValid = await request(port, {
+        path: `/automations/${id}/run`,
+        method: 'POST',
+        headers: { 'X-VirtWorker-Token': token, 'Content-Type': 'application/json' }
+      });
+      expect(blockedValid.statusCode).toBe(429);
+
+      // 重启端点（start 复位限速）后正确 Token 恢复 200
+      await httpServer.restart();
+      const okRes = await request(port, {
+        path: `/automations/${id}/run`,
+        method: 'POST',
+        headers: { 'X-VirtWorker-Token': token, 'Content-Type': 'application/json' }
+      });
+      expect(okRes.statusCode).toBe(200);
+    } finally {
+      httpServer.stop();
+    }
+  });
 });
 
 describe('API Token 保险箱存储与轮换（P1-15）', () => {

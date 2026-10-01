@@ -56,7 +56,7 @@ VW.views.automations = (() => {
     hint.classList.remove('hidden');
     hint.classList.toggle('error', !server.running);
     hint.innerHTML = server.running
-      ? `本地触发端点运行中：<code>http://127.0.0.1:${server.port}</code>（仅本机可访问，需携带 Token）`
+      ? `本地触发端点运行中：<code>http://127.0.0.1:${escapeHtml(server.port)}</code>（仅本机可访问，需携带 Token）`
       : `本地触发端点未启动：${escapeHtml(server.error || '未知原因')}`;
   }
 

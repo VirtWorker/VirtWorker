@@ -115,8 +115,11 @@ function restoreExecutorPreference() {
   }
 }
 
+/** 首次维护延迟：备份是整目录同步拷贝，数据目录大时直接在启动路径上跑会造成启动卡顿 */
+const MAINTENANCE_START_DELAY_MS = 30 * 1000;
+
 /**
- * 每日维护（O7）：启动即执行一次，此后每 24 小时一次。
+ * 每日维护（O7）：启动 30 秒后首跑，此后每 24 小时一次。
  * - 过期任务清理：保留策略此前只在启动时执行，长期运行的自动化场景下过期任务会持续堆积
  * - 数据快照：.bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）
  */
@@ -141,7 +144,8 @@ function startDailyMaintenance() {
       console.error('[main] 每日维护：数据快照失败:', error.message);
     }
   };
-  run();
+  const first = setTimeout(run, MAINTENANCE_START_DELAY_MS);
+  first.unref?.(); // 不阻塞进程退出
   const timer = setInterval(run, 24 * 60 * 60 * 1000);
   timer.unref?.(); // 不阻塞进程退出
 }

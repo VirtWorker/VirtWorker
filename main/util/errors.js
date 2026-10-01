@@ -10,6 +10,7 @@ const CODES = {
   INVALID_STATE: 'INVALID_STATE',
   EXECUTOR_OFFLINE: 'EXECUTOR_OFFLINE',
   STORAGE_ERROR: 'STORAGE_ERROR',
+  FORBIDDEN: 'FORBIDDEN',
   INTERNAL: 'INTERNAL'
 };
 
@@ -30,6 +31,7 @@ const fail = {
   invalidState: (message) => new AppError(CODES.INVALID_STATE, message),
   executorOffline: (message) => new AppError(CODES.EXECUTOR_OFFLINE, message),
   storage: (message) => new AppError(CODES.STORAGE_ERROR, message),
+  forbidden: (message) => new AppError(CODES.FORBIDDEN, message),
   internal: (message) => new AppError(CODES.INTERNAL, message)
 };
 

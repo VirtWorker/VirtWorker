@@ -168,7 +168,7 @@ VW.views.dashboard = (() => {
   function actionItemHtml(task) {
     const request = task.actionRequest || {};
     return `
-      <div class="queue-item" tabindex="0" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -225,7 +225,7 @@ VW.views.dashboard = (() => {
   function resultItemHtml(task) {
     const result = task.result || {};
     return `
-      <div class="queue-item" tabindex="0" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -303,7 +303,7 @@ VW.views.dashboard = (() => {
       container.innerHTML = tasks
         .map(
           (task) => `
-        <div class="task-row" tabindex="0" data-id="${task.id}">
+        <div class="task-row" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
           <div class="task-row-main">
             <div class="task-row-title">${escapeHtml(task.title)}</div>
             <div class="task-row-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
@@ -336,7 +336,7 @@ VW.views.dashboard = (() => {
                 ? items
                     .map(
                       (task) => `
-              <div class="board-card" tabindex="0" data-id="${task.id}">
+              <div class="board-card" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
                 <div class="board-card-title">${escapeHtml(task.title)}</div>
                 <div class="board-card-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${statusMeta(task.status).label}</div>
                 ${progressHtml(task)}
