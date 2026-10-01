@@ -165,6 +165,32 @@ function openExternalIfSafe(url) {
   }
 }
 
+/**
+ * 渲染进程连续崩溃达上限后的用户告知（BUG-12）：不能只留在日志里让用户面对无提示的白屏。
+ * 绕过 wireSystemNotifications 的「窗口聚焦抑制」——白屏时用户可能正盯着窗口，必须直接弹系统通知；
+ * 也不受 notify 设置开关限制（关键故障告知优先于免打扰）。点击通知 = 用户显式重试：
+ * 重置崩溃计数并重新加载（窗口已销毁时重建），配合焦点还原。
+ */
+function notifyRenderCrashLimit() {
+  if (!Notification?.isSupported?.()) return;
+  const notification = new Notification({
+    title: 'VirtWorker 界面已停止响应',
+    body: '界面连续崩溃多次，已停止自动恢复。点击此通知可尝试重新加载，建议尽快重启应用。'
+  });
+  notification.on('click', () => {
+    renderCrashCount = 0; // 人为的显式重试：重新计数，自动恢复机制重新可用
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      createWindow();
+    }
+  });
+  notification.show();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -234,7 +260,8 @@ function createWindow() {
     console.error('[main] 渲染进程异常退出:', details.reason, `exitCode=${details.exitCode}`);
     renderCrashCount += 1;
     if (renderCrashCount > MAX_RENDER_CRASH_RECOVERY) {
-      console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，请重启应用');
+      console.error('[main] 渲染进程连续崩溃次数已达上限，停止自动恢复，已弹系统通知告知用户');
+      notifyRenderCrashLimit();
       return;
     }
     setTimeout(() => {
