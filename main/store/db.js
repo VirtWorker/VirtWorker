@@ -618,10 +618,16 @@ function rotateBackups() {
 /**
  * 整目录快照：复制数据目录全部文件到 backups/<时间戳>/。
  * .bak 备份只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散；
- * 只复制不写主数据，只读保护下同样安全。失败仅告警，不中断调用方。
+ * 只复制不写主数据，失败仅告警，不中断调用方。
+ * 写入屏障（BUG-21）：拷贝前先 flush 全部脏集合、再把 taskevents 追加日志压缩为全量 json——
+ * 快照里各集合 json 即为完整状态、log 恒为空，杜绝「json 与 log 跨时刻组合不一致」。
+ * 同步单线程下拷贝期间本不会有并发写入，屏障同时防御未来引入异步拷贝/子进程的情况；
+ * 只读保护下 flush/compact 自然跳过，按当前磁盘状态出快照（与既有行为一致）。
  */
 function backup() {
   if (!baseDir) return { dir: '', files: 0, kept: 0 };
+  flush();
+  if (!readOnlyReason && eventsLogLines > 0) compactEventsLog();
   const target = path.join(backupsRoot(), snapshotName(new Date()));
   fs.mkdirSync(target, { recursive: true });
   let files = 0;
@@ -656,6 +662,9 @@ function listBackups() {
  * 恢复快照：把快照内文件覆盖回数据目录，随后由调用方重启应用加载。
  * 恢复前进入只读保护：本会话的内存状态（已与磁盘不一致）绝不落盘覆盖刚恢复的文件，
  * before-quit 的 flush 在只读模式下为空操作，重启后 init 重新加载恢复的数据并复位只读。
+ * 一致性屏障（BUG-21）：快照缺失 taskevents.log（如旧版快照、或日志未生成的全新安装）
+ * 时，必须删除当前数据目录的追加日志——遗留的现行日志在重启回放时会把「快照之后
+ * 已删除/已修剪」的事件复活（按 id 去重防不了复活）；快照自带日志时拷贝覆盖，天然一致。
  */
 function restore(name) {
   const snapshot = String(name ?? '');
@@ -663,8 +672,9 @@ function restore(name) {
   const source = path.join(backupsRoot(), snapshot);
   if (!fs.existsSync(source)) throw fail.notFound('备份快照不存在');
   enterReadOnly(`正在恢复备份「${snapshot}」，本会话已暂停写入，重启后生效`);
+  const snapshotFiles = new Set(fs.readdirSync(source));
   let files = 0;
-  for (const entry of fs.readdirSync(source)) {
+  for (const entry of snapshotFiles) {
     const src = path.join(source, entry);
     try {
       if (!fs.statSync(src).isFile()) continue;
@@ -672,6 +682,13 @@ function restore(name) {
       files += 1;
     } catch (error) {
       console.error(`[store] 恢复跳过 ${entry}:`, error.message);
+    }
+  }
+  if (!snapshotFiles.has(EVENTS_LOG_NAME)) {
+    try {
+      fs.rmSync(path.join(baseDir, EVENTS_LOG_NAME), { force: true });
+    } catch (error) {
+      console.error('[store] 恢复清理遗留追加日志失败:', error.message);
     }
   }
   return { restored: snapshot, files };

@@ -392,3 +392,62 @@ describe('taskevents 追加日志：写放大治理（PERF-1）', () => {
     expect(db.countWhere('taskevents', { taskId: 'tk_log' })).toBe(db.EVENTS_LOG_COMPACT_LINES + 1);
   });
 });
+
+describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () => {
+  const dataDir = () => path.join(dir, 'data-br');
+  const logOf = () => path.join(dataDir(), 'taskevents.log');
+  const event = (id) => ({ id, taskId: 'tk_br', type: 'log', message: id, at: '2026-01-01T00:00:00.000Z' });
+
+  beforeAll(() => {
+    db.init(dataDir());
+  });
+
+  test('backup 写入屏障：脏集合落盘、追加日志压缩，快照 json 完整且 log 为空', () => {
+    db.append('taskevents', event('ev_b1')); // 只进追加日志，json 未生成
+    db.insert('workers', { id: 'wk_br', name: '屏障测试', groupIds: [], capabilityIds: [] }); // 脏态未 flush
+
+    const snap = db.backup();
+    // 写入屏障 ①：脏集合先落盘，快照反映的是内存当前态而非任意旧态
+    const workers = JSON.parse(fs.readFileSync(path.join(snap.dir, 'workers.json'), 'utf8'));
+    expect(workers.items.map((item) => item.id)).toContain('wk_br');
+    // 写入屏障 ②：追加日志压缩为全量 json，快照内 json 单独完整、log 为空
+    const events = JSON.parse(fs.readFileSync(path.join(snap.dir, 'taskevents.json'), 'utf8'));
+    expect(events.items.map((item) => item.id)).toContain('ev_b1');
+    expect(fs.readFileSync(path.join(snap.dir, 'taskevents.log'), 'utf8')).toBe('');
+  });
+
+  test('restore 删除遗留追加日志：快照之后追加的事件不复活', () => {
+    const names = db.listBackups();
+    const snapDir = path.join(db.backupsRoot(), names[0].name);
+    // 模拟旧版快照（无 taskevents.log 的快照格式）：删掉快照里的日志文件
+    fs.rmSync(path.join(snapDir, 'taskevents.log'), { force: true });
+
+    // 快照之后又追加的事件进入现行日志（快照 json 里没有它）
+    db.append('taskevents', event('ev_b2_late'));
+    expect(fs.existsSync(logOf())).toBe(true);
+
+    db.restore(names[0].name);
+    // 一致性屏障：快照缺失日志 → 现行遗留日志必须被清除，否则重启回放会复活 ev_b2_late
+    expect(fs.existsSync(logOf())).toBe(false);
+
+    db.init(dataDir()); // 模拟重启加载
+    expect(db.where('taskevents', { taskId: 'tk_br' }).map((item) => item.id)).toEqual(['ev_b1']);
+  });
+
+  test('restore 兼容自带日志的快照：json + 日志回放组合出快照时刻的完整状态', () => {
+    // 手工构造旧式快照：json 只有 ev_s1，日志里还有一条未压缩的 ev_s2
+    const legacyDir = path.join(db.backupsRoot(), '19990101-000000');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, 'taskevents.json'),
+      JSON.stringify({ schemaVersion: 2, updatedAt: '1999-01-01T00:00:00.000Z', items: [event('ev_s1')] }),
+      'utf8'
+    );
+    fs.writeFileSync(path.join(legacyDir, 'taskevents.log'), `${JSON.stringify(event('ev_s2'))}\n`, 'utf8');
+
+    db.restore('19990101-000000');
+    expect(fs.existsSync(logOf())).toBe(true); // 快照自带日志 → 拷贝覆盖保留
+    db.init(dataDir());
+    expect(db.where('taskevents', { taskId: 'tk_br' }).map((item) => item.id)).toEqual(['ev_s1', 'ev_s2']);
+  });
+});
