@@ -69,40 +69,60 @@ function describeTrigger(trigger) {
   }
 }
 
+/** 错峰抖动窗口（OPT-8）：墙上时钟锚定模式（hourly/daily/weekly）的自动任务若同刻配置，
+ *  会在同一时刻一起建任务（真实 LLM 执行器接入后还叠加 API 限流压力）。
+ *  对下次触发时刻施加 ±5 分钟抖动把队列错开。确定性来源：以 (seed=自动化ID, 精确槽位时刻)
+ *  散列——同一自动任务在同一槽位的推算结果恒定（create/update/markFired 重复推算不漂移），
+ *  不同自动化/不同槽位近似均匀散开；interval 本就锚定各自 previousDue、once 是用户指定
+ *  时刻，均不参与抖动；不传 seed（纯函数直调/测试）不抖动。 */
+const JITTER_WINDOW_MS = 5 * 60 * 1000;
+
+function slotJitterMs(seed, slotMs) {
+  if (!seed) return 0;
+  const text = `${seed}@${slotMs}`;
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return (hash % (2 * JITTER_WINDOW_MS + 1)) - JITTER_WINDOW_MS; // [-5min, +5min]
+}
+
 /**
- * 推算下次触发时间（纯函数，无副作用）
+ * 推算下次触发时间（纯函数，无副作用；seed 传自动化 ID 时对墙上时钟模式做确定性错峰抖动）
  * 定时器只用到毫秒级精度，故全部按本地时间计算。
  */
-function computeNextRun(trigger, from = new Date()) {
+function computeNextRun(trigger, from = new Date(), seed = null) {
   if (!trigger || trigger.type !== 'schedule') return null;
   const schedule = trigger.schedule || {};
   const base = new Date(from.getTime());
+  let next; // switch 各分支要么赋值后 break，要么直接 return
 
   switch (schedule.mode) {
     case 'interval': {
       const minutes = clampInt(schedule.everyMinutes, 1, 1440, 30);
-      return new Date(base.getTime() + minutes * 60 * 1000).toISOString();
+      next = new Date(base.getTime() + minutes * 60 * 1000);
+      break;
     }
     case 'hourly': {
-      const next = new Date(base);
+      next = new Date(base);
       next.setSeconds(0, 0);
       next.setMinutes(clampInt(schedule.minute, 0, 59, 0));
       if (next.getTime() <= base.getTime()) next.setHours(next.getHours() + 1);
-      return next.toISOString();
+      break;
     }
     case 'daily': {
-      const next = new Date(base);
+      next = new Date(base);
       next.setHours(clampInt(schedule.hour, 0, 23, 9), clampInt(schedule.minute, 0, 59, 0), 0, 0);
       if (next.getTime() <= base.getTime()) next.setDate(next.getDate() + 1);
-      return next.toISOString();
+      break;
     }
     case 'weekly': {
-      const next = new Date(base);
+      next = new Date(base);
       next.setHours(clampInt(schedule.hour, 0, 23, 9), clampInt(schedule.minute, 0, 59, 0), 0, 0);
       let delta = (clampInt(schedule.weekday, 0, 6, 1) - next.getDay() + 7) % 7;
       if (delta === 0 && next.getTime() <= base.getTime()) delta = 7;
       next.setDate(next.getDate() + delta);
-      return next.toISOString();
+      break;
     }
     case 'once': {
       const at = schedule.at ? new Date(schedule.at) : null;
@@ -112,6 +132,14 @@ function computeNextRun(trigger, from = new Date()) {
     default:
       return null;
   }
+
+  if (seed && schedule.mode !== 'interval' && schedule.mode !== 'once') {
+    const jittered = new Date(next.getTime() + slotJitterMs(seed, next.getTime()));
+    // 抖动不得把触发时刻推到基准之前（如 hourly 槽位距基准不足 5 分钟时的负向抖动），
+    // 此时退回精确槽位——该自动化本槽位仍与其余同刻任务同发，属可接受的少数情况
+    if (jittered.getTime() > base.getTime()) return jittered.toISOString();
+  }
+  return next.toISOString();
 }
 
 /** 校验并归一化触发器配置 */
@@ -354,7 +382,7 @@ function create(params = {}) {
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
-  automation.nextRunAt = automation.enabled ? computeNextRun(trigger) : null;
+  automation.nextRunAt = automation.enabled ? computeNextRun(trigger, new Date(), automation.id) : null;
 
   db.insert('automations', automation);
   publish(automation, 'automation:created');
@@ -403,7 +431,7 @@ function update(id, patch = {}) {
   }
   if (patch.enabled !== undefined) next.enabled = Boolean(patch.enabled);
 
-  next.nextRunAt = next.enabled ? computeNextRun(next.trigger) : null;
+  next.nextRunAt = next.enabled ? computeNextRun(next.trigger, new Date(), next.id) : null;
   next.updatedAt = nowIso();
 
   db.update('automations', id, next);
@@ -476,7 +504,7 @@ function markFired(id, taskId, meta = {}) {
     lastRunReason: meta.reason || null,
     runCount: (automation.runCount || 0) + 1,
     enabled: isOnce ? false : automation.enabled, // 仅一次的自动任务触发后自动停用
-    nextRunAt: isOnce ? null : computeNextRun(automation.trigger, base),
+    nextRunAt: isOnce ? null : computeNextRun(automation.trigger, base, automation.id),
     updatedAt: nowIso()
   };
   db.update('automations', id, next);
@@ -487,7 +515,7 @@ function markFired(id, taskId, meta = {}) {
 /** 跳过错过的触发：仅把计划推进到下一次，不计入运行次数（用于关闭「补跑」时） */
 function advanceSchedule(id) {
   const automation = getOrThrow(id);
-  const next = { ...automation, nextRunAt: computeNextRun(automation.trigger), updatedAt: nowIso() };
+  const next = { ...automation, nextRunAt: computeNextRun(automation.trigger, new Date(), automation.id), updatedAt: nowIso() };
   // 「仅一次」已过期且补跑关闭时不再有下次触发：自动停用，避免"启用中却永不触发"的死配置
   if (
     next.enabled &&

@@ -49,6 +49,91 @@ describe('computeNextRun 计划推算', () => {
   });
 });
 
+describe('computeNextRun 错峰 jitter（OPT-8）', () => {
+  const dailyTrigger = { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } };
+  // 当天 09:00 已过 → 槽位为次日 09:00（本地时间，与 computeNextRun 口径一致）
+  const from = new Date('2026-10-01T10:00:00');
+  const slot = new Date('2026-10-02T09:00:00').getTime();
+  const JITTER = 5 * 60 * 1000;
+
+  test('不传 seed 保持精确槽位（纯函数直调兼容）', () => {
+    expect(new Date(computeNextRun(dailyTrigger, from)).getTime()).toBe(slot);
+  });
+
+  test('带 seed 在 ±5 分钟内散开，且不早于基准时刻', () => {
+    const next = new Date(computeNextRun(dailyTrigger, from, 'am_seed1'));
+    expect(Math.abs(next.getTime() - slot)).toBeLessThanOrEqual(JITTER);
+    expect(next.getTime()).toBeGreaterThan(from.getTime());
+  });
+
+  test('同一 (seed, 槽位) 推算结果恒定；不同 seed 确实错开', () => {
+    const first = computeNextRun(dailyTrigger, from, 'am_seed1');
+    expect(computeNextRun(dailyTrigger, from, 'am_seed1')).toBe(first); // 重复推算不漂移
+
+    const offsets = new Set();
+    for (let i = 0; i < 20; i += 1) {
+      const time = new Date(computeNextRun(dailyTrigger, from, `am_seed_${i}`)).getTime();
+      offsets.add(time - slot);
+    }
+    expect(offsets.size).toBeGreaterThan(1); // 同刻配置的不同自动化不再同毫秒建任务
+  });
+
+  test('hourly 参与抖动且任何 seed 都不早于基准（负向抖动回退槽位）', () => {
+    const hourly = { type: 'schedule', schedule: { mode: 'hourly', minute: 0 } };
+    const hourSlot = new Date('2026-10-01T11:00:00').getTime();
+    for (let i = 0; i < 30; i += 1) {
+      const time = new Date(computeNextRun(hourly, new Date('2026-10-01T10:59:30'), `am_c${i}`)).getTime();
+      expect(time).toBeGreaterThan(new Date('2026-10-01T10:59:30').getTime()); // 槽位距基准仅 30s：负向抖动必须回退
+      expect(Math.abs(time - hourSlot)).toBeLessThanOrEqual(JITTER);
+    }
+  });
+
+  test('interval 与 once 不参与抖动（各自锚定 / 用户指定时刻）', () => {
+    const once = computeNextRun(
+      { type: 'schedule', schedule: { mode: 'once', at: '2026-10-05T09:00:00Z' } },
+      new Date('2026-10-01T10:00:00Z'),
+      'am_once'
+    );
+    expect(new Date(once).toISOString()).toBe('2026-10-05T09:00:00.000Z');
+
+    const interval = computeNextRun(
+      { type: 'schedule', schedule: { mode: 'interval', everyMinutes: 30 } },
+      new Date('2026-10-01T10:00:00Z'),
+      'am_interval'
+    );
+    expect(new Date(interval).toISOString()).toBe('2026-10-01T10:30:00.000Z');
+  });
+
+  test('服务层 create 落库的 nextRunAt 带确定性抖动（接线验证）', () => {
+    const worker = workerService.createWorker({ name: '抖动执行者' });
+    const a = automationService.create({
+      name: `抖动任务A ${Date.now()}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 23, minute: 59 } },
+      input: { goal: '目标A' }
+    });
+    const b = automationService.create({
+      name: `抖动任务B ${Date.now()}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 23, minute: 59 } },
+      input: { goal: '目标B' }
+    });
+
+    const slot = new Date();
+    slot.setHours(23, 59, 0, 0);
+    if (slot.getTime() <= Date.now()) slot.setDate(slot.getDate() + 1);
+    for (const item of [a, b]) {
+      expect(item.enabled).toBe(true);
+      expect(item.nextRunAt).toBeTruthy();
+      const time = new Date(item.nextRunAt).getTime();
+      expect(Math.abs(time - slot.getTime())).toBeLessThanOrEqual(JITTER);
+      expect(time).toBeGreaterThan(Date.now());
+    }
+    // 再推算一次结果恒定（create 路径的 seed 接线正确）
+    expect(automationService.advanceSchedule(a.id).nextRunAt).toBe(a.nextRunAt);
+  });
+});
+
 describe('API Token 只读掩码契约（O6）：掩码回传不得静默轮换凭据', () => {
   let dir;
 
