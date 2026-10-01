@@ -172,3 +172,45 @@ describe('taskService.exportTasks 任务历史导出（F5）', () => {
     expect(payload.count).toBe(0); // 刚创建的任务未结束，按「已结束」筛选导出为空
   });
 });
+
+describe('taskService 列表检索与批量查收（O8/F8）', () => {
+  let worker;
+
+  beforeEach(() => {
+    ['workers', 'tasks', 'taskevents'].forEach((name) => db.removeWhere(name, () => true));
+    worker = workerService.createWorker({ name: '检索执行者' });
+  });
+
+  test('关键词检索覆盖 tags（激活原先只写不读的死字段）', () => {
+    taskService.create({ goal: '季度报表任务', assigneeId: worker.id, tags: ['数据', '周报'] });
+    taskService.create({ goal: '无关任务', assigneeId: worker.id });
+
+    const byTag = taskService.list({ period: '', keyword: '周报' });
+    expect(byTag.items.length).toBe(1);
+    expect(byTag.items[0].tags).toContain('数据');
+  });
+
+  test('list 支持按 tag 精确筛选', () => {
+    taskService.create({ goal: '打标任务', assigneeId: worker.id, tags: ['重要'] });
+    taskService.create({ goal: '未标任务', assigneeId: worker.id });
+
+    expect(taskService.list({ period: '', tag: '重要' }).items.length).toBe(1);
+    expect(taskService.list({ period: '', tag: '不存在' }).items.length).toBe(0);
+  });
+
+  test('ackAll 一键查收周期内全部待查收结果，已查收的不重复计入', () => {
+    const t1 = taskService.create({ goal: '完成一', assigneeId: worker.id });
+    const t2 = taskService.create({ goal: '完成二', assigneeId: worker.id });
+    taskService.create({ goal: '进行中', assigneeId: worker.id });
+    taskService.succeed(t1.id, { summary: 'ok' });
+    taskService.succeed(t2.id, { summary: 'ok' });
+    taskService.ack(t1.id); // 已手动查收
+
+    const result = taskService.ackAll('');
+    expect(result.acked).toBe(1);
+    expect(db.find('tasks', t2.id).resultAckedAt).toBeTruthy();
+    expect(db.find('tasks', t1.id).resultAckedAt).toBeTruthy();
+    // 进行中的任务不受影响
+    expect(db.countWhere('tasks', { 'assignee.id': worker.id })).toBe(3);
+  });
+});

@@ -247,3 +247,67 @@ describe('数据快照备份与恢复（F5）', () => {
     expect(() => db.restore('20990101-000000')).toThrow(/不存在/);
   });
 });
+
+describe('O7 写放大治理：紧凑序列化与临时文件清理', () => {
+  test('集合文件紧凑落盘（缩进会让任务高频更新的全量重写再膨胀 30%+），settings 保留缩进', () => {
+    db.insert('workers', { id: 'wk_c1', name: '紧凑', groupIds: [], capabilityIds: [] });
+    db.setSettings({ taskRetentionDays: 60 });
+    db.flush();
+
+    const rawWorkers = fs.readFileSync(path.join(dir, 'data', 'workers.json'), 'utf8');
+    expect(rawWorkers).not.toContain('\n');
+
+    const rawSettings = fs.readFileSync(path.join(dir, 'data', 'settings.json'), 'utf8');
+    expect(rawSettings).toContain('\n  "');
+  });
+
+  test('init 清理上次崩溃遗留的 *.json.tmp', () => {
+    fs.writeFileSync(path.join(dir, 'data', 'workers.json.tmp'), 'garbage', 'utf8');
+    db.init(path.join(dir, 'data'));
+    expect(fs.existsSync(path.join(dir, 'data', 'workers.json.tmp'))).toBe(false);
+  });
+});
+
+describe('O11 结构化匹配器：where / countWhere / removeWhere / keepLast', () => {
+  beforeAll(() => {
+    db.init(path.join(dir, 'data')); // 复位到主数据目录
+    db.removeWhere('tasks', () => true);
+    db.removeWhere('taskevents', () => true);
+  });
+
+  test('等值 / IN / 点路径匹配；where 返回克隆不污染缓存', () => {
+    db.insert('tasks', { id: 'tk_w1', status: 'queued', assignee: { id: 'wk_a' }, priority: 'high' });
+    db.insert('tasks', { id: 'tk_w2', status: 'running', assignee: { id: 'wk_b' }, priority: 'low' });
+
+    expect(db.where('tasks', { 'assignee.id': 'wk_a' }).map((task) => task.id)).toEqual(['tk_w1']);
+    expect(db.where('tasks', { status: ['queued', 'running'] }).length).toBe(2);
+    expect(db.where('tasks', { 'assignee.id': ['wk_a', 'wk_b'], priority: 'high' }).map((task) => task.id)).toEqual([
+      'tk_w1'
+    ]);
+
+    const hits = db.where('tasks', { 'assignee.id': 'wk_a' });
+    hits[0].status = 'mutated';
+    expect(db.find('tasks', 'tk_w1').status).toBe('queued');
+
+    expect(db.countWhere('tasks', { status: 'running' })).toBe(1);
+    expect(db.countWhere('tasks', (task) => task.priority === 'low')).toBe(1); // 函数谓词兼容
+  });
+
+  test('removeWhere / keepLast 接受匹配器（purge 批量化与时间线修剪的基础）', () => {
+    db.append('taskevents', { id: 'ev_w1', taskId: 'tk_w1', type: 'log', at: '2026-01-01T00:00:00.000Z' });
+    db.append('taskevents', { id: 'ev_w2', taskId: 'tk_w1', type: 'log', at: '2026-01-01T00:00:01.000Z' });
+    db.append('taskevents', { id: 'ev_w3', taskId: 'tk_other', type: 'log', at: '2026-01-01T00:00:02.000Z' });
+
+    expect(db.removeWhere('taskevents', { taskId: 'tk_w1' }).removed).toBe(2);
+    expect(db.count('taskevents')).toBe(1);
+
+    // 函数谓词保持兼容（worker-cascade 等既有测试依赖 removeWhere(() => true)）
+    expect(db.removeWhere('taskevents', () => true).removed).toBe(1);
+
+    db.append('taskevents', { id: 'ev_k1', taskId: 'tk_keep', type: 'log', at: '2026-01-01T00:00:03.000Z' });
+    db.append('taskevents', { id: 'ev_k2', taskId: 'tk_keep', type: 'log', at: '2026-01-01T00:00:04.000Z' });
+    db.append('taskevents', { id: 'ev_k3', taskId: 'tk_keep', type: 'log', at: '2026-01-01T00:00:05.000Z' });
+    expect(db.keepLast('taskevents', { taskId: 'tk_keep' }, 2)).toBe(1);
+    expect(db.where('taskevents', { taskId: 'tk_keep' }).map((event) => event.id)).toEqual(['ev_k2', 'ev_k3']);
+  });
+});

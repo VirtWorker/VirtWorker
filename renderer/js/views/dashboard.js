@@ -16,25 +16,36 @@ VW.views.dashboard = (() => {
 
   // ==================== 数据 ====================
 
-  /** 请求版本号：快速切换筛选时，后返回的过期响应不得覆盖新状态 */
-  let refreshSeq = 0;
+  /** 列表分页：按 50/页增量加载（O8）。refresh 以「累计窗口」拉取（page=1 & pageSize=页数×50），
+   *  事件驱动的刷新不会把用户已加载的多页内容折叠回第一页；窗口上限与主进程一致（200） */
+  const PAGE_SIZE = 50;
+  const PAGE_WINDOW_MAX = 200;
+  let listPage = 1;
 
   async function refresh(options = {}) {
     const { task: filters, statsPeriod } = store.state.filters;
-    const seq = ++refreshSeq;
     try {
-      // 队列表由主进程一次算完（21）：不再拉全量周期任务后自行过滤
-      const [queue, stats, filtered] = await Promise.all([
-        VW.api.task.queue({ period: statsPeriod }),
-        VW.api.task.stats({ period: statsPeriod }),
-        VW.api.task.list(filters)
-      ]);
-      if (seq !== refreshSeq) return; // 已有更新的刷新请求，丢弃本次结果
-      store.set({
-        stats,
-        tasks: filtered.items,
-        queue
-      });
+      // 过期响应防护统一走 api.latest（O9）：快速切换筛选时，后返回的过期响应不覆盖新状态
+      await VW.api.latest(
+        'dashboard',
+        async () => {
+          // 队列表由主进程一次算完（21）：不再拉全量周期任务后自行过滤
+          const [queue, stats, filtered] = await Promise.all([
+            VW.api.task.queue({ period: statsPeriod }),
+            VW.api.task.stats({ period: statsPeriod }),
+            VW.api.task.list({ ...filters, page: 1, pageSize: listPage * PAGE_SIZE })
+          ]);
+          return { queue, stats, filtered };
+        },
+        ({ queue, stats, filtered }) => {
+          store.set({
+            stats,
+            tasks: filtered.items,
+            queue,
+            tasksMeta: { page: listPage, total: filtered.total, totalPages: filtered.totalPages || 1 }
+          });
+        }
+      );
     } catch (error) {
       if (!options.silent) VW.toast.fromError(error);
       console.error('[dashboard] 任务数据刷新失败:', error);
@@ -42,6 +53,34 @@ VW.views.dashboard = (() => {
   }
 
   const refreshSoon = debounce(() => refresh({ silent: true }), 120);
+
+  /** 轻量刷新：只拉统计（导航角标与统计卡片全局可见）。
+   *  看板页隐藏时任务事件走这条路，替代原先的全量 3×IPC 刷新（O9） */
+  async function refreshStats() {
+    try {
+      const stats = await VW.api.task.stats({ period: store.state.filters.statsPeriod });
+      store.set({ stats });
+    } catch (error) {
+      console.error('[dashboard] 统计刷新失败:', error);
+    }
+  }
+
+  /** 加载更多：扩大累计窗口再刷新（仍走 latest 防过期覆盖） */
+  async function loadMore() {
+    if (listPage * PAGE_SIZE >= PAGE_WINDOW_MAX) return;
+    listPage += 1;
+    await refresh({ silent: true });
+  }
+
+  /** 「加载更多」按钮的可见性与提示文案（在 renderTaskList 中调用） */
+  function listFootState() {
+    const meta = store.state.tasksMeta;
+    const shown = meta.page * PAGE_SIZE;
+    if (shown >= PAGE_WINDOW_MAX && meta.total > shown) {
+      return { hasMore: false, hint: `已显示前 ${PAGE_WINDOW_MAX} 条（共 ${meta.total} 条），请缩小筛选范围` };
+    }
+    return { hasMore: shown < meta.total, hint: '' };
+  }
 
   // ==================== 统计与页签 ====================
 
@@ -60,6 +99,12 @@ VW.views.dashboard = (() => {
     const queue = store.state.queue;
     document.querySelector('#dashboard-tabs [data-count="action"]').textContent = String(queue.action.length);
     document.querySelector('#dashboard-tabs [data-count="result"]').textContent = String(queue.result.length);
+
+    // 一键查收（F8）：仅在「查收结果」页签且有待查收内容时出现
+    const ackAllBtn = document.getElementById('ack-all-btn');
+    if (ackAllBtn) {
+      ackAllBtn.classList.toggle('hidden', !(store.state.ui.dashboardTab === 'result' && queue.result.length));
+    }
 
     const tab = store.state.ui.dashboardTab;
     const list = tab === 'result' ? queue.result : queue.action;
@@ -187,6 +232,7 @@ VW.views.dashboard = (() => {
     const container = document.getElementById('task-list-view');
     const board = document.getElementById('task-board-view');
     const empty = document.getElementById('task-list-empty');
+    const foot = document.getElementById('task-list-foot');
     const tasks = store.state.tasks;
     const isBoard = store.state.settings.taskView === 'board';
 
@@ -195,6 +241,17 @@ VW.views.dashboard = (() => {
     });
     container.classList.toggle('hidden', isBoard);
     board.classList.toggle('hidden', !isBoard);
+
+    // 分页窗口尾部（O8）：加载更多 / 截断提示
+    const { hasMore, hint } = listFootState();
+    if (foot) {
+      foot.classList.toggle('hidden', !tasks.length);
+      foot.innerHTML = hint
+        ? `<span class="form-hint">${escapeHtml(hint)}</span>`
+        : hasMore
+          ? '<button type="button" class="btn btn-outline btn-sm" id="load-more-btn">加载更多</button>'
+          : '';
+    }
 
     if (!tasks.length) {
       container.innerHTML = '';
@@ -299,6 +356,17 @@ VW.views.dashboard = (() => {
       await VW.api.task.ack(id);
       VW.toast.show('已查收');
       if (VW.modal.isOpen('task-detail-modal')) await openDetail(id);
+      await refresh({ silent: true });
+    } catch (error) {
+      VW.toast.fromError(error);
+    }
+  }
+
+  /** 一键查收当前周期内全部待查收结果（F8） */
+  async function ackAll() {
+    try {
+      const result = await VW.api.task.ackAll({ period: store.state.filters.statsPeriod });
+      VW.toast.show(result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果');
       await refresh({ silent: true });
     } catch (error) {
       VW.toast.fromError(error);
@@ -499,32 +567,33 @@ VW.views.dashboard = (() => {
       refresh({ silent: true });
     });
 
-    // 筛选栏
+    // 筛选栏（O8：任何筛选变更都把列表窗口重置回第一页）
+    const applyTaskFilters = (patch) => {
+      listPage = 1;
+      store.setFilters('task', patch);
+      refresh();
+    };
     store.setFilters('task', { period: statsPeriod.value });
     const filterPeriod = document.getElementById('filter-period');
     filterPeriod.value = store.state.filters.task.period;
     filterPeriod.addEventListener('change', (event) => {
-      store.setFilters('task', { period: event.target.value });
-      refresh();
+      applyTaskFilters({ period: event.target.value });
     });
 
     document.getElementById('task-search').addEventListener(
       'input',
       debounce((event) => {
-        store.setFilters('task', { keyword: event.target.value.trim() });
-        refresh();
+        applyTaskFilters({ keyword: event.target.value.trim() });
       }, 200)
     );
     ['triggerType', 'status'].forEach((key) => {
       const id = key === 'triggerType' ? 'filter-trigger' : 'filter-status';
       document.getElementById(id).addEventListener('change', (event) => {
-        store.setFilters('task', { [key]: event.target.value });
-        refresh();
+        applyTaskFilters({ [key]: event.target.value });
       });
     });
     document.getElementById('filter-assignee').addEventListener('change', (event) => {
-      store.setFilters('task', { assigneeId: event.target.value });
-      refresh();
+      applyTaskFilters({ assigneeId: event.target.value });
     });
 
     // 队列操作（事件委托：选项切换 + 按钮动作合并为单一监听，避免同一次点击执行两遍）
@@ -543,6 +612,12 @@ VW.views.dashboard = (() => {
       if (action === 'ack') return ackTask(item.dataset.id);
       if (action === 'submit' && task) return submitAnswer(item, task, task.actionRequest);
       return undefined;
+    });
+
+    // 一键查收（F8）与「加载更多」（O8）：按钮随重渲染重建，统一用事件委托
+    document.getElementById('ack-all-btn').addEventListener('click', ackAll);
+    document.getElementById('task-list-foot').addEventListener('click', (event) => {
+      if (event.target.closest('#load-more-btn')) loadMore();
     });
 
     // 全部任务：行内操作 + 点击行查看详情
@@ -589,7 +664,7 @@ VW.views.dashboard = (() => {
       renderTabs();
       renderStats();
     });
-    store.on('tasks', renderTaskList);
+    store.on(['tasks', 'tasksMeta'], renderTaskList);
     store.on('settings', renderTaskList);
 
     renderAll();
@@ -622,5 +697,5 @@ VW.views.dashboard = (() => {
     }
   }
 
-  return { init, refresh, refreshSoon, openCreateTask, openDetail, syncDetail, closeDetail, renderAssigneeFilter };
+  return { init, refresh, refreshSoon, refreshStats, openCreateTask, openDetail, syncDetail, closeDetail, renderAssigneeFilter };
 })();

@@ -21,33 +21,32 @@ VW.views.atworker = (() => {
 
   // ==================== 数据 ====================
 
-  /** 请求版本号：过期响应不覆盖新状态 */
-  let refreshSeq = 0;
-
-  async function refresh() {
-    const seq = ++refreshSeq;
-    try {
-      const [filtered, all, stats] = await Promise.all([
-        VW.api.chat.listBindings(store.state.filters.atworker),
-        VW.api.chat.listBindings({}),
-        VW.api.chat.stats()
-      ]);
-      if (seq !== refreshSeq) return;
-      store.set({ chatBindingList: filtered.items, chatBindings: all.items, chatStats: stats });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+  /** 过期响应防护统一走 api.latest（O9）。绑定与连接用不同 key：
+   *  修复原先共享同一 refreshSeq 时「两类互不相关请求互相作废」的隐患 */
+  function refresh() {
+    return VW.api
+      .latest(
+        'atworker',
+        () =>
+          Promise.all([
+            VW.api.chat.listBindings(store.state.filters.atworker),
+            VW.api.chat.listBindings({}),
+            VW.api.chat.stats()
+          ]),
+        ([filtered, all, stats]) =>
+          store.set({ chatBindingList: filtered.items, chatBindings: all.items, chatStats: stats })
+      )
+      .catch((error) => VW.toast.fromError(error));
   }
 
-  async function refreshConnections() {
-    const seq = ++refreshSeq;
-    try {
-      const connections = await VW.api.chat.listConnections();
-      if (seq !== refreshSeq) return;
-      store.set({ chatConnections: connections });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+  function refreshConnections() {
+    return VW.api
+      .latest(
+        'atworker-connections',
+        () => VW.api.chat.listConnections(),
+        (connections) => store.set({ chatConnections: connections })
+      )
+      .catch((error) => VW.toast.fromError(error));
   }
 
   // ==================== 渲染：统计角标 / 筛选 / 表格 ====================

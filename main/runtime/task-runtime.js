@@ -49,22 +49,22 @@ function start() {
   bus.onCommand('task:resumed', resume);
   bus.onCommand('task:canceled', stop);
   // 执行者恢复在线时，立即重试等待中的离线任务，不必等退避定时器
-  bus.on(({ type, payload }) => {
-    if ((type === 'worker:updated' || type === 'worker:created') && payload?.status === 'online') {
-      for (const taskId of [...retryTimers.keys()]) {
-        clearTimer(retryTimers, taskId);
-        dispatch(taskId);
-      }
-    }
-  });
-  // 兜底：执行者被删除时，等待队列/离线重试中的任务立即重新派发一次，
-  // 由 resolveExecution 的执行者缺失检查尽快落为失败（服务层级联取消是主路径，这里兜住漏网任务）
-  bus.on(({ type }) => {
-    if (type !== 'worker:removed') return;
+  const retryWaitingTasks = () => {
     for (const taskId of [...retryTimers.keys()]) {
       clearTimer(retryTimers, taskId);
       dispatch(taskId);
     }
+  };
+  bus.on('worker:updated', (payload) => {
+    if (payload?.status === 'online') retryWaitingTasks();
+  });
+  bus.on('worker:created', (payload) => {
+    if (payload?.status === 'online') retryWaitingTasks();
+  });
+  // 兜底：执行者被删除时，等待队列/离线重试中的任务立即重新派发一次，
+  // 由 resolveExecution 的执行者缺失检查尽快落为失败（服务层级联取消是主路径，这里兜住漏网任务）
+  bus.on('worker:removed', () => {
+    retryWaitingTasks();
     for (const taskId of [...waiting]) {
       waiting.delete(taskId);
       dispatch(taskId);

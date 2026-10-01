@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('virtworker', {
     detail: (id) => invoke('task:detail', { id }),
     cancel: (id, reason) => invoke('task:cancel', { id, reason }),
     ack: (id) => invoke('task:ack', { id }),
+    ackAll: (query) => invoke('task:ack-all', query),
     answer: (payload) => invoke('task:answer', payload)
   },
 

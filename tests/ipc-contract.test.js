@@ -257,6 +257,50 @@ describe('IPC 契约：app:relaunch 走完整退出流程（O1 回归防护）',
   });
 });
 
+describe('IPC 契约：task 事件转发合并节流（O17 回归防护）', () => {
+  beforeAll(() => {
+    initTempDb();
+    ipc.register();
+  });
+
+  afterAll(() => {
+    db.flush();
+  });
+
+  test('100ms 窗口内同一任务的多次 task:updated 只下发最后一条，其余事件立即转发', async () => {
+    const bus = require('../main/runtime/event-bus');
+    const sent = [];
+    const fakeWin = { isDestroyed: () => false, webContents: { send: (_channel, event) => sent.push(event) } };
+    const original = electronStub.BrowserWindow.getAllWindows;
+    electronStub.BrowserWindow.getAllWindows = () => [fakeWin];
+
+    try {
+      bus.emit('task:updated', { id: 'tk_coalesce', title: 'v1' });
+      bus.emit('task:updated', { id: 'tk_coalesce', title: 'v2' });
+      bus.emit('task:created', { id: 'tk_other', title: 'other' });
+      bus.emit('app:notice', { title: '立即送达' });
+
+      // 窗口期内：非 task 事件已立即转发，task 事件仍在缓冲
+      expect(sent.map((event) => event.type)).toEqual(['app:notice']);
+
+      await new Promise((r) => setTimeout(r, 150));
+      expect(sent.map((event) => event.type)).toEqual(['app:notice', 'task:updated', 'task:created']);
+      expect(sent[1].payload.title).toBe('v2'); // 同任务只保留最后一条
+      expect(sent[2].payload.id).toBe('tk_other');
+      expect(sent[2].type).toBe('task:created'); // created 在窗口内未被 updated 覆盖（不同任务）
+
+      // 删除事件立即下发，并丢弃窗口内该任务的待发更新
+      bus.emit('task:updated', { id: 'tk_x', title: 'pending' });
+      bus.emit('task:removed', { id: 'tk_x' });
+      expect(sent[sent.length - 1].type).toBe('task:removed');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(sent.filter((event) => event.payload?.id === 'tk_x').length).toBe(1);
+    } finally {
+      electronStub.BrowserWindow.getAllWindows = original;
+    }
+  });
+});
+
 describe('IPC 契约：preload 白名单与主进程注册互为镜像（防三层管道脱节）', () => {
   /** 从 preload.js 源码收集全部 invoke 通道（含 app:ping 直连），确保白名单唯一事实被双向校验 */
   function scanPreloadChannels() {

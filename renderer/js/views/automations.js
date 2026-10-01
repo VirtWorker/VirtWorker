@@ -17,22 +17,21 @@ VW.views.automations = (() => {
 
   // ==================== 数据 ====================
 
-  /** 请求版本号：过期响应不覆盖新状态 */
-  let refreshSeq = 0;
-
-  async function refresh() {
-    const seq = ++refreshSeq;
-    try {
-      const [list, stats, runtime] = await Promise.all([
-        VW.api.automation.list(store.state.filters.automation),
-        VW.api.automation.stats(),
-        VW.api.automation.runtime()
-      ]);
-      if (seq !== refreshSeq) return;
-      store.set({ automations: list.items, automationStats: stats, apiServer: runtime.apiServer });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+  /** 过期响应防护统一走 api.latest（O9），替代原先手写的 refreshSeq 守卫 */
+  function refresh() {
+    return VW.api
+      .latest(
+        'automations',
+        () =>
+          Promise.all([
+            VW.api.automation.list(store.state.filters.automation),
+            VW.api.automation.stats(),
+            VW.api.automation.runtime()
+          ]),
+        ([list, stats, runtime]) =>
+          store.set({ automations: list.items, automationStats: stats, apiServer: runtime.apiServer })
+      )
+      .catch((error) => VW.toast.fromError(error));
   }
 
   // ==================== 渲染 ====================

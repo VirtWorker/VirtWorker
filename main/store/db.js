@@ -34,6 +34,8 @@ const COLLECTIONS = [
 
 /** 合并写入窗口（毫秒）：任务执行高频更新时显著减少全量重写次数 */
 const WRITE_COALESCE_MS = 100;
+/** 脏数据最大滞留时长（毫秒）：定时器被饥饿等异常拖住时，写操作本身会强制落盘兜底 */
+const MAX_FLUSH_DELAY_MS = 2000;
 /** 写盘失败后的自动重试间隔 */
 const FLUSH_RETRY_MS = 5 * 1000;
 /** 持续失败时用户告警的限频间隔（避免通知刷屏） */
@@ -53,6 +55,8 @@ const dirty = new Map();
 let flushTimer = null;
 let flushRetryTimer = null;
 let lastFlushNotifyAt = 0;
+/** 最早的未落盘脏标记时间（0 = 无脏数据）：写入滞留超上限时由 persist 强制落盘 */
+let oldestDirtyAt = 0;
 /**
  * 只读保护原因（null = 可写）。
  * 触发场景：① 数据版本高于当前支持（降级/缺迁移定义）；② 恢复快照后等待重启。
@@ -170,14 +174,17 @@ function loadSettings() {
   return {};
 }
 
-/** 真正落盘单个集合：临时文件 → fsync → 备份轮换（保留两代）→ rename 原子替换 */
+/** 真正落盘单个集合：临时文件 → fsync → 备份轮换（保留两代）→ rename 原子替换。
+ *  大集合用紧凑序列化（缩进额外膨胀 30%+ 体积，直接放大任务高频更新时的全量重写成本）；
+ *  settings 体积小且是人工排查时最常看的文件，保留缩进可读性。 */
 function writeCollection(name, items) {
   const file = fileOf(name);
   const tmp = `${file}.tmp`;
+  const indent = name === 'settings' ? 2 : 0;
   const payload = JSON.stringify(
     { schemaVersion: schema.SCHEMA_VERSION, updatedAt: new Date().toISOString(), items },
     null,
-    2
+    indent
   );
   fs.writeFileSync(tmp, payload, 'utf8');
   // 断电防护：rename 前把 tmp 刷入磁盘，避免"目录项已替换、数据仍在页缓存"产生的空洞文件
@@ -199,10 +206,17 @@ function writeCollection(name, items) {
  * 标记集合为脏并调度合并写入：同一窗口内的多次变更只写一次磁盘。
  * 缓存已同步更新，读取路径不受写入时机影响；进程退出前调用 flush() 落盘。
  * 只读保护下拒绝标记脏：内存可继续运行会话，但磁盘上的完好数据绝不被覆盖。
+ * 脏数据滞留超过 MAX_FLUSH_DELAY_MS 时跳过合并窗口直接落盘（定时器饥饿的兜底）。
  */
 function persist(name, items) {
   if (readOnlyReason) return;
   dirty.set(name, items);
+  const now = Date.now();
+  if (!oldestDirtyAt) oldestDirtyAt = now;
+  if (now - oldestDirtyAt >= MAX_FLUSH_DELAY_MS) {
+    flush();
+    return;
+  }
   scheduleFlush();
 }
 
@@ -231,6 +245,7 @@ function flush() {
     clearTimeout(flushRetryTimer);
     flushRetryTimer = null;
   }
+  oldestDirtyAt = dirty.size ? Date.now() : 0; // 未写成功的集合重新起算滞留时钟（由重试定时器兜底）
   let firstError = null;
   for (const [name, items] of [...dirty.entries()]) {
     try {
@@ -264,6 +279,19 @@ function init(dir) {
   baseDir = dir;
   fs.mkdirSync(baseDir, { recursive: true });
   readOnlyReason = null; // 重新初始化（应用升级后重启 / 测试重装）即复位只读保护
+  oldestDirtyAt = 0;
+  // 清理上次运行在「写 tmp 后、rename 前」崩溃遗留的临时文件（下次写入会直接覆盖，留着只会干扰排查）
+  try {
+    fs.readdirSync(baseDir).filter((name) => name.endsWith('.tmp')).forEach((name) => {
+      try {
+        fs.rmSync(path.join(baseDir, name), { force: true });
+      } catch (error) {
+        console.error(`[store] 清理遗留临时文件 ${name} 失败:`, error.message);
+      }
+    });
+  } catch (error) {
+    // 目录读取失败不影响启动，后续 loadItems 会按损坏路径处理
+  }
   let legacyEvents = null;
   COLLECTIONS.forEach((name) => {
     const loaded = loadItems(name);
@@ -339,13 +367,45 @@ function query(name, predicate) {
     .map((item) => clone(item));
 }
 
-/** 保留集合中匹配 predicate 的最后 keep 条（如任务时间线上限），其余删除；返回删除数 */
-function keepLast(name, predicate, keep) {
+/**
+ * 结构化匹配器（SQLite 迁移预付，O11）：只支持可翻译为 SQL WHERE 的三种形态——
+ * 键为字段名（支持点路径如 'assignee.id'），值为「等值匹配」；值为数组时为「IN 包含匹配」。
+ * 服务层的热路径谓词统一收敛到该形态，换库时这些查询可直接翻译，复杂过滤仍可用函数谓词。
+ */
+function matches(item, matcher) {
+  return Object.entries(matcher).every(([key, expected]) => {
+    const value = key.split('.').reduce((obj, part) => (obj == null ? undefined : obj[part]), item);
+    if (Array.isArray(expected)) return expected.includes(value);
+    return value === expected;
+  });
+}
+
+/** 条件参数归一：函数谓词原样使用，对象按结构化匹配器处理 */
+function conditionOf(condition) {
+  return typeof condition === 'function' ? condition : (item) => matches(item, condition);
+}
+
+/** 结构化查询：等价于 query(name, matcher)，但调用点显式声明「这是可翻译谓词」 */
+function where(name, matcher) {
+  return (cache.get(name) || [])
+    .filter((item) => matches(item, matcher))
+    .map((item) => clone(item));
+}
+
+/** 条件计数：统计/预览类口径只需数量，不产生任何克隆 */
+function countWhere(name, condition) {
+  const test = conditionOf(condition);
+  return (cache.get(name) || []).filter(test).length;
+}
+
+/** 保留集合中匹配条件的最后 keep 条（如任务时间线上限），其余删除；返回删除数 */
+function keepLast(name, condition, keep) {
   if (!Number.isInteger(keep) || keep < 0) return 0;
+  const test = conditionOf(condition);
   const items = cache.get(name) || [];
   const matching = [];
   items.forEach((item, index) => {
-    if (predicate(item)) matching.push(index);
+    if (test(item)) matching.push(index);
   });
   if (matching.length <= keep) return 0;
   const removeSet = new Set(matching.slice(0, matching.length - keep));
@@ -375,10 +435,11 @@ function remove(name, id) {
   return { id };
 }
 
-/** 批量删除（如重建知识库索引），只写一次磁盘 */
-function removeWhere(name, predicate) {
+/** 批量删除（如重建知识库索引、过期任务清理），只写一次磁盘；条件可为函数或结构化匹配器 */
+function removeWhere(name, condition) {
+  const test = conditionOf(condition);
   const items = cache.get(name) || [];
-  const kept = items.filter((item) => !predicate(item));
+  const kept = items.filter((item) => !test(item));
   const removed = items.length - kept.length;
   if (removed) {
     cache.set(name, kept);
@@ -504,6 +565,8 @@ module.exports = {
   insertMany,
   append,
   query,
+  where,
+  countWhere,
   count,
   keepLast,
   update,
@@ -520,5 +583,6 @@ module.exports = {
   restore,
   backupsRoot,
   BACKUP_KEEP,
+  MAX_FLUSH_DELAY_MS,
   COLLECTIONS
 };

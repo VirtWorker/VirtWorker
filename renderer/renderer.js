@@ -18,14 +18,14 @@
       page.classList.toggle('active', page.id === `page-${name}`);
     });
     store.merge('ui', { page: name });
-    // 事件路由按页面门控（22）的配套：进入页面时拉取最新数据，离开期间错过的事件无需补发。
-    // capabilities 自带 ui 订阅懒加载；workers 数据侧边栏与派发下拉共用，切页时一并刷新
+    // 事件路由配套（O9）：进入页面时拉取最新数据，离开期间错过的事件无需补发。
+    // capabilities 自带 ui 订阅懒加载；workers 数据由全局 worker:/group: 事件刷新兜底，
+    // 进入该页时仍主动拉一次（修复此前「切入 workers 页不刷新」的缺口）
     const viewKey = name === 'autonomous' ? 'automations' : name;
-    if (viewKey !== 'capabilities' && viewKey !== 'workers' && typeof VW.views[viewKey]?.refresh === 'function') {
-      VW.views[viewKey].refresh();
-    }
-    if (name !== 'workers') {
+    if (viewKey === 'workers') {
       VW.views.workers.refreshAll();
+    } else if (viewKey !== 'capabilities' && typeof VW.views[viewKey]?.refresh === 'function') {
+      VW.views[viewKey].refresh();
     }
   }
 
@@ -164,16 +164,25 @@
   function subscribeEvents() {
     VW.api.onEvent(({ type, payload }) => {
       if (!type) return;
+      const page = store.state.ui.page;
+      const onDashboard = page === 'dashboard';
 
-      // 任务事件保持全页生效：导航角标与统计依赖 stats，且 refreshSoon 已自带 120ms 合并
+      // 任务事件（O9 门控）：看板页完整刷新；其他页只做轻量统计刷新（导航角标与统计卡片
+      // 全局可见），列表/队列数据由切回看板时 switchPage 的 refresh 补拉——
+      // 此前任务事件不分页面全量拉取（每 120ms 一轮 3×IPC + 全量重渲染）是最大稳态浪费
       if (type === 'task:created' || type === 'task:updated') {
-        VW.views.dashboard.refreshSoon();
-        if (payload?.id) VW.views.dashboard.syncDetail(payload.id);
+        if (onDashboard) {
+          VW.views.dashboard.refreshSoon();
+          if (payload?.id) VW.views.dashboard.syncDetail(payload.id);
+        } else {
+          routeSoon('task-stats', () => VW.views.dashboard.refreshStats());
+        }
         return;
       }
 
       if (type === 'task:removed') {
-        VW.views.dashboard.refreshSoon();
+        if (onDashboard) VW.views.dashboard.refreshSoon();
+        else routeSoon('task-stats', () => VW.views.dashboard.refreshStats());
         // 被删任务正是当前打开的详情时直接关弹窗，而不是让它弹出「任务不存在」错误
         if (payload?.id) VW.views.dashboard.closeDetail(payload.id);
         return;
@@ -190,10 +199,15 @@
         return;
       }
 
+      // Worker/Group 数据侧边栏（所有页面可见）与派发下拉共用：全局刷新，不按页门控。
+      // 配合 store 的相等性跳过，数据未变时不会产生任何渲染（修复侧边栏只在工作页刷新的缺口）
+      if (type.startsWith('worker:') || type.startsWith('group:')) {
+        routeSoon('worker', () => VW.views.workers.refreshAll());
+        return;
+      }
+
       // 以下前缀按当前页面门控：隐藏页面的全量刷新（能力页一次 7 个 IPC）是最大浪费源；
       // 切回页面时 switchPage 会重新拉取，离开期间错过的事件无需补发
-      const page = store.state.ui.page;
-
       if (type.startsWith('share:')) {
         if (page === 'capabilities') routeSoon('share', () => VW.views.capabilities.refreshShares());
         return;
@@ -211,11 +225,6 @@
 
       if (type.startsWith('capability:') || type.startsWith('flow:')) {
         if (page === 'capabilities') routeSoon('capability', () => VW.views.capabilities.refresh());
-        return;
-      }
-
-      if (type.startsWith('worker:') || type.startsWith('group:')) {
-        if (page === 'workers') routeSoon('worker', () => VW.views.workers.refreshAll());
       }
     });
   }

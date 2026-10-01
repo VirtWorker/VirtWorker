@@ -11,37 +11,33 @@ VW.views.workers = (() => {
   const PLUS_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
-  /** 按筛选条件刷新列表（请求版本号：过期响应不覆盖新状态） */
-  let refreshSeq = 0;
-
-  async function refresh() {
-    const seq = ++refreshSeq;
-    try {
-      const [workerList, groups] = await Promise.all([
-        VW.api.worker.list(store.state.filters.worker),
-        VW.api.group.list()
-      ]);
-      if (seq !== refreshSeq) return;
-      store.set({ workerList, groups });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+  /** 按筛选条件刷新列表（过期响应防护统一走 api.latest，O9）。
+   *  refresh 与 refreshAll 共用同一 key：只让最后一次请求的结果生效，
+   *  避免「全量刷新在途时筛选刷新先回、全量后回覆盖掉新筛选结果」的错序 */
+  function refresh() {
+    return VW.api
+      .latest(
+        'workers',
+        () => Promise.all([VW.api.worker.list(store.state.filters.worker), VW.api.group.list()]),
+        ([workerList, groups]) => store.set({ workerList, groups })
+      )
+      .catch((error) => VW.toast.fromError(error));
   }
 
   /** 全量刷新：新建/删除后同步侧边栏、任务派发下拉等全量数据 */
-  async function refreshAll() {
-    const seq = ++refreshSeq;
-    try {
-      const [workers, workerList, groups] = await Promise.all([
-        VW.api.worker.list(),
-        VW.api.worker.list(store.state.filters.worker),
-        VW.api.group.list()
-      ]);
-      if (seq !== refreshSeq) return;
-      store.set({ workers, workerList, groups });
-    } catch (error) {
-      VW.toast.fromError(error);
-    }
+  function refreshAll() {
+    return VW.api
+      .latest(
+        'workers',
+        () =>
+          Promise.all([
+            VW.api.worker.list(),
+            VW.api.worker.list(store.state.filters.worker),
+            VW.api.group.list()
+          ]),
+        ([workers, workerList, groups]) => store.set({ workers, workerList, groups })
+      )
+      .catch((error) => VW.toast.fromError(error));
   }
 
   function render() {

@@ -49,33 +49,35 @@ function bootstrapServices() {
     runtime.start(); // 恢复上次未完成的任务（排队重新派发、执行中继续）
     scheduler.start(); // 启动补跑错过的定时任务并排程
     httpServer.start(); // API 触发的本地端点（仅回环地址）
-    purgeExpiredTasks(); // 按保留策略清理历史任务
-    startDailyBackup(); // 数据快照：每日自动备份
+    startDailyMaintenance(); // 每日维护：过期任务清理（启动即跑一次）+ 数据快照
   } catch (error) {
     console.error('[main] 领域服务初始化失败:', error);
   }
 }
 
-/** 数据快照：启动即备份一次，此后每 24 小时一次。
- *  .bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）。 */
-function startDailyBackup() {
+/**
+ * 每日维护（O7）：启动即执行一次，此后每 24 小时一次。
+ * - 过期任务清理：保留策略此前只在启动时执行，长期运行的自动化场景下过期任务会持续堆积
+ * - 数据快照：.bak 只能回退一代写入损坏，快照防的是误删与逻辑损坏随时间扩散（保留最近 7 份，见 db.js）
+ */
+function startDailyMaintenance() {
   const run = () => {
     try {
-      const result = db.backup();
-      if (result.files) console.log(`[main] 数据快照完成：${result.files} 个文件 → ${result.dir}`);
+      const { removed, retention } = taskService.purgeExpired(db.getSettings().taskRetentionDays);
+      if (removed) console.log(`[main] 每日维护：已按保留策略（${retention} 天）清理 ${removed} 条历史任务`);
     } catch (error) {
-      console.error('[main] 数据快照失败:', error.message);
+      console.error('[main] 每日维护：过期任务清理失败:', error.message);
+    }
+    try {
+      const result = db.backup();
+      if (result.files) console.log(`[main] 每日维护：数据快照完成（${result.files} 个文件）→ ${result.dir}`);
+    } catch (error) {
+      console.error('[main] 每日维护：数据快照失败:', error.message);
     }
   };
   run();
   const timer = setInterval(run, 24 * 60 * 60 * 1000);
   timer.unref?.(); // 不阻塞进程退出
-}
-
-/** 保留策略：清理已结束且已查收、且超出保留期的任务，避免数据无限增长 */
-function purgeExpiredTasks() {
-  const { removed, retention } = taskService.purgeExpired(db.getSettings().taskRetentionDays);
-  if (removed) console.log(`[main] 已按保留策略（${retention} 天）清理 ${removed} 条历史任务`);
 }
 
 /**
@@ -199,8 +201,8 @@ ipcMain.handle('app:ping', (_event, message) => {
  */
 function wireSystemNotifications() {
   if (!Notification?.isSupported?.()) return;
-  bus.on(({ type, payload }) => {
-    if (type !== 'app:notice' || !payload?.title) return;
+  bus.on('app:notice', (payload) => {
+    if (!payload?.title) return;
     if (db.getSettings().notify === false) return;
     const win = mainWindow;
     if (win && !win.isDestroyed() && !win.isMinimized() && win.isFocused()) return;

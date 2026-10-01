@@ -13,6 +13,8 @@ VW.store = (() => {
     workerList: [],
     groups: [],
     tasks: [],
+    /** 「全部任务」列表的分页窗口元信息（O8：50/页增量加载） */
+    tasksMeta: { page: 1, total: 0, totalPages: 1 },
     /** 周期内的任务队列（需要操作 / 查收结果），不受「全部任务」筛选栏影响 */
     queue: { action: [], result: [] },
     stats: { total: 0, running: 0, needAction: 0, finished: 0, workingWorkers: 0 },
@@ -84,17 +86,45 @@ VW.store = (() => {
     });
   }
 
-  /** 顶层字段替换 */
-  function set(patch) {
-    const keys = Object.keys(patch);
-    Object.assign(state, patch);
-    notify(keys);
+  /**
+   * 值相等检查（O9）：跳过「数据未变」的无效渲染通知。
+   * 主进程每次都返回克隆数据（新对象引用），浅比较必然不等——事件驱动的重复刷新
+   * 会触发侧边栏/统计/列表的全量 innerHTML 重建。规模阈值内用序列化比较识别「内容相同」，
+   * 超限或比较失败一律视为已变化（宁可多渲染一次，不做深度比较拖慢热路径）。
+   */
+  const EQUALITY_CHECK_LIMIT = 500;
+  function valuesEqual(a, b) {
+    if (a === b) return true;
+    if (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.length <= EQUALITY_CHECK_LIMIT) {
+      try {
+        return JSON.stringify(a) === JSON.stringify(b);
+      } catch (error) {
+        return false;
+      }
+    }
+    return false;
   }
 
-  /** 嵌套切片合并（filters / ui） */
+  /** 顶层字段替换：内容未变的切片不赋值（保持引用稳定）也不通知订阅者 */
+  function set(patch) {
+    const changed = [];
+    Object.entries(patch).forEach(([key, value]) => {
+      if (valuesEqual(state[key], value)) return;
+      state[key] = value;
+      changed.push(key);
+    });
+    notify(changed);
+  }
+
+  /** 嵌套切片合并（filters / ui）：内容未变的字段跳过，全部未变时不通知 */
   function merge(section, values) {
-    Object.assign(state[section], values);
-    notify([section]);
+    const changed = [];
+    Object.entries(values).forEach(([key, value]) => {
+      if (valuesEqual(state[section][key], value)) return;
+      state[section][key] = value;
+      changed.push(key);
+    });
+    if (changed.length) notify([section]);
   }
 
   /**

@@ -109,6 +109,53 @@ function handle(channel, handler) {
   });
 }
 
+// ==================== 事件转发（主进程事件总线 → 全部窗口） ====================
+// 缓冲状态放在模块级：register() 可能被测试环境多次调用，重复订阅共享同一缓冲才安全
+
+// task:created/updated 的 payload 是整个任务对象（含全部步骤）。真实 LLM 执行器高频步进时
+// 每步会产生多次全量更新，直接逐条转发会淹没 IPC 通道与渲染层（O17）：
+// 100ms 窗口内同一任务的多次变更只下发最后一条；其余事件（notice/removed/worker 等）立即转发
+const TASK_EVENT_COALESCE_MS = 100;
+let taskEventFlushTimer = null;
+/** taskId → { type, payload }（保留首次插入位置，值被最新事件覆盖） */
+const pendingTaskEvents = new Map();
+
+function deliverEvent(event) {
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (!win.isDestroyed()) win.webContents.send('app:event', event);
+  });
+}
+
+function flushTaskEvents() {
+  taskEventFlushTimer = null;
+  const events = [...pendingTaskEvents.values()];
+  pendingTaskEvents.clear();
+  events.forEach(deliverEvent);
+}
+
+/** 事件转发是全局单例装配：重复 register()（测试环境）不得重复订阅 */
+let eventForwardingWired = false;
+
+function subscribeEventForwarding() {
+  if (eventForwardingWired) return;
+  eventForwardingWired = true;
+  bus.on(({ type, payload }) => {
+    if ((type === 'task:created' || type === 'task:updated') && payload?.id) {
+      pendingTaskEvents.set(payload.id, { type, payload });
+      if (!taskEventFlushTimer) {
+        taskEventFlushTimer = setTimeout(flushTaskEvents, TASK_EVENT_COALESCE_MS);
+        taskEventFlushTimer.unref?.(); // 不阻塞进程退出
+      }
+      return;
+    }
+    // 删除事件立即下发并丢弃该任务在窗口内的待发更新，避免渲染层「先删后又收到旧更新」
+    if (type === 'task:removed' && payload?.id) {
+      pendingTaskEvents.delete(payload.id);
+    }
+    deliverEvent({ type, payload });
+  });
+}
+
 function register() {
   // 应用启动一次性拉取
   handle('app:bootstrap', () => {
@@ -116,7 +163,8 @@ function register() {
     return {
       workers: workerService.listWorkers(),
       groups: workerService.listGroups(),
-      tasks: taskService.list({ period: settings.period }).items,
+      // 启动一次性拉取只给首屏渲染用（上限 200 条），完整列表由看板自身的分页刷新接管
+      tasks: taskService.list({ period: settings.period, page: 1, pageSize: 200 }).items,
       stats: taskService.stats(settings.period),
       automations: automationService.list().items,
       automationStats: automationService.stats(),
@@ -178,6 +226,8 @@ function register() {
   handle('task:detail', ({ id } = {}) => taskService.detail(id));
   handle('task:cancel', ({ id, reason } = {}) => taskService.cancel(id, reason));
   handle('task:ack', ({ id } = {}) => taskService.ack(id));
+  /** 一键查收当前周期内全部待查收结果（看板「查收结果」页签，F8） */
+  handle('task:ack-all', ({ period } = {}) => taskService.ackAll(period));
   handle('task:answer', (payload) => taskService.answer(payload));
 
   // 自主工作（自动任务）
@@ -308,21 +358,19 @@ function register() {
   });
   handle('app:data-stats', () => {
     const dir = path.join(app.getPath('userData'), 'data');
-    let files = [];
+    // 文件名与体积来自目录本身，条数走 db 内存缓存计数——不再解析文件内容
+    // （原先 readFileSync + JSON.parse 全部数据文件会阻塞主进程，且越过了 store 抽象，O11）
+    let files;
     try {
       files = fs
         .readdirSync(dir)
         .filter((name) => name.endsWith('.json'))
         .map((name) => {
-          const filePath = path.join(dir, name);
+          const collection = db.COLLECTIONS.includes(name.replace(/\.json$/, '')) ? name.replace(/\.json$/, '') : null;
           let count = 0;
-          try {
-            const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            count = Array.isArray(payload.items) ? payload.items.length : 1;
-          } catch (error) {
-            count = 0;
-          }
-          return { name, size: fs.statSync(filePath).size, count };
+          if (collection) count = db.count(collection);
+          else if (name === 'settings.json') count = 1;
+          return { name, size: fs.statSync(path.join(dir, name)).size, count };
         });
     } catch (error) {
       files = [];
@@ -364,11 +412,7 @@ function register() {
     return { copied: true };
   });
 
-  bus.on(({ type, payload }) => {
-    BrowserWindow.getAllWindows().forEach((win) => {
-      if (!win.isDestroyed()) win.webContents.send('app:event', { type, payload });
-    });
-  });
+  subscribeEventForwarding();
 }
 
 module.exports = { register, API_VERSION, consumeRelaunchRequest };

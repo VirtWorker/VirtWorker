@@ -21,8 +21,27 @@ VW.api = (() => {
     throw error;
   }
 
+  /**
+   * 过期响应防护原语（O9）：同一 key 的并发请求只有最后一次的结果会生效。
+   * 事件驱动刷新与用户操作并发时，先发出但后返回的过期响应不得覆盖新状态——
+   * 此前 dashboard/workers/automations/atworker 各自手写 refreshSeq 守卫，现统一收敛到这里。
+   * apply(result) 仅在结果仍为最新时被调用；返回底层 Promise，错误照常抛给调用方提示。
+   */
+  const latestSeq = new Map();
+  function latest(key, fn, apply) {
+    const seq = (latestSeq.get(key) || 0) + 1;
+    latestSeq.set(key, seq);
+    return Promise.resolve()
+      .then(fn)
+      .then((result) => {
+        if (latestSeq.get(key) === seq) apply(result);
+        return result;
+      });
+  }
+
   return {
     bootstrap: () => call(bridge?.bootstrap),
+    latest,
 
     /** 复制文本到系统剪贴板 */
     copyText: (text) => call(bridge?.app?.copyText, text),
@@ -81,6 +100,7 @@ VW.api = (() => {
       detail: (id) => call(bridge?.task?.detail, id),
       cancel: (id, reason) => call(bridge?.task?.cancel, id, reason),
       ack: (id) => call(bridge?.task?.ack, id),
+      ackAll: (query) => call(bridge?.task?.ackAll, query),
       answer: (payload) => call(bridge?.task?.answer, payload)
     },
 

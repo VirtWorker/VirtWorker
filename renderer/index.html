@@ -146,6 +146,7 @@
         <div class="tabs" id="dashboard-tabs">
           <button class="tab active" data-tab="action">需要操作 (<span data-count="action">0</span>)</button>
           <button class="tab" data-tab="result">查收结果 (<span data-count="result">0</span>)</button>
+          <button type="button" class="mini-btn tab-action hidden" id="ack-all-btn">全部查收</button>
         </div>
         <div class="task-list" id="dashboard-tab-list"></div>
         <div class="empty-block" id="dashboard-tab-empty">
@@ -199,6 +200,7 @@
         </div>
         <div class="task-list" id="task-list-view"></div>
         <div class="task-board hidden" id="task-board-view"></div>
+        <div class="task-list-foot hidden" id="task-list-foot"></div>
         <div class="empty-block plain" id="task-list-empty">
           <h4 class="empty-title">暂无任务</h4>
           <p class="empty-desc">当前筛选条件下没有可展示的任务。</p>

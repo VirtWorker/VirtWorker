@@ -2471,3 +2471,16 @@ input[type="radio"]:focus-visible {
 ::-webkit-scrollbar-thumb { background: #d9dbdf; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #c4c7cc; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* 「全部任务」分页窗口尾部（O8）：加载更多 / 截断提示 */
+.task-list-foot {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+/* 页签行右侧动作位（F8：一键查收） */
+.tabs .tab-action {
+  margin-left: auto;
+  align-self: center;
+}

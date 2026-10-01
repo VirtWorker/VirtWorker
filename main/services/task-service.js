@@ -41,6 +41,8 @@ const STATUS_FILTER = {
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const MAX_EVENTS = 200;
+/** 列表分页 pageSize 上限：防止一次下发全量列表（渲染层按 50/页增量加载，累计窗口上限即此值） */
+const LIST_PAGE_SIZE_MAX = 200;
 
 // ==================== 内部工具 ====================
 
@@ -57,12 +59,12 @@ function appendEvent(task, type, message, extra = {}) {
 
 /** 任务时间线上限：终态收口时修剪（执行中单任务事件量远小于该值，无需逐步检查） */
 function pruneTaskEvents(id) {
-  db.keepLast('taskevents', (event) => event.taskId === id, MAX_EVENTS);
+  db.keepLast('taskevents', { taskId: id }, MAX_EVENTS);
 }
 
 /** 读取任务时间线（detail 组装用；追加序即时间序） */
 function listEvents(id) {
-  return db.query('taskevents', (event) => event.taskId === id);
+  return db.where('taskevents', { taskId: id });
 }
 
 function publish(task, eventType) {
@@ -210,34 +212,33 @@ function create(params = {}) {
 function list(filter = {}) {
   // period 显式传空字符串表示不限时间（如自动任务的运行历史）
   const period = filter.period === undefined ? 'month' : filter.period;
-  let items = db.all('tasks').filter((task) => isWithinPeriod(task.createdAt, period));
-
-  if (filter.refId) items = items.filter((task) => task.trigger.refId === filter.refId);
-
   const statuses = STATUS_FILTER[filter.status];
-  if (statuses) items = items.filter((task) => statuses.includes(task.status));
-
   // 「触发方式」筛选：界面传中文标签，转为存储枚举
   const triggerKey =
     Object.keys(TRIGGER_LABEL).find((key) => TRIGGER_LABEL[key] === filter.triggerType) ||
     (TRIGGER_LABEL[filter.triggerType] ? filter.triggerType : null);
-  if (triggerKey) items = items.filter((task) => task.trigger.type === triggerKey);
-
-  if (filter.assigneeId && filter.assigneeId !== '全部') {
-    items = items.filter((task) => task.assignee.id === filter.assigneeId);
-  }
-
+  const assigneeId = filter.assigneeId && filter.assigneeId !== '全部' ? filter.assigneeId : null;
   const keyword = String(filter.keyword ?? '').trim().toLowerCase();
-  if (keyword) {
-    items = items.filter((task) =>
-      `${task.title} ${task.goal} ${task.assignee.name}`.toLowerCase().includes(keyword)
-    );
-  }
+  const tag = String(filter.tag ?? '').trim();
+
+  // 谓词下推（O8）：db.query 只克隆命中项，替代原先「整集合 structuredClone 后再过滤」
+  let items = db.query('tasks', (task) =>
+    isWithinPeriod(task.createdAt, period) &&
+    (!filter.refId || task.trigger.refId === filter.refId) &&
+    (!statuses || statuses.includes(task.status)) &&
+    (!triggerKey || task.trigger.type === triggerKey) &&
+    (!assigneeId || task.assignee.id === assigneeId) &&
+    (!tag || (task.tags || []).includes(tag)) &&
+    (!keyword ||
+      `${task.title} ${task.goal} ${task.assignee.name} ${(task.tags || []).join(' ')}`
+        .toLowerCase()
+        .includes(keyword))
+  );
 
   items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   // 分页（蓝图 task:list 契约中的 page/pageSize）：pageSize 上限 200，防止一次下发全量列表
   const page = Number.isInteger(filter.page) && filter.page > 0 ? filter.page : null;
-  const pageSize = Number.isInteger(filter.pageSize) && filter.pageSize > 0 ? Math.min(200, filter.pageSize) : null;
+  const pageSize = Number.isInteger(filter.pageSize) && filter.pageSize > 0 ? Math.min(LIST_PAGE_SIZE_MAX, filter.pageSize) : null;
   let limited;
   let pagination = {};
   if (page && pageSize) {
@@ -253,22 +254,29 @@ function list(filter = {}) {
 /** 看板队列表：需要操作 / 待查收结果（与 list/stats 共用同一时间过滤，主进程一次算完，
  *  避免渲染层拉全量周期任务后自行过滤） */
 function queue(period = 'month') {
-  const items = db.all('tasks').filter((task) => isWithinPeriod(task.createdAt, period));
+  const inPeriod = (task) => isWithinPeriod(task.createdAt, period);
   return {
-    action: items.filter((task) => task.status === STATUS.needAction).map(publicTask),
-    result: items.filter((task) => task.status === STATUS.succeeded && !task.resultAckedAt).map(publicTask)
+    action: db
+      .query('tasks', (task) => inPeriod(task) && task.status === STATUS.needAction)
+      .map(publicTask),
+    result: db
+      .query('tasks', (task) => inPeriod(task) && task.status === STATUS.succeeded && !task.resultAckedAt)
+      .map(publicTask)
   };
 }
 
-/** 看板统计口径（与 list 共用同一时间过滤，保证数字与列表一致） */
+/** 看板统计口径（与 list 共用同一时间过滤，保证数字与列表一致）。
+ *  计数走 countWhere（零克隆），只有活跃任务需要克隆（算工作中的 Worker 去重数） */
 function stats(period = 'month') {
-  const items = db.all('tasks').filter((task) => isWithinPeriod(task.createdAt, period));
-  const active = items.filter((task) => ACTIVE_STATUS.includes(task.status));
+  const inPeriod = (task) => isWithinPeriod(task.createdAt, period);
+  const active = db.query('tasks', (task) => inPeriod(task) && ACTIVE_STATUS.includes(task.status));
+  const total = db.countWhere('tasks', inPeriod);
+  const needAction = db.countWhere('tasks', (task) => inPeriod(task) && task.status === STATUS.needAction);
   return {
-    total: items.length,
+    total,
     running: active.length,
-    needAction: items.filter((task) => task.status === STATUS.needAction).length,
-    finished: items.filter((task) => FINISHED_STATUS.includes(task.status)).length,
+    needAction,
+    finished: total - active.length - needAction, // 状态枚举完备且互斥
     workingWorkers: new Set(active.map((task) => task.assignee.id)).size
   };
 }
@@ -485,16 +493,15 @@ function cancelActiveByAssignees(assigneeIds, reason) {
   const ids = (Array.isArray(assigneeIds) ? assigneeIds : []).filter(Boolean);
   if (!ids.length) return [];
   const canceled = [];
-  db.query('tasks', (task) => ids.includes(task.assignee?.id) && ACTIVE_STATUS.includes(task.status)).forEach(
-    (task) => {
-      try {
-        cancel(task.id, reason);
-        canceled.push(task.id);
-      } catch (error) {
-        console.error(`[task] 级联取消任务 ${task.id} 失败:`, error.message || error);
-      }
+  // 结构化匹配器（O11）：assignee.id IN (ids) AND status IN (queued/running)
+  db.where('tasks', { 'assignee.id': ids, status: ACTIVE_STATUS }).forEach((task) => {
+    try {
+      cancel(task.id, reason);
+      canceled.push(task.id);
+    } catch (error) {
+      console.error(`[task] 级联取消任务 ${task.id} 失败:`, error.message || error);
     }
-  );
+  });
   return canceled;
 }
 
@@ -504,26 +511,32 @@ function recordEvent(id, message) {
   publish(next, 'task:updated');
 }
 
-/** 已结束、已查收且超出保留期的任务（未查收的结果不会被清理，避免用户还没看就消失） */
-function expiredTasks(days = 90, now = Date.now()) {
-  const retention = Number(days) > 0 ? Number(days) : 90;
-  const threshold = now - retention * 24 * 60 * 60 * 1000;
-  const items = db.all('tasks').filter((task) => {
+/** 过期判定：已结束、已查收且超出保留期（未查收的结果不会被清理，避免用户还没看就消失） */
+function expiredPredicate(threshold) {
+  return (task) => {
     if (!FINISHED_STATUS.includes(task.status)) return false;
     if (!task.resultAckedAt) return false;
     const settledAt = new Date(task.resultAckedAt).getTime();
     return !Number.isNaN(settledAt) && settledAt < threshold;
-  });
-  return { retention, items };
+  };
 }
 
-/** 清理过期任务（连带其时间线），应用启动与设置中心手动触发都会调用 */
+function expiredTasks(days = 90, now = Date.now()) {
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = now - retention * 24 * 60 * 60 * 1000;
+  return { retention, items: db.query('tasks', expiredPredicate(threshold)) };
+}
+
+/** 清理过期任务（连带其时间线），应用启动、每日维护与设置中心手动触发都会调用。
+ *  两个集合各一次批量删除（逐条 remove 是 O(N²)），写入经 db 合并窗口只落盘一轮。 */
 function purgeExpired(days = 90, now = Date.now()) {
   const { retention, items } = expiredTasks(days, now);
-  const removedIds = new Set(items.map((task) => task.id));
-  items.forEach((task) => db.remove('tasks', task.id));
-  if (removedIds.size) db.removeWhere('taskevents', (event) => removedIds.has(event.taskId));
-  items.forEach((task) => bus.emit('task:removed', { id: task.id }));
+  if (items.length) {
+    const removedIds = items.map((task) => task.id);
+    db.removeWhere('tasks', { id: removedIds });
+    db.removeWhere('taskevents', { taskId: removedIds });
+    items.forEach((task) => bus.emit('task:removed', { id: task.id }));
+  }
   return { removed: items.length, retention };
 }
 
@@ -537,10 +550,29 @@ function exportTasks(filter = {}) {
   return { exportedAt: nowIso(), count: records.length, total, records };
 }
 
-/** 预览可清理数量（设置中心展示用） */
+/** 预览可清理数量（设置中心展示用）：countWhere 零克隆 */
 function purgePreview(days = 90, now = Date.now()) {
-  const { retention, items } = expiredTasks(days, now);
-  return { removable: items.length, retention };
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = now - retention * 24 * 60 * 60 * 1000;
+  return { removable: db.countWhere('tasks', expiredPredicate(threshold)), retention };
+}
+
+/** 批量查收：周期内全部「已完成且未查收」的任务（看板「查收结果」页签的一键操作，F8） */
+function ackAll(period = 'month') {
+  const items = db.query('tasks', (task) => {
+    if (!isWithinPeriod(task.createdAt, period)) return false;
+    return task.status === STATUS.succeeded && !task.resultAckedAt;
+  });
+  let acked = 0;
+  items.forEach((task) => {
+    try {
+      ack(task.id);
+      acked += 1;
+    } catch (error) {
+      console.error(`[task] 批量查收任务 ${task.id} 失败:`, error.message || error);
+    }
+  });
+  return { acked };
 }
 
 module.exports = {
@@ -555,6 +587,7 @@ module.exports = {
   detail,
   cancel,
   ack,
+  ackAll,
   answer,
   getTask,
   resolveAssignee,

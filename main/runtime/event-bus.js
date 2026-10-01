@@ -1,18 +1,41 @@
 /**
  * 事件总线
  * - emit / on：面向渲染层的事件广播（由 IPC 层转发到窗口）
+ *   on(listener)            全局订阅：listener({ type, payload })
+ *   on(type, listener)      按类型订阅（O17）：listener(payload)，事件量大时免于全量过滤
  * - command / onCommand：主进程内部指令通道（如「任务已创建→触发派发」），不跨进程传输
  */
 
 const rendererListeners = new Set();
+const typedListeners = new Map(); // type → Set<listener>
 const commandHandlers = new Map();
 
-function on(listener) {
-  rendererListeners.add(listener);
-  return () => rendererListeners.delete(listener);
+function on(typeOrListener, maybeListener) {
+  // 兼容全局订阅：on(fn)
+  if (typeof typeOrListener === 'function') {
+    const listener = typeOrListener;
+    rendererListeners.add(listener);
+    return () => rendererListeners.delete(listener);
+  }
+  // 按类型订阅：on(type, fn)
+  const type = typeOrListener;
+  const listener = maybeListener;
+  if (!typedListeners.has(type)) typedListeners.set(type, new Set());
+  typedListeners.get(type).add(listener);
+  return () => typedListeners.get(type)?.delete(listener);
 }
 
 function emit(type, payload) {
+  const typed = typedListeners.get(type);
+  if (typed) {
+    typed.forEach((listener) => {
+      try {
+        listener(payload);
+      } catch (error) {
+        console.error('[bus] 事件处理失败:', type, error);
+      }
+    });
+  }
   rendererListeners.forEach((listener) => {
     try {
       listener({ type, payload });

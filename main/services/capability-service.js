@@ -147,7 +147,7 @@ function installSkill(skillId) {
 function uninstall(id) {
   const capability = getOrThrow(id);
   if (capability.type === 'knowledge') {
-    db.removeWhere('chunks', (chunk) => chunk.capabilityId === id);
+    db.removeWhere('chunks', { capabilityId: id });
     invalidateChunkIndex();
   }
   db.remove('capabilities', id);
@@ -326,7 +326,7 @@ function indexDirectory(capabilityId, dir) {
       });
   });
 
-  db.removeWhere('chunks', (chunk) => chunk.capabilityId === capabilityId);
+  db.removeWhere('chunks', { capabilityId });
   db.insertMany('chunks', chunks); // 批量写盘：逐条 insert 在数千片段时是 O(N²)
   invalidateChunkIndex();
   return { fileCount: files.length, chunkCount: chunks.length, dir };
@@ -355,7 +355,7 @@ function createKnowledge(params = {}) {
   try {
     source = indexDirectory(capability.id, dir);
   } catch (error) {
-    db.removeWhere('chunks', (chunk) => chunk.capabilityId === capability.id);
+    db.removeWhere('chunks', { capabilityId: capability.id });
     invalidateChunkIndex();
     throw error;
   }
