@@ -431,7 +431,7 @@
         <header class="page-header">
           <div>
             <h1>能力与资源</h1>
-            <p class="page-subtitle">释放你的 Worker 潜能，解锁更多可能</p>
+            <p class="page-subtitle">安装 Skill、授权连接器、沉淀知识库、编排流程——为 Worker 装备生产力工具箱。能力经「挂载」关联到 Worker 后，任务执行时自动生效。</p>
           </div>
         </header>
 
@@ -507,6 +507,7 @@
             <h2 class="section-title">连接器</h2>
             <span class="filter-count" id="connector-summary">0 个已授权</span>
           </div>
+          <p class="form-hint">授权后即可挂载到 Worker：任务执行时会注入可用的外部服务能力；凭据经系统级加密仅保存在本机，界面只展示掩码。</p>
           <div class="connector-grid" id="connector-grid"></div>
         </div>
 
@@ -520,6 +521,7 @@
             </button>
           </div>
           <div class="knowledge-list" id="knowledge-list"></div>
+          <p class="form-hint">知识目录仅在本机建立索引，导入的文件不会被上传；挂载到 Worker 后，任务执行时按语义检索相关片段并附引用。</p>
           <div class="empty-block plain hidden" id="knowledge-empty">
             <h4 class="empty-title">还没有知识库</h4>
             <p class="empty-desc">导入本地目录后，挂载该知识库的 Worker 在任务执行时会按需检索其中的内容。</p>
@@ -536,6 +538,7 @@
             </button>
           </div>
           <div class="flow-list" id="flow-list"></div>
+          <p class="form-hint">流程的每个节点可绑定不同 Worker，上一步产出自动作为下一步输入；创建任务时可把流程整体选为执行者。</p>
           <div class="empty-block plain hidden" id="flow-empty">
             <h4 class="empty-title">还没有流程</h4>
             <p class="empty-desc">把多个 Worker 串成一条流水线，任务与自动任务都可以直接引用该流程作为执行者。</p>

@@ -18,6 +18,7 @@ VW.views.capabilities = (() => {
     category: 'all',
     keyword: '',
     market: [],
+    categories: [],
     installed: [],
     connectors: [],
     knowledge: [],
@@ -45,6 +46,8 @@ VW.views.capabilities = (() => {
           VW.api.share.stats()
         ]);
         state.market = market.items;
+        // 分类与计数由主进程目录统一计算下发（含新增分类，渲染层不再硬编码）
+        state.categories = market.categories || [];
         state.installed = capabilities.filter((item) => item.type === 'skill');
         state.knowledge = capabilities.filter((item) => item.type === 'knowledge');
         state.connectors = connectors;
@@ -83,10 +86,13 @@ VW.views.capabilities = (() => {
 
   function renderCounts() {
     const stats = store.state.capabilityStats || {};
+    const shareStats = store.state.shareStats || {};
     document.getElementById('cap-count-skill').textContent = String(state.installed.length);
     document.getElementById('cap-count-connector').textContent = String(stats.authorizedConnector || 0);
     document.getElementById('cap-count-knowledge').textContent = String(state.knowledge.length);
     document.getElementById('cap-count-flow').textContent = String((store.state.flows || []).length);
+    // 公开项目计数此前遗漏（卡片恒显 0），与分享列表刷新联动
+    document.getElementById('cap-count-share').textContent = String(shareStats.total ?? (store.state.shares || []).length);
   }
 
   function renderSections() {
@@ -117,26 +123,19 @@ VW.views.capabilities = (() => {
   }
 
   function renderCategories() {
+    // 刷新前（懒加载未完成）用兜底「全部分类」；刷新后消费主进程下发的分类与计数
+    const categories = state.categories.length ? state.categories : [{ key: 'all', name: '全部分类', count: state.market.length }];
     const counts = categoryCounts();
-    const categories = [
-      { key: 'all', name: '全部分类' },
-      { key: 'devops', name: 'DevOps 与部署' },
-      { key: 'tool', name: '效率工具' },
-      { key: 'research', name: '研究与分析' },
-      { key: 'writing', name: '内容创作' },
-      { key: 'design', name: '设计与 UI' },
-      { key: 'data', name: '数据与 AI' },
-      { key: 'docs', name: '文档与写作' }
-    ];
     const wrap = document.getElementById('cap-cats');
     wrap.innerHTML = categories
-      .map(
-        (category) => `
-      <button class="cap-cat${category.key === state.category ? ' active' : ''}" data-cat="${category.key}">
-        <span>${category.name}</span>
-        <span class="cat-count">${category.key === 'all' ? state.market.length : counts.get(category.key) || 0}</span>
-      </button>`
-      )
+      .map((category) => {
+        const count = category.count ?? (category.key === 'all' ? state.market.length : counts.get(category.key) || 0);
+        return `
+      <button class="cap-cat${category.key === state.category ? ' active' : ''}" data-cat="${escapeHtml(category.key)}">
+        <span>${escapeHtml(category.name)}</span>
+        <span class="cat-count">${count}</span>
+      </button>`;
+      })
       .join('');
   }
 
@@ -434,7 +433,10 @@ VW.views.capabilities = (() => {
     VW.views.capabilitiesFlows.bind();
     VW.views.capabilitiesShares.bind();
 
-    store.on('shares', () => VW.views.capabilitiesShares.render());
+    store.on('shares', () => {
+      renderCounts();
+      VW.views.capabilitiesShares.render();
+    });
     store.on(['workers', 'groups'], () => {
       renderCounts();
       renderConnectors();

@@ -105,3 +105,35 @@ describe('知识库检索缓存失效（P3-20）', () => {
     }
   });
 });
+
+describe('能力目录契约（补全后锁定）', () => {
+  test('skillMarket 下发分类与计数，且分类与目录条目一一对应', () => {
+    const market = capabilityService.skillMarket();
+    expect(market.items.length).toBe(market.total);
+    expect(market.items.length).toBeGreaterThan(18); // 目录已扩充
+    const all = market.categories.find((category) => category.key === 'all');
+    expect(all.count).toBe(market.total);
+    // 非全部分类的计数之和 == 目录总数
+    const sum = market.categories.filter((category) => category.key !== 'all').reduce((total, category) => total + category.count, 0);
+    expect(sum).toBe(market.total);
+    // 新增分类存在
+    expect(market.categories.map((category) => category.key)).toEqual(expect.arrayContaining(['automation', 'security']));
+  });
+
+  test('connectorCatalog 覆盖既有 key（向后兼容）并包含新增服务', () => {
+    const catalog = capabilityService.connectorCatalog();
+    const keys = catalog.map((item) => item.key);
+    // 老用户可能已授权的 key 必须永远在目录里，否则授权记录会变成孤儿
+    for (const legacy of ['feishu', 'dingtalk', 'wecom', 'slack', 'github', 'notion', 'smtp', 'webhook']) {
+      expect(keys).toContain(legacy);
+    }
+    for (const added of ['telegram', 'discord', 'gitlab', 'jira', 'openai', 's3']) {
+      expect(keys).toContain(added);
+    }
+    // 每个条目都有授权模式与提示文案（授权弹窗依赖）
+    catalog.forEach((item) => {
+      expect(['token', 'webhook']).toContain(item.mode);
+      expect(item.hint.length).toBeGreaterThan(0);
+    });
+  });
+});

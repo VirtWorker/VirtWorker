@@ -13,7 +13,7 @@ const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const vault = require('../util/secret-vault');
 const workerService = require('./worker-service');
-const { SKILL_CATALOG } = require('../data/skill-catalog');
+const { SKILL_CATALOG, categoryCounts } = require('../data/skill-catalog');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
@@ -26,10 +26,22 @@ const CONNECTOR_CATALOG = [
   { key: 'dingtalk', name: '钉钉', desc: '群机器人、工作通知', mode: 'webhook', hint: '群机器人 Webhook 地址或 Access Token' },
   { key: 'wecom', name: '企业微信', desc: '应用消息、通讯录', mode: 'token', hint: '企业应用的 Secret' },
   { key: 'slack', name: 'Slack', desc: '频道消息、斜杠命令', mode: 'token', hint: 'Bot User OAuth Token（xoxb- 开头）' },
+  { key: 'telegram', name: 'Telegram', desc: 'Bot 消息、频道推送', mode: 'token', hint: 'BotFather 签发的 Bot Token' },
+  { key: 'discord', name: 'Discord', desc: '频道消息、社区通知', mode: 'webhook', hint: '频道的 Webhook 地址' },
+  { key: 'serverchan', name: 'Server 酱', desc: '推送到微信的消息通道', mode: 'webhook', hint: 'SendKey（sct.ftqq.io 获取）' },
+  { key: 'webhook', name: '通用 Webhook', desc: '推送到任意 HTTP 端点', mode: 'webhook', hint: '接收端的 HTTPS 地址' },
   { key: 'github', name: 'GitHub', desc: '仓库、Issue、Pull Request', mode: 'token', hint: 'Personal Access Token（repo 权限）' },
+  { key: 'gitlab', name: 'GitLab', desc: '仓库、Issue、CI 触发', mode: 'token', hint: 'Personal Access Token（api 权限）' },
+  { key: 'gitee', name: 'Gitee', desc: '仓库、Issue、流水线', mode: 'token', hint: '私人令牌（projects 权限）' },
+  { key: 'jira', name: 'Jira', desc: '需求、缺陷、迭代看板', mode: 'token', hint: '账号邮箱 + API Token' },
+  { key: 'linear', name: 'Linear', desc: '项目管理与周期规划', mode: 'token', hint: 'API Key（settings → API）' },
   { key: 'notion', name: 'Notion', desc: '页面与数据库读写', mode: 'token', hint: 'Internal Integration Token' },
+  { key: 'airtable', name: 'Airtable', desc: '多维表格读写', mode: 'token', hint: 'Personal Access Token' },
+  { key: 'openai', name: 'OpenAI 兼容接口', desc: '调用大模型补全与嵌入', mode: 'token', hint: 'API Key（sk- 开头）' },
   { key: 'smtp', name: '邮件（SMTP）', desc: '发送通知与报表', mode: 'token', hint: 'smtp://user:pass@host:port' },
-  { key: 'webhook', name: '通用 Webhook', desc: '推送到任意 HTTP 端点', mode: 'webhook', hint: '接收端的 HTTPS 地址' }
+  { key: 'grafana', name: 'Grafana', desc: '面板快照、告警查询', mode: 'token', hint: 'Service Account Token' },
+  { key: 'sentry', name: 'Sentry', desc: '异常聚合与事故检索', mode: 'token', hint: 'Auth Token（org:read 权限）' },
+  { key: 's3', name: 'S3 兼容存储', desc: '对象上传、备份归档', mode: 'token', hint: 'Access Key ID + Secret（含 MinIO / OSS / COS）' }
 ];
 
 // ---- 知识库索引参数：控制导入体量，避免一次性读入过大目录 ----
@@ -112,7 +124,8 @@ function skillMarket(filter = {}) {
   if (keyword) {
     items = items.filter((skill) => `${skill.title} ${skill.desc} ${skill.author}`.toLowerCase().includes(keyword));
   }
-  return { items, total: SKILL_CATALOG.length, installed: installedIds.size };
+  // categories：分类与计数由主进程统一计算下发，渲染层不再硬编码目录（单一事实来源）
+  return { items, total: SKILL_CATALOG.length, installed: installedIds.size, categories: categoryCounts() };
 }
 
 function installSkill(skillId) {
