@@ -12,30 +12,81 @@ VW.views.shell = (() => {
 
   // ==================== 设置中心 ====================
 
-  /** 执行器模式：拉取注册中心并填充选择框（真实 LLM 执行器注册后此处即可切换） */
+  const EXECUTOR_LABEL = { mock: '模拟执行（Mock）', llm: '大模型执行（LLM）' };
+
+  /** 执行器模式：拉取注册中心并填充选择框；选中 LLM 时展开其配置表单 */
   async function refreshExecutorSelect() {
     const select = document.getElementById('setting-executor');
     if (!select) return;
     try {
-      const { names, active } = await VW.api.executor.list();
+      const { names, active, configs } = await VW.api.executor.list();
       select.innerHTML = names
-        .map((name) => `<option value="${escapeHtml(name)}">${name === 'mock' ? '模拟执行（Mock）' : escapeHtml(name)}</option>`)
+        .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(EXECUTOR_LABEL[name] || name)}</option>`)
         .join('');
       select.value = names.includes(active) ? active : names[0] || '';
       VW.dropdown.refresh(select);
+      fillLlmConfig(configs?.llm || {});
+      toggleLlmConfig(select.value === 'llm');
     } catch (error) {
       console.warn('[shell] 执行器列表加载失败:', error.message);
     }
   }
 
+  /** 回填 LLM 配置：apiKey 为主进程下发的只读掩码（{ masked, mask }），只展示不回填输入框 */
+  function fillLlmConfig(config) {
+    document.getElementById('llm-base-url').value = config.baseUrl || '';
+    document.getElementById('llm-model').value = config.model || '';
+    document.getElementById('llm-api-key').value = '';
+    updateLlmHint(config);
+  }
+
+  function updateLlmHint(config) {
+    const hint = document.getElementById('llm-hint');
+    if (!hint) return;
+    if (config.apiKey?.masked) hint.textContent = `已保存配置，密钥 ${config.apiKey.mask || '••••'}`;
+    else if (config.baseUrl && config.model) hint.textContent = '已保存配置（未设置密钥）';
+    else hint.textContent = '尚未配置';
+  }
+
+  function toggleLlmConfig(visible) {
+    document.getElementById('llm-config')?.classList.toggle('hidden', !visible);
+  }
+
   async function activateExecutor(name) {
     try {
       const { active } = await VW.api.executor.activate(name);
-      VW.toast.show(active === 'mock' ? '已切换为模拟执行（Mock）' : `执行器已切换为「${active}」`);
+      toggleLlmConfig(active === 'llm');
+      VW.toast.show(EXECUTOR_LABEL[active] ? `已切换为${EXECUTOR_LABEL[active]}` : `执行器已切换为「${active}」`);
     } catch (error) {
       VW.toast.fromError(error);
       await refreshExecutorSelect();
     }
+  }
+
+  /** 保存 LLM 私有配置：apiKey 留空 = 不修改已保存密钥（掩码回传语义，由主进程 mergeExecutorConfig 保证） */
+  async function saveLlmConfig() {
+    const button = document.getElementById('llm-save-btn');
+    const form = document.getElementById('llm-config');
+    await VW.util.withSubmitting(form, async () => {
+      if (button) button.disabled = true;
+      try {
+        const baseUrl = document.getElementById('llm-base-url').value.trim();
+        const model = document.getElementById('llm-model').value.trim();
+        const apiKey = document.getElementById('llm-api-key').value.trim();
+        if (!baseUrl || !model) {
+          VW.toast.show('请先填写 API 地址与模型名');
+          return;
+        }
+        const config = { baseUrl, model };
+        if (apiKey) config.apiKey = apiKey; // 留空不发送：保留库内已加密的旧密钥
+        const { config: saved } = await VW.api.executor.configure('llm', config);
+        document.getElementById('llm-api-key').value = '';
+        updateLlmHint(saved || {}); // 响应为掩码视图（apiKey: { masked, mask }）
+        VW.toast.show('LLM 配置已保存');
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
   }
 
   function formatSize(bytes) {
@@ -204,6 +255,7 @@ VW.views.shell = (() => {
     document.getElementById('settings-modal-cancel').addEventListener('click', () => VW.modal.close('settings-modal'));
     document.getElementById('settings-modal-save').addEventListener('click', saveSettings);
     document.getElementById('setting-executor').addEventListener('change', (event) => activateExecutor(event.target.value));
+    document.getElementById('llm-save-btn').addEventListener('click', saveLlmConfig);
     document.getElementById('purge-tasks-btn').addEventListener('click', purgeTasks);
     document.getElementById('open-data-dir-btn').addEventListener('click', async () => {
       try {

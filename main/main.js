@@ -4,6 +4,7 @@ const db = require('./store/db');
 const ipc = require('./ipc');
 const executor = require('./runtime/executor');
 const executorMock = require('./runtime/executor-mock');
+const executorLlm = require('./runtime/executor-llm');
 const runtime = require('./runtime/task-runtime');
 const scheduler = require('./runtime/scheduler');
 const httpServer = require('./runtime/http-server');
@@ -69,7 +70,8 @@ function bootstrapServices() {
 
   // 致命层 2：执行器装配与 IPC 通道——渲染层所有交互的入口
   try {
-    executor.register(executorMock, { activate: true }); // 当前为模拟执行器；接入真实 LLM 时注册并 setActive 即可
+    executor.register(executorMock, { activate: true });
+    executor.register(executorLlm); // 真实 LLM 执行器（NEW-1）：在设置中心配置 baseUrl/model/apiKey 后可切换
     restoreExecutorPreference(); // 恢复持久化的执行器选择（O16）
     ipc.register();
   } catch (error) {

@@ -273,5 +273,14 @@ module.exports = {
   runStep,
   maybeAction,
   buildResult,
-  CONFIRM_KEYWORDS
+  CONFIRM_KEYWORDS,
+  // 以下内部件供真实 LLM 执行器（executor-llm）复用：执行计划、语义锚点、操作请求与结果汇总逻辑与执行引擎无关
+  ARTIFACTS,
+  COLLECT_ANCHOR,
+  PROCESS_ANCHOR,
+  RETRIEVE_ANCHOR,
+  confirmRequest,
+  selectionRequest,
+  collectCapabilities,
+  answerText
 };

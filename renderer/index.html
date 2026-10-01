@@ -1028,15 +1028,35 @@
           <div class="settings-row">
             <span>执行模式</span>
             <select id="setting-executor"></select>
-            <span class="form-hint">选择后立即生效；真实大模型执行器接入后在此切换</span>
+            <span class="form-hint">选择后立即生效</span>
           </div>
           <p class="form-hint">
-            当前内置<b>模拟执行（Mock）</b>：不调用外部模型，按角色步骤推进并真实注入已挂载的 Skill / 连接器 / 知识库。
+            <b>模拟执行（Mock）</b>不调用外部模型，按角色步骤推进并真实注入已挂载的 Skill / 连接器 / 知识库；
+            <b>大模型执行（LLM）</b>调用 OpenAI 兼容接口真实完成任务步骤。
           </p>
           <label class="checkbox-row">
             <input type="checkbox" id="setting-random-action" />
             <span>模拟执行时随机请求操作（关闭后行为更可预测，便于演示与测试）</span>
           </label>
+          <div id="llm-config" class="hidden">
+            <div class="settings-row">
+              <span>API 地址</span>
+              <input type="text" id="llm-base-url" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="settings-row">
+              <span>模型</span>
+              <input type="text" id="llm-model" placeholder="gpt-4o-mini / deepseek-chat / qwen-plus …" />
+            </div>
+            <div class="settings-row">
+              <span>API Key</span>
+              <input type="password" id="llm-api-key" placeholder="留空表示不修改已保存的密钥" autocomplete="off" />
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="btn btn-outline" id="llm-save-btn">保存 LLM 配置</button>
+              <span class="form-hint" id="llm-hint"></span>
+            </div>
+            <p class="form-hint">兼容 OpenAI /v1/chat/completions 协议的任意服务（含本地 Ollama / vLLM）；密钥经系统密钥链加密存储，不会明文落库。</p>
+          </div>
         </div>
 
         <div class="detail-section">
