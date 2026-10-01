@@ -311,3 +311,58 @@ describe('O11 结构化匹配器：where / countWhere / removeWhere / keepLast',
     expect(db.where('taskevents', { taskId: 'tk_keep' }).map((event) => event.id)).toEqual(['ev_k2', 'ev_k3']);
   });
 });
+
+describe('taskevents 追加日志：写放大治理（PERF-1）', () => {
+  const dataDir = () => path.join(dir, 'data-events');
+  const logOf = () => path.join(dataDir(), 'taskevents.log');
+  const baseOf = () => path.join(dataDir(), 'taskevents.json');
+  const event = (id) => ({ id, taskId: 'tk_log', type: 'log', message: id, at: '2026-01-01T00:00:00.000Z' });
+
+  beforeAll(() => {
+    db.init(dataDir());
+  });
+
+  test('append 走追加日志，不经全量重写（flush 后 base 文件仍不生成）', () => {
+    db.append('taskevents', event('ev_l1'));
+    db.flush(); // append 不再标记脏：无 taskevents 全量写
+
+    const logLines = fs.readFileSync(logOf(), 'utf8').trim().split('\n');
+    expect(JSON.parse(logLines[0]).id).toBe('ev_l1');
+    expect(fs.existsSync(baseOf())).toBe(false);
+    expect(db.count('taskevents')).toBe(1);
+  });
+
+  test('重新 init 回放日志恢复事件；重复行按 id 去重', () => {
+    // 模拟「全量写成功但日志截断失败」的残留：同一事件在日志中出现两次
+    fs.appendFileSync(logOf(), `${JSON.stringify(event('ev_l1'))}\n`, 'utf8');
+    db.init(dataDir());
+    expect(db.where('taskevents', { taskId: 'tk_log' }).map((event) => event.id)).toEqual(['ev_l1']);
+  });
+
+  test('removeWhere 全量落盘后日志清空，已删事件重启后不复活', () => {
+    db.removeWhere('taskevents', () => true);
+    db.flush();
+    expect(fs.readFileSync(logOf(), 'utf8')).toBe(''); // 全量写成功即清空日志
+
+    db.append('taskevents', event('ev_l2'));
+    db.init(dataDir()); // 模拟重启加载：base + 日志回放
+    expect(db.where('taskevents', { taskId: 'tk_log' }).map((event) => event.id)).toEqual(['ev_l2']);
+  });
+
+  test('追加达到阈值后触发压缩：base 收编全部事件、日志清空、计数复位', () => {
+    // 先重置为干净状态（清空 base/日志/计数），让压缩触发点完全确定
+    db.removeWhere('taskevents', () => true);
+    db.flush();
+    for (let i = 0; i < db.EVENTS_LOG_COMPACT_LINES; i += 1) {
+      db.append('taskevents', event(`ev_c${i}`));
+    }
+    const payload = JSON.parse(fs.readFileSync(baseOf(), 'utf8'));
+    expect(payload.items.filter((item) => item.taskId === 'tk_log')).toHaveLength(db.EVENTS_LOG_COMPACT_LINES);
+    expect(fs.readFileSync(logOf(), 'utf8')).toBe('');
+
+    // 压缩后计数已复位：继续追加仍走追加路径，不触发第二次压缩
+    db.append('taskevents', event('ev_c_after'));
+    expect(JSON.parse(fs.readFileSync(logOf(), 'utf8').trim()).id).toBe('ev_c_after');
+    expect(db.countWhere('taskevents', { taskId: 'tk_log' })).toBe(db.EVENTS_LOG_COMPACT_LINES + 1);
+  });
+});

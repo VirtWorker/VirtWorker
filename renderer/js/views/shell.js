@@ -123,6 +123,8 @@ VW.views.shell = (() => {
   }
 
   async function purgeTasks() {
+    // 破坏性操作确认：与全站删除/取消类操作（window.confirm 惯例）对齐
+    if (!window.confirm('确认立即清理已结束且超过保留期限的历史任务？清理后不可恢复。')) return;
     try {
       const result = await VW.api.app.purgeTasks();
       VW.toast.show(result.removed ? `已清理 ${result.removed} 条历史任务` : '没有需要清理的任务');

@@ -46,6 +46,18 @@ const MAX_PENDING_NOTICES = 20;
 const BACKUP_KEEP = 7;
 /** 合法快照目录名（snapshotName 生成的 <日期>-<时间>） */
 const BACKUP_NAME_PATTERN = /^\d{8}-\d{6}$/;
+/**
+ * 时间线追加日志（写放大治理）：taskevents 的 append 从「每次全量重写整个集合文件」
+ * （stringify + fsync + 双备份拷贝 + rename，量级 O(集合)）改为 JSONL 单行追加（O(单条)），
+ * 攒够阈值才做一次全量压缩写——把全量成本从每事件一次摊薄到每 N 条事件一次。
+ * 全量写路径（removeWhere/keepLast/迁移/压缩）落盘成功后必须清空日志，
+ * 否则加载时回放会把已删除/已修剪的事件复活（按 id 去重只能防重复，防不了复活）。
+ */
+const EVENTS_LOG_NAME = 'taskevents.log';
+/** 追加日志压缩阈值（行数）：到达后下一次 append 触发压缩 */
+const EVENTS_LOG_COMPACT_LINES = 1000;
+/** 自上次压缩以来追加日志的行数 */
+let eventsLogLines = 0;
 
 let baseDir = '';
 const cache = new Map();
@@ -200,6 +212,84 @@ function writeCollection(name, items) {
   if (fs.existsSync(bak)) fs.copyFileSync(bak, bak2);
   if (fs.existsSync(file)) fs.copyFileSync(file, bak);
   fs.renameSync(tmp, file);
+  // taskevents 全量落盘成功后，追加日志即告过期：必须清空，否则加载时回放会把
+  // 本次全量写中已删除/已修剪的事件复活（仅 rename 成功后清空，失败时日志仍是权威来源）
+  if (name === 'taskevents') clearEventsLog();
+}
+
+// ==================== 时间线追加日志（taskevents 写放大治理） ====================
+
+function eventsLogFile() {
+  return path.join(baseDir, EVENTS_LOG_NAME);
+}
+
+/** 追加日志回放（init 时调用一次）：按 id 去重；崩溃撕裂的尾部半行跳过 */
+function loadEventsLog() {
+  eventsLogLines = 0;
+  let content;
+  try {
+    content = fs.readFileSync(eventsLogFile(), 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('[store] 读取时间线追加日志失败:', error.message);
+    return;
+  }
+  const items = cache.get('taskevents') || [];
+  const knownIds = new Set(items.map((event) => event.id));
+  let replayed = 0;
+  let badLines = 0;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    eventsLogLines += 1;
+    try {
+      const event = JSON.parse(trimmed);
+      // 日志由本进程写入，最小校验（对象 + id）即可；重复 id 是「全量写成功但截断失败」的残留
+      if (event && typeof event === 'object' && event.id && !knownIds.has(event.id)) {
+        knownIds.add(event.id);
+        items.push(event);
+        replayed += 1;
+      }
+    } catch (error) {
+      badLines += 1;
+    }
+  }
+  if (replayed) cache.set('taskevents', items);
+  if (badLines) console.warn(`[store] 时间线追加日志含 ${badLines} 行不可解析（崩溃残留），已跳过`);
+}
+
+/** 清空追加日志（必须紧跟在 taskevents 全量落盘成功之后调用） */
+function clearEventsLog() {
+  try {
+    fs.writeFileSync(eventsLogFile(), '', 'utf8');
+    eventsLogLines = 0;
+  } catch (error) {
+    // 截断失败不阻塞主流程：置为阈值让下一次 append 触发重试压缩；
+    // 期间回放按 id 去重不会产生重复事件
+    console.error('[store] 清空时间线追加日志失败:', error.message);
+    eventsLogLines = EVENTS_LOG_COMPACT_LINES;
+  }
+}
+
+/** 全量压缩：当前缓存写入 taskevents.json（含备份轮换，writeCollection 内部清空日志） */
+function compactEventsLog() {
+  writeCollection('taskevents', cache.get('taskevents') || []);
+}
+
+/**
+ * 时间线追加写（O(单条)）：小行 appendFileSync 走页缓存，不再整集合重写。
+ * 不逐行 fsync：断电可能丢尾部若干行（与 logger 模块同等取舍），撕裂行由回放跳过。
+ */
+function appendEventsLog(item) {
+  try {
+    fs.appendFileSync(eventsLogFile(), `${JSON.stringify(item)}\n`, 'utf8');
+    eventsLogLines += 1;
+    if (eventsLogLines >= EVENTS_LOG_COMPACT_LINES) compactEventsLog();
+  } catch (error) {
+    // 追加失败（磁盘满等）：回退到全量重写路径保证事件不丢，由 flush 的重试定时器兜底
+    console.error('[store] 时间线追加写失败，回退全量写:', error.message);
+    eventsLogLines = 0;
+    persist('taskevents', cache.get('taskevents') || []);
+  }
 }
 
 /**
@@ -247,7 +337,10 @@ function flush() {
   }
   oldestDirtyAt = dirty.size ? Date.now() : 0; // 未写成功的集合重新起算滞留时钟（由重试定时器兜底）
   let firstError = null;
-  for (const [name, items] of [...dirty.entries()]) {
+  for (const name of [...dirty.keys()]) {
+    // taskevents 的 append 走追加日志、不经 dirty；全量写必须取当前缓存——
+    // 若写旧脏快照后截断日志，日志路径刚追加的事件会丢失
+    const items = name === 'taskevents' ? (cache.get(name) || []) : dirty.get(name);
     try {
       writeCollection(name, items);
       dirty.delete(name);
@@ -280,6 +373,11 @@ function init(dir) {
   fs.mkdirSync(baseDir, { recursive: true });
   readOnlyReason = null; // 重新初始化（应用升级后重启 / 测试重装）即复位只读保护
   oldestDirtyAt = 0;
+  dirty.clear(); // 丢弃旧目录的待写状态：重初始化后一切以磁盘重载结果为准，旧脏条目不得写向新目录
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   // 清理上次运行在「写 tmp 后、rename 前」崩溃遗留的临时文件（下次写入会直接覆盖，留着只会干扰排查）
   try {
     fs.readdirSync(baseDir).filter((name) => name.endsWith('.tmp')).forEach((name) => {
@@ -302,6 +400,9 @@ function init(dir) {
     }
     cache.set(name, loaded.items);
   });
+  // 追加日志回放必须发生在 legacy 合并的 persist 之前：
+  // 否则合并落盘的脏快照不含日志事件，flush 全量写 + 截断日志会丢时间线
+  loadEventsLog();
   if (legacyEvents) {
     // v1 → v2 迁移：提取出的时间线并入 taskevents（按 id 去重保证幂等；追加序即时间序）
     const existing = cache.get('taskevents') || [];
@@ -314,6 +415,14 @@ function init(dir) {
     }
   }
   settings = loadSettings();
+  // 上次会话遗留的日志过大时启动即压缩一次，避免运行初期反复触发压缩
+  if (!readOnlyReason && eventsLogLines >= EVENTS_LOG_COMPACT_LINES) {
+    try {
+      compactEventsLog();
+    } catch (error) {
+      console.error('[store] 启动压缩时间线日志失败:', error.message);
+    }
+  }
 }
 
 /** 集合读取统一返回深拷贝，避免调用方误改内存缓存 */
@@ -337,11 +446,16 @@ function insert(name, item) {
   return clone(item);
 }
 
-/** 追加（O(1)，不复制数组）：高频写入如任务时间线；与 insert 语义相同但无返回拷贝 */
+/** 追加（O(1)，不复制数组）：高频写入如任务时间线；与 insert 语义相同但无返回拷贝。
+ *  taskevents 走专用追加日志（O(单条) 落盘），不经 dirty/全量重写路径 */
 function append(name, item) {
   const items = cache.get(name) || [];
   items.push(item);
   cache.set(name, items);
+  if (name === 'taskevents') {
+    if (!readOnlyReason) appendEventsLog(item);
+    return item;
+  }
   persist(name, items);
   return item;
 }
@@ -584,5 +698,6 @@ module.exports = {
   backupsRoot,
   BACKUP_KEEP,
   MAX_FLUSH_DELAY_MS,
+  EVENTS_LOG_COMPACT_LINES,
   COLLECTIONS
 };

@@ -408,8 +408,10 @@ VW.views.dashboard = (() => {
     await refresh({ silent: true });
   }
 
-  /** 一键查收当前周期内全部待查收结果（F8） */
+  /** 一键查收当前周期内全部待查收结果（F8）：批量且不可逆，操作前确认 */
   async function ackAll() {
+    const count = store.state.queue.result.length;
+    if (!window.confirm(`确认一键查收当前周期内全部 ${count} 条任务结果？查收后将从队列移除。`)) return;
     await VW.util.submitAction(() => VW.api.task.ackAll({ period: store.state.filters.statsPeriod }), {
       success: (result) => (result.acked ? `已查收 ${result.acked} 条任务结果` : '没有待查收的结果')
     });
