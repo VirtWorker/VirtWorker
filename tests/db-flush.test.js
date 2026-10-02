@@ -540,3 +540,61 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     }
   });
 });
+
+describe('BUG-25 并发快照串行化', () => {
+  let tempDir;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vw-b25-'));
+    db.init(path.join(tempDir, 'data')); // 重置存储单例，隔离前序用例的集合状态
+  });
+
+  afterAll(() => {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      // 忽略清理失败
+    }
+  });
+
+  test('后到者等前一个完整收口后再启动，写入屏障不被提前复位', async () => {
+    const fs = await import('node:fs');
+    db.insert('workers', { id: 'wk_b25', name: '并发快照', groupIds: [], capabilityIds: [] });
+    db.flush();
+
+    const originalCopy = fs.promises.copyFile.bind(fs.promises);
+    const order = [];
+    let workersCopies = 0;
+    let releaseFirst;
+    const gate = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    // 钩住 copyFile：第一个快照拷贝 workers.json 时挂起，制造「手动备份与每日备份重叠」窗口
+    fs.promises.copyFile = async (src, dest, ...rest) => {
+      if (String(src).endsWith('workers.json')) {
+        workersCopies += 1;
+        if (workersCopies === 1) {
+          order.push('first-blocked');
+          await gate;
+        }
+        order.push('copied');
+      }
+      return originalCopy(src, dest, ...rest);
+    };
+    try {
+      const first = db.backup();
+      const second = db.backup(); // 与第一个并发发起，不 await
+      await new Promise((r) => setTimeout(r, 50));
+      // 修复前：第一个 finally 复位屏障前第二个已开始拷贝（或反之），order 会混入第二个的拷贝
+      expect(order).toEqual(['first-blocked']);
+      releaseFirst();
+      await Promise.all([first, second]);
+      expect(order).toEqual(['first-blocked', 'copied', 'copied']);
+      // 两次快照都完整收口：backups 目录至少存在一份快照且 workers.json 可解析
+      const snapshots = db.listBackups();
+      expect(snapshots.length).toBeGreaterThan(0);
+    } finally {
+      fs.promises.copyFile = originalCopy;
+    }
+  });
+});

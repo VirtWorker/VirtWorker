@@ -36,6 +36,10 @@ const GENERIC_MENTION = 'Worker';
 
 const MAX_TEXT = 2000;
 const MAX_GOAL = 500;
+/** 每绑定建任务的最小间隔（毫秒）：群消息风暴（刷屏 @）会把消息无界转化为任务风暴，
+ *  占满并发槽位并放大存储写入。以绑定 lastMessageAt（上次成功建任务时刻）为锚点，
+ *  间隔内的消息不建任务并回复提示；锚点在节流窗口内不推进，风暴结束后下一条即可正常触发。 */
+const CHAT_TASK_MIN_INTERVAL_MS = 10 * 1000;
 
 // ==================== 内部工具 ====================
 
@@ -431,6 +435,22 @@ function rejectRequest(id) {
 
 // ==================== 会话消息接入（统一入口） ====================
 
+/** 节流回复（尽力而为）：适配器可用时告知发送者本条消息未生成任务，失败不影响 ingest 主流程 */
+function notifyChatThrottled(connection, binding) {
+  try {
+    const adapter = imAdapter.resolve(connection.platform);
+    if (adapter && typeof adapter.sendMessage === 'function') {
+      adapter.sendMessage(
+        connection,
+        binding.chatId,
+        `消息触发过于频繁，请稍 ${Math.round(CHAT_TASK_MIN_INTERVAL_MS / 1000)} 秒后再 @（本条未生成任务）`
+      );
+    }
+  } catch (error) {
+    console.warn('[chat] 节流提示回复失败:', error.message || error);
+  }
+}
+
 /**
  * 接收一条 IM 消息并按绑定情况分流：
  * - 聊天未绑定 → 记录接入申请（待审批）；
@@ -457,6 +477,18 @@ function ingest(params = {}) {
   }
   if (!binding.enabled) {
     return { kind: 'skipped', reason: 'binding_disabled', message: '该聊天已停用 @Worker，消息已忽略' };
+  }
+
+  // 每绑定建任务节流（CHAT_TASK_MIN_INTERVAL_MS）：风暴防护，间隔内的消息不建任务；
+  // 锚点 lastMessageAt 只在成功建任务时更新，节流窗口内不推进（风暴结束后下一条即可正常触发）
+  const lastTaskAt = new Date(binding.lastMessageAt || '').getTime();
+  if (!Number.isNaN(lastTaskAt) && Date.now() - lastTaskAt < CHAT_TASK_MIN_INTERVAL_MS) {
+    notifyChatThrottled(connection, binding);
+    return {
+      kind: 'skipped',
+      reason: 'rate_limited',
+      message: `该聊天 ${Math.round(CHAT_TASK_MIN_INTERVAL_MS / 1000)} 秒内已触发过任务，本条消息已忽略`
+    };
   }
 
   const worker = db.find('workers', binding.workerId);
@@ -614,6 +646,7 @@ function answerPendingAction(bindingId, text) {
 module.exports = {
   CHAT_TYPE_LABEL,
   GENERIC_MENTION,
+  CHAT_TASK_MIN_INTERVAL_MS,
   parseMention,
   platformCatalog,
   listChats,

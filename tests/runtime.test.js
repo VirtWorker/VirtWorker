@@ -4,7 +4,7 @@
  * 以及中途取消能中断执行。使用一个最小快速执行器，不依赖 mock 的随机延时。
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   initTempDb,
   cleanupTempDb,
@@ -817,5 +817,74 @@ describe('执行器锁定（P1-14）', () => {
     executor.setActive('fast-test'); // 中途切换执行器
     const finished = await waitForStatus(task.id, 'succeeded');
     expect(finished.result.summary).toBe('from-a'); // 结果必须仍来自派发时锁定的执行器
+  });
+});
+
+describe('离线重试上限（A2）：长期离线不产生僵尸任务', () => {
+  test('重试达到上限后任务落为失败（ASSIGNEE_OFFLINE），不再无限退避', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    try {
+      db.removeWhere('tasks', () => true);
+      const worker = workerService.createWorker({ name: '长期离线者' });
+      workerService.updateWorker(worker.id, { status: 'offline' });
+      const task = taskService.create({ goal: '离线超限目标', assigneeId: worker.id });
+      expect(db.find('tasks', task.id).status).toBe('queued');
+
+      // 逐轮推进退避定时器（30s 起步、封顶 10 分钟）：每轮推进必触发下一轮，上限轮后必须失败
+      for (let i = 0; i < runtime.MAX_OFFLINE_RETRIES; i += 1) {
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1);
+      }
+      const stored = db.find('tasks', task.id);
+      expect(stored.status).toBe('failed');
+      expect(stored.error.code).toBe('ASSIGNEE_OFFLINE');
+      expect(stored.error.message).toMatch(/持续离线/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('任务级总超时（E3）：timeoutMinutes 墙钟上限', () => {
+  test('总耗时超过 timeoutMinutes 后任务按 TASK_TIMEOUT 失败并释放槽位', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    try {
+      db.removeWhere('tasks', () => true);
+      const worker = workerService.createWorker({ name: '慢速执行者' });
+      const slow = {
+        ...fastExecutor,
+        name: 'deadline-test',
+        stepDelay: () => 70 * 1000, // 每步间隔 70s，超过 1 分钟总超时
+        buildResult: () => ({ summary: 'too-late', text: '', artifacts: [], capabilities: {} })
+      };
+      executor.register(slow);
+      executor.setActive('deadline-test');
+
+      const task = taskService.create({ goal: '限时目标', assigneeId: worker.id, timeoutMinutes: 1 });
+      // 推进 70s：第一步的 stepDelay 定时器触发后完成该步，循环顶部检查 deadline（t0+60s）已过
+      await vi.advanceTimersByTimeAsync(70 * 1000 + 50);
+
+      const stored = db.find('tasks', task.id);
+      expect(stored.status).toBe('failed');
+      expect(stored.error.code).toBe('TASK_TIMEOUT');
+      expect(stored.error.message).toMatch(/任务总耗时/);
+
+      // 槽位已释放：切回快速执行器后新任务可正常执行到成功
+      executor.setActive('fast-test');
+      const next = taskService.create({ goal: '超时后新任务', assigneeId: worker.id });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(db.find('tasks', next.id).status).toBe('succeeded');
+    } finally {
+      executor.setActive('fast-test');
+      vi.useRealTimers();
+    }
+  });
+
+  test('未配置 timeoutMinutes 的任务不受影响，正常执行到 succeeded', async () => {
+    db.removeWhere('tasks', () => true);
+    executor.setActive('fast-test');
+    const worker = workerService.createWorker({ name: '不限时执行者' });
+    const task = taskService.create({ goal: '不限时目标', assigneeId: worker.id });
+    const finished = await waitForStatus(task.id, 'succeeded');
+    expect(finished.timeoutMinutes).toBeNull();
   });
 });

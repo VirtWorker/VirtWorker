@@ -177,6 +177,10 @@ async function handle(req, res) {
       });
       return ok(res, { taskId: task.id, automationId: automation.id, goal: task.goal });
     } catch (error) {
+      // 触发限速：最小触发间隔内重复调用按 429 拒绝（脚本可据此退避），与认证冷却同码
+      if (error?.code === 'RATE_LIMITED') {
+        return failRequest(res, 429, 'TOO_MANY_REQUESTS', error.message);
+      }
       console.error('[api] 触发自动任务失败:', error);
       return failRequest(res, 400, error.code || 'INTERNAL', error.message || '触发失败');
     }

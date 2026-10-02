@@ -16,6 +16,10 @@ const MAX_TIMER_MS = 60 * 1000;
 const MIN_TIMER_MS = 500;
 /** 事件触发链最大深度：防止自动任务互相触发形成无限循环 */
 const MAX_CHAIN_DEPTH = 3;
+/** 事件/API 触发的最小触发间隔（毫秒）：与定时触发的重叠守卫对称的防雪崩兜底——
+ *  任务失败风暴下每个终态都会匹配全部事件型自动化（乘法扇出），本地脚本高频调用
+ *  run 端点也会无界建任务。以 lastRunAt 为锚点做每自动化的最小间隔限速。 */
+const FIRE_MIN_INTERVAL_MS = 60 * 1000;
 
 const EVENT_SOURCE_LABEL = { task_succeeded: '任务完成', task_failed: '任务失败' };
 
@@ -51,11 +55,16 @@ function catchUpMissed() {
   console.log(`[scheduler] 已补跑 ${missed.length} 个错过的定时任务`);
 }
 
-/** 安全触发：单个自动任务失败（如执行者已删除）不影响其余任务与后续排程 */
+/** 安全触发：单个自动任务失败（如执行者已删除）不影响其余任务与后续排程。
+ *  限流（RATE_LIMITED）是正常的风暴兜底，静默记录即可，不按失败推进计划 */
 function fireSafely(automation, reason, overrides = {}) {
   try {
     return fire(automation, reason, overrides);
   } catch (error) {
+    if (error?.code === 'RATE_LIMITED') {
+      console.log(`[scheduler] ${error.message}`);
+      return null;
+    }
     console.error(`[scheduler] 触发自动任务「${automation.name}」失败:`, error.message || error);
     // 触发失败仍推进计划，避免同一失效任务在每个 tick 反复抛错刷屏
     tryAdvance(automation);
@@ -86,6 +95,21 @@ function fire(automation, reason, overrides = {}) {
     ) {
       console.log(`[scheduler] 自动任务「${automation.name}」上一轮任务仍在进行，本轮跳过`);
       return null;
+    }
+  }
+
+  // 事件/API 触发限速：上次触发距今不足最小间隔时拒绝本次触发（FIRE_MIN_INTERVAL_MS）。
+  // 对事件触发这是防风暴兜底（RATE_LIMITED 由 fireSafely 静默吞掉，不推进计划）；
+  // 对 API 触发由调用方（http-server）转成 429，脚本可据此退避。
+  // lastRunAt 缺失/非法视为从未触发，直接放行
+  if (automation.trigger.type !== 'schedule') {
+    const last = new Date(automation.lastRunAt || '').getTime();
+    if (!Number.isNaN(last) && Date.now() - last < FIRE_MIN_INTERVAL_MS) {
+      const error = new Error(
+        `自动任务「${automation.name}」触发过于频繁（${Math.round(FIRE_MIN_INTERVAL_MS / 1000)} 秒内已触发过），本次已限流忽略`
+      );
+      error.code = 'RATE_LIMITED';
+      throw error;
     }
   }
 
@@ -148,4 +172,4 @@ function tick() {
   }
 }
 
-module.exports = { start, stop, fire };
+module.exports = { start, stop, fire, FIRE_MIN_INTERVAL_MS };

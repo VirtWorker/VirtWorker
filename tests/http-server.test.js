@@ -99,6 +99,18 @@ describe('http-server Token 鉴权', () => {
     expect(String(payload.data.taskId)).toMatch(/^tk_/);
   });
 
+  test('最小触发间隔内重复触发同一自动任务返回 429（A3 限速）', async () => {
+    const port = ensureServer();
+    const { id, token } = makeApiAutomation();
+    const headers = { 'X-VirtWorker-Token': token, 'Content-Type': 'application/json' };
+    expect((await request(port, { path: `/automations/${id}/run`, method: 'POST', headers })).statusCode).toBe(200);
+
+    // 立即再次触发：被调度器最小间隔限流，端点转成 429（脚本可据此退避）
+    const again = await request(port, { path: `/automations/${id}/run`, method: 'POST', headers });
+    expect(again.statusCode).toBe(429);
+    expect(JSON.parse(again.body).error.code).toBe('TOO_MANY_REQUESTS');
+  });
+
   test('错误 Token 返回 401，不创建任务', async () => {
     const port = ensureServer();
     const { id } = makeApiAutomation();

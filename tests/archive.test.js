@@ -61,6 +61,18 @@ describe('archiveAged 归档迁移', () => {
     expect(taskService.archiveAged().archived).toBe(0);
   });
 
+  test('BUG-26 先入后出：活跃与归档短暂双份（崩溃残留）时幂等去重，不产生重复归档', () => {
+    const task = makeTask('双份残留任务', { ackedDaysAgo: 40 });
+    // 模拟「insert 归档已落盘、remove 活跃未落盘」崩溃窗口的残留状态
+    db.insert('tasks-archive', db.find('tasks', task.id));
+
+    const result = taskService.archiveAged();
+    expect(result.archived).toBe(1);
+    const archiveIds = db.all('tasks-archive').map((item) => item.id);
+    expect(archiveIds.filter((id) => id === task.id).length).toBe(1); // 恰好一份
+    expect(db.find('tasks', task.id)).toBeNull(); // 活跃集合已清除
+  });
+
   test('归档后任务仍可通过 getTask/detail 读取，时间线完整', () => {
     const task = makeTask('归档后可读', { ackedDaysAgo: 45 });
     taskService.archiveAged();

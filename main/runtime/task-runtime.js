@@ -35,6 +35,10 @@ const MAX_CONCURRENT = 5;
 /** 离线重试：指数退避（30s 起步，最长 10 分钟） */
 const RETRY_BASE_MS = 30 * 1000;
 const RETRY_MAX_MS = 10 * 60 * 1000;
+/** 离线重试上限：达到后任务落为失败（ASSIGNEE_OFFLINE），不再无限期占用排队——
+ *  执行者长期不恢复（或被删但漏走级联）时，无上限重试会制造「永远排队」的僵尸任务。
+ *  累计约 1 小时退避后放弃；执行者恢复在线后可对失败任务手动重试 */
+const MAX_OFFLINE_RETRIES = 10;
 /** 单步执行默认超时：执行器可通过 stepTimeoutMs() 覆盖（真实 LLM 执行器建议按请求特征设定） */
 const STEP_TIMEOUT_MS = 120 * 1000;
 /** 步骤级重试退避：1s 起步、翻倍、上限 30s（F1；次数由执行器 stepRetryLimit() 声明） */
@@ -312,11 +316,20 @@ function resumeRunning(taskId, task) {
   pump(taskId);
 }
 
-/** 离线任务退避重试：首次记录时间线，之后静默重试；恢复在线由 start() 的监听立即触发 */
+/** 离线任务退避重试：首次记录时间线，之后静默重试；恢复在线由 start() 的监听立即触发。
+ *  重试达到 MAX_OFFLINE_RETRIES 上限时落为失败，任务必须能到达终态（不允许僵尸排队） */
 function scheduleRetry(taskId, name) {
   if (retryTimers.has(taskId)) return; // 已在重试计划中
   const attempts = retryAttempts.get(taskId) || 0;
   if (attempts === 0) taskService.recordEvent(taskId, `执行者「${name}」当前不在线，任务等待中`);
+  if (attempts >= MAX_OFFLINE_RETRIES) {
+    release(taskId); // 清理退避计数等中间态（未占并发槽位，release 无副作用）
+    safeFailTask(taskId, {
+      code: 'ASSIGNEE_OFFLINE',
+      message: `执行者「${name}」持续离线，已自动重试 ${attempts} 次仍无法派发，任务已失败；执行者恢复在线后可手动重试`
+    });
+    return;
+  }
   retryAttempts.set(taskId, attempts + 1);
   const delay = Math.min(RETRY_BASE_MS * 2 ** attempts, RETRY_MAX_MS);
   const timer = setTimeout(() => {
@@ -369,6 +382,19 @@ async function runStepWithTimeout(executor, task, step, ctx) {
 }
 
 /**
+ * 任务级总超时（E3，可选 timeoutMinutes）：从开始执行（startedAt）起算的墙钟上限，
+ * pump 每步推进前检查；need_action 暂停期同样计入总时长（人工操作窗口有限，
+ * 需要更长操作窗口的任务不要配置总超时或调大值）。未配置/字段非法返回 0（不限时）。
+ */
+function taskDeadline(task) {
+  const minutes = Number(task?.timeoutMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  const started = new Date(task.startedAt || '').getTime();
+  if (Number.isNaN(started)) return 0;
+  return started + minutes * 60 * 1000;
+}
+
+/**
  * 执行循环：串行推进未完成步骤。
  * 每步 await 执行器（支持真实 LLM 异步）；需要用户操作时暂停并等待 resume。
  * pumping 守卫保证同一任务任意时刻只有一个循环在跑。
@@ -386,6 +412,14 @@ async function pump(taskId) {
       const task = taskService.getTask(taskId);
       if (!task) return release(taskId); // 任务已被删除：必须释放槽位
       if (task.status !== taskService.STATUS.running) return; // 暂停/取消：槽位已由 requestAction/stop 释放
+
+      // 任务级总超时（E3）：每步推进前检查累计耗时，超限按 TASK_TIMEOUT 兜底失败
+      const deadline = taskDeadline(task);
+      if (deadline && Date.now() >= deadline) {
+        const error = new Error(`任务总耗时超过 ${task.timeoutMinutes} 分钟，已按超时策略中止`);
+        error.code = 'TASK_TIMEOUT';
+        throw error;
+      }
 
       const step = task.steps.find((item) => item.status !== 'done');
       if (!step) return await finish(taskId); // await 保持在 try 内：收口抛错仍走本循环的异常兜底
@@ -435,11 +469,12 @@ async function pump(taskId) {
       stepRetries = 0;
     }
   } catch (error) {
-    if (error?.code === 'STEP_TIMEOUT') {
+    // 步骤超时与任务总超时都是挂起兜底（重试只会加倍挂起时间），不重试、直接落为失败
+    if (error?.code === 'STEP_TIMEOUT' || error?.code === 'TASK_TIMEOUT') {
       ctx.controller.abort(); // 通知执行器中止挂起的请求（真实执行器应中断网络调用）
       console.error(`[runtime] 任务 ${taskId} ${error.message}`);
       release(taskId);
-      safeFailTask(taskId, { code: 'STEP_TIMEOUT', message: error.message });
+      safeFailTask(taskId, { code: error.code, message: error.message });
       return;
     }
     // 取消识别以 abort 信号为准（不同执行器的 abort 错误文案各异）；取消时 stop() 已完成清理
@@ -588,6 +623,7 @@ module.exports = {
   stop,
   shutdown,
   MAX_CONCURRENT,
+  MAX_OFFLINE_RETRIES,
   capacity,
   checkActionTimeouts,
   /** 排空等待队列（OPT-6）：settings:update 调大 maxConcurrent 后由 IPC 层调用，

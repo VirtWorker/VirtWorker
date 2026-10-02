@@ -224,6 +224,10 @@ describe('chat-service：聊天绑定与会话消息接入', () => {
   });
 
   test('ingest：群聊 @ 具体 Worker 名同样命中', () => {
+    // 与上一用例共用同一绑定（A3 节流以 lastMessageAt 为锚点）：回拨到最小间隔之外
+    db.update('chatbindings', chatService.listBindings().items.find((item) => item.chatId === `${connection.id}:group-bound`).id, {
+      lastMessageAt: new Date(Date.now() - chatService.CHAT_TASK_MIN_INTERVAL_MS - 1000).toISOString()
+    });
     const result = chatService.ingest({
       connectionId: connection.id,
       chatId: `${connection.id}:group-bound`,
@@ -270,6 +274,10 @@ describe('chat-service：聊天绑定与会话消息接入', () => {
   });
 
   test('ingest：超长消息截断到任务目标上限（500 字），不抛错', () => {
+    // 与「群聊 @Worker」用例共用同一绑定（A3 节流以 lastMessageAt 为锚点）：回拨到最小间隔之外
+    db.update('chatbindings', chatService.listBindings().items.find((item) => item.chatId === `${connection.id}:group-bound`).id, {
+      lastMessageAt: new Date(Date.now() - chatService.CHAT_TASK_MIN_INTERVAL_MS - 1000).toISOString()
+    });
     const longText = `@Worker ${'测'.repeat(600)}`;
     const result = chatService.ingest({
       connectionId: connection.id,
@@ -280,6 +288,55 @@ describe('chat-service：聊天绑定与会话消息接入', () => {
     });
     expect(result.kind).toBe('task_created');
     expect(taskService.detail(result.taskId).task.goal.length).toBe(500);
+  });
+
+  test('ingest：同一聊天最小间隔内重复触发被限流（A3），不建任务并回复提示', () => {
+    const chatId = `${connection.id}:group-throttle`;
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId,
+      chatName: '限流群',
+      chatType: 'group',
+      workerId
+    });
+    imAdapter.clearOutbox();
+    const first = chatService.ingest({
+      connectionId: connection.id,
+      chatId,
+      chatName: '限流群',
+      chatType: 'group',
+      sender: '王工',
+      text: `@${workerName} 第一条`
+    });
+    expect(first.kind).toBe('task_created');
+
+    // 最小间隔内的第二条：不建任务、reason=rate_limited，并经适配器回复「未生成任务」提示
+    const second = chatService.ingest({
+      connectionId: connection.id,
+      chatId,
+      chatName: '限流群',
+      chatType: 'group',
+      sender: '王工',
+      text: `@${workerName} 第二条`
+    });
+    expect(second.kind).toBe('skipped');
+    expect(second.reason).toBe('rate_limited');
+    expect(imAdapter.listOutbox(connection.id).some((m) => m.content.includes('未生成任务'))).toBe(true);
+
+    // 节流锚点不推进：窗口过后下一条消息可正常触发
+    db.update('chatbindings', binding.id, {
+      lastMessageAt: new Date(Date.now() - chatService.CHAT_TASK_MIN_INTERVAL_MS - 1000).toISOString()
+    });
+    const third = chatService.ingest({
+      connectionId: connection.id,
+      chatId,
+      chatName: '限流群',
+      chatType: 'group',
+      sender: '王工',
+      text: `@${workerName} 第三条`
+    });
+    expect(third.kind).toBe('task_created');
+    imAdapter.clearOutbox();
   });
 
   test('ingest：连接不存在返回 NOT_FOUND，空消息被校验拦截', () => {
@@ -569,6 +626,11 @@ describe('chat-service：出站回执与应答回流（F3）', () => {
       form: [{ name: 'note', label: '说明', required: false, type: 'text' }]
     });
 
+    // 每绑定建任务有最小间隔节流（A3）：用例需要连续建任务，把节流锚点回拨到窗口之外
+    db.update('chatbindings', binding.id, {
+      lastMessageAt: new Date(Date.now() - chatService.CHAT_TASK_MIN_INTERVAL_MS - 1000).toISOString()
+    });
+
     // 任务 B（最新）直接完成：lastTaskId 指向已终态任务
     const inboundB = chatService.ingest({
       connectionId: connection.id,
@@ -608,6 +670,10 @@ describe('chat-service：出站回执与应答回流（F3）', () => {
       text: '先问的任务'
     });
     taskService.requestAction(first.taskId, { type: 'selection', title: '口径一', options, defaultValue: 'amount' });
+    // 节流锚点回拨到窗口之外（A3 节流落地后连续建任务需绕开最小间隔）
+    db.update('chatbindings', binding.id, {
+      lastMessageAt: new Date(Date.now() - chatService.CHAT_TASK_MIN_INTERVAL_MS - 1000).toISOString()
+    });
     const second = chatService.ingest({
       connectionId: connection.id,
       chatId: binding.chatId,

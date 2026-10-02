@@ -691,9 +691,21 @@ function rotateBackups() {
  *    在 Windows 上冲突（EPERM），也保证快照内容不半新半旧；期间变更留在内存/dirty；
  * ③ 拷贝结束 finally 收口：补 flush + 按需补压缩，把拷贝期间累积的变更统一落盘。
  * 只读保护下 flush/compact 自然跳过，按当前磁盘状态出快照（与既有行为一致）。
+ * 并发串行化（BUG-25）：backup 可能被并发调用（每日维护与设置中心手动备份重叠）。
+ * snapshotInFlight 是单布尔屏障，两个并发拷贝中先结束的一方会在 finally 里无条件复位，
+ * 另一个仍在拷贝——写入屏障失效，重新引入 Windows 上 rename 与拷贝读句柄的冲突。
+ * 把所有 backup 调用串到一条 Promise 链上：后到者等前一个完整收口后再启动自己的快照。
  */
-async function backup() {
-  if (!baseDir) return { dir: '', files: 0, kept: 0 };
+let backupChain = Promise.resolve();
+
+function backup() {
+  if (!baseDir) return Promise.resolve({ dir: '', files: 0, kept: 0 });
+  const run = backupChain.then(() => backupOnce(), () => backupOnce()); // 前次失败不阻断后续快照
+  backupChain = run.then(() => {}, () => {}); // 链条本身永不 rejected
+  return run;
+}
+
+async function backupOnce() {
   flush(); // 屏障①：磁盘 == 内存
   if (!readOnlyReason && eventsLogLines > 0) compactEventsLog();
   const target = path.join(backupsRoot(), snapshotName(new Date()));

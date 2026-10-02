@@ -42,6 +42,8 @@ const STATUS_FILTER = {
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const MAX_EVENTS = 200;
+/** 任务级总超时上限（分钟）：从开始执行起算的墙钟上限（E3），缺省/0 = 不限时 */
+const TASK_TIMEOUT_MAX_MINUTES = 7 * 24 * 60;
 /** 列表分页 pageSize 上限：防止一次下发全量列表（渲染层按 50/页增量加载，累计窗口上限即此值） */
 const LIST_PAGE_SIZE_MAX = 200;
 
@@ -191,12 +193,23 @@ function create(params = {}) {
   const trigger = normalizeTrigger(params.trigger);
   const title = String(params.title ?? '').trim() || goal.slice(0, 24);
 
+  // 任务级总超时（E3）：可选，1..TASK_TIMEOUT_MAX_MINUTES 分钟；运行时在每步推进前检查
+  let timeoutMinutes = null;
+  if (params.timeoutMinutes !== undefined && params.timeoutMinutes !== null && params.timeoutMinutes !== '') {
+    const minutes = Number(params.timeoutMinutes);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > TASK_TIMEOUT_MAX_MINUTES) {
+      throw fail.validation(`任务超时必须是 1-${TASK_TIMEOUT_MAX_MINUTES} 分钟的整数`);
+    }
+    timeoutMinutes = minutes;
+  }
+
   const task = {
     id: createId('tk'),
     title: title.slice(0, 60),
     goal,
     status: STATUS.queued,
     priority: PRIORITIES.includes(params.priority) ? params.priority : 'normal',
+    timeoutMinutes,
     trigger,
     assignee,
     confirmFirst: Boolean(params.confirmFirst),
@@ -574,6 +587,7 @@ function retry(id, { fromStep = null } = {}) {
     goal: source.goal,
     assigneeId: source.assignee.id,
     priority: source.priority,
+    timeoutMinutes: source.timeoutMinutes, // 重试任务沿用原任务的总超时口径
     workspace: source.workspace?.cwd,
     payload: source.input?.payload,
     tags: source.tags,
@@ -635,14 +649,19 @@ function purgeExpired(days = 90, now = Date.now()) {
 }
 
 /** 归档迁移（BUG-20）：把「已查收且超出归档阈值」的任务从 tasks 批量移入 tasks-archive。
- *  由每日维护调用（启动首跑 + 每 24h），低频批量，写入经 insertMany/removeWhere 各只落盘一轮。 */
+ *  由每日维护调用（启动首跑 + 每 24h），低频批量，写入经 insertMany/removeWhere 各只落盘一轮。
+ *  先入后出（BUG-26）：原「先出后进」在两次落盘之间崩溃时（tasks.json 已写出删除、
+ *  tasks-archive.json 尚未写出插入，dirty 缓存随进程消亡），这批已查收任务会从磁盘永久消失。
+ *  改为先插入归档再删除活跃：崩溃最多留下「活跃与归档短暂双份」，由第一步的幂等去重
+ *  （先清归档同名 id 再插入）在下次归档重跑时收敛，不再产生不可逆丢失。 */
 function archiveAged(days = ARCHIVE_AFTER_DAYS, now = Date.now()) {
   const threshold = now - days * 24 * 60 * 60 * 1000;
   const aged = db.query('tasks', agedPredicate(threshold));
   if (!aged.length) return { archived: 0, threshold: days };
   const ids = aged.map((task) => task.id);
-  db.removeWhere('tasks', { id: ids }); // 先出后进：保证任何时刻任务只存在于一个集合
+  db.removeWhere('tasks-archive', { id: ids }); // 幂等去重：上次中断遗留的双份先清掉，保证归档集合无重复
   db.insertMany('tasks-archive', aged);
+  db.removeWhere('tasks', { id: ids });
   return { archived: aged.length, threshold: days };
 }
 
@@ -706,6 +725,7 @@ module.exports = {
   ACTIVE_STATUS,
   FINISHED_STATUS,
   TRIGGER_LABEL,
+  TASK_TIMEOUT_MAX_MINUTES,
   create,
   list,
   queue,

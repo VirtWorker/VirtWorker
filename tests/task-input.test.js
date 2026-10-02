@@ -296,3 +296,30 @@ describe('taskService 列表检索与批量查收（O8/F8）', () => {
     }
   });
 });
+
+describe('taskService.create 任务级总超时（E3）', () => {
+  let worker;
+
+  beforeEach(() => {
+    ['workers', 'tasks'].forEach((name) => db.removeWhere(name, () => true));
+    worker = workerService.createWorker({ name: '超时测试者' });
+  });
+
+  test('合法 timeoutMinutes 入库；缺省为 null（不限时）', () => {
+    const limited = taskService.create({ goal: '限时任务', assigneeId: worker.id, timeoutMinutes: 30 });
+    expect(limited.timeoutMinutes).toBe(30);
+    const unlimited = taskService.create({ goal: '不限时任务', assigneeId: worker.id });
+    expect(unlimited.timeoutMinutes).toBeNull();
+    const empty = taskService.create({ goal: '空串不限时', assigneeId: worker.id, timeoutMinutes: '' });
+    expect(empty.timeoutMinutes).toBeNull();
+  });
+
+  test('非法 timeoutMinutes 被校验拒绝（0/负数/小数/非数字/超上限）', () => {
+    const badValues = [0, -5, 2.5, 'abc', taskService.TASK_TIMEOUT_MAX_MINUTES + 1];
+    for (const value of badValues) {
+      expect(() =>
+        taskService.create({ goal: '非法超时', assigneeId: worker.id, timeoutMinutes: value })
+      ).toThrow(/任务超时/);
+    }
+  });
+});

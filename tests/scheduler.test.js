@@ -163,3 +163,73 @@ describe('调度计划推进（P1-10）', () => {
     expect(next.nextRunAt).toBeTruthy();
   });
 });
+
+
+describe('事件/API 触发限速（A3）：最小触发间隔防风暴', () => {
+  let dir;
+
+  beforeAll(() => {
+    dir = initTempDb();
+    scheduler.start(); // 注册 task:finished → onTaskFinished 监听
+  });
+
+  afterAll(() => {
+    scheduler.stop();
+    cleanupTempDb(dir);
+  });
+
+  function makeEventAutomation(prefix) {
+    const worker = workerService.createWorker({ name: `${prefix}执行者${Date.now().toString(36)}`.slice(0, 20) });
+    const automation = automationService.create({
+      name: `${prefix}任务${Date.now().toString(36)}`,
+      executorId: worker.id,
+      trigger: { type: 'event', event: { source: 'task_succeeded', assigneeId: '' } },
+      input: { goal: '目标' }
+    });
+    return db.find('automations', automation.id);
+  }
+
+  test('fire：上次触发不足最小间隔时抛 RATE_LIMITED，不重复建任务', () => {
+    const automation = makeEventAutomation('直连限速');
+    const first = scheduler.fire(automation, '测试触发');
+    expect(first).toBeTruthy();
+
+    // 重新读取（首次触发已把 lastRunAt 落库，旧对象的锚点仍为 null）
+    const fresh = db.find('automations', automation.id);
+    let limited = null;
+    try {
+      scheduler.fire(fresh, '测试触发');
+    } catch (error) {
+      limited = error;
+    }
+    expect(limited?.code).toBe('RATE_LIMITED');
+    expect(db.query('tasks', (task) => task.trigger?.refId === automation.id).length).toBe(1);
+  });
+
+  test('事件触发链：限流被 fireSafely 静默吞掉，不推进计划也不抛错', () => {
+    const automation = makeEventAutomation('风暴限速');
+    bus.command('task:finished', { status: 'succeeded', taskId: 'tk_sa', assigneeId: 'wk_other', depth: 0 });
+    expect(db.query('tasks', (task) => task.trigger?.refId === automation.id).length).toBe(1);
+
+    // 失败风暴下同一终态事件在最小间隔内再次匹配：被限流，任务数不变、不抛异常
+    expect(() => {
+      bus.command('task:finished', { status: 'succeeded', taskId: 'tk_sb', assigneeId: 'wk_other', depth: 0 });
+    }).not.toThrow();
+    expect(db.query('tasks', (task) => task.trigger?.refId === automation.id).length).toBe(1);
+    // 限流不是失效：不按失败推进计划（enabled 保持、once 语义不受影响）
+    const stored = db.find('automations', automation.id);
+    expect(stored.enabled).toBe(true);
+  });
+
+  test('超过最小间隔后可再次触发（锚点为 lastRunAt）', () => {
+    const automation = makeEventAutomation('窗口恢复');
+    expect(scheduler.fire(automation, '首次')).toBeTruthy();
+    // 把 lastRunAt 回拨到最小间隔之外
+    db.update('automations', automation.id, {
+      lastRunAt: new Date(Date.now() - scheduler.FIRE_MIN_INTERVAL_MS - 1000).toISOString()
+    });
+    const again = scheduler.fire(db.find('automations', automation.id), '窗口外触发');
+    expect(again).toBeTruthy();
+    expect(again.trigger.refId).toBe(automation.id);
+  });
+});

@@ -126,27 +126,93 @@ VW.views.shell = (() => {
     await Promise.all([refreshDataStats(), refreshExecutorSelect(), refreshBackups()]);
   }
 
+  /** 数值字段统一校验：合法返回数值，非法记录字段名并回退旧值——
+   *  此前非法输入被静默钳制回旧值，用户不知道自己填的内容被丢弃了（C3） */
+  function pickNumber(value, { min, max, fallback }) {
+    const num = Number(value);
+    if (Number.isInteger(num) && num >= min && num <= max) return num;
+    return fallback;
+  }
+
+  function invalidField(value, { min, max, label, range }) {
+    const num = Number(value);
+    const ok = Number.isInteger(num) && num >= min && num <= max;
+    if (ok) return null;
+    return `${label}（${range}）`;
+  }
+
+  /**
+   * 等待本地端点重启结果（C3）：优先等主进程广播的 app:runtime 事件（事件驱动），
+   * 超时兜底返回当前状态。此前固定等待 1.2 秒——慢机器误报「启动失败」，快机器白等。
+   * 订阅在保存响应返回后同步注册，不会错过主进程后续发出的事件。
+   */
+  function waitForApiServer(timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let off = null;
+      const finish = (server) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (off) off();
+        resolve(server || store.state.apiServer);
+      };
+      off = VW.api.onEvent(({ type, payload }) => {
+        if (type === 'app:runtime' && payload?.apiServer) finish(payload.apiServer);
+      });
+      const timer = setTimeout(() => finish(), timeoutMs);
+    });
+  }
+
   async function saveSettings() {
     const port = Number(document.getElementById('setting-api-port').value);
     const retention = Number(document.getElementById('setting-retention').value);
     const maxConcurrent = Number(document.getElementById('setting-max-concurrent').value);
     const actionTimeoutHours = Number(document.getElementById('setting-action-timeout').value);
+    const field = (value, spec) => {
+      const invalid = invalidField(value, spec);
+      if (invalid) invalidFields.push(invalid);
+      return pickNumber(value, spec);
+    };
+    const invalidFields = [];
     const patch = {
-      maxConcurrent: Number.isInteger(maxConcurrent) && maxConcurrent >= 1 && maxConcurrent <= 20
-        ? maxConcurrent
-        : store.state.settings.maxConcurrent,
-      actionTimeoutHours:
-        Number.isInteger(actionTimeoutHours) && actionTimeoutHours >= 0 && actionTimeoutHours <= 8760
-          ? actionTimeoutHours
-          : store.state.settings.actionTimeoutHours,
+      maxConcurrent: field(maxConcurrent, {
+        min: 1,
+        max: 20,
+        fallback: store.state.settings.maxConcurrent,
+        label: '并发上限',
+        range: '1-20'
+      }),
+      actionTimeoutHours: field(actionTimeoutHours, {
+        min: 0,
+        max: 8760,
+        fallback: store.state.settings.actionTimeoutHours,
+        label: '操作超时',
+        range: '0-8760 小时'
+      }),
       actionTimeoutPolicy: document.getElementById('setting-action-policy').value,
       notify: document.getElementById('setting-notify').checked,
       catchUpMissed: document.getElementById('setting-catchup').checked,
       mockRandomAction: document.getElementById('setting-random-action').checked,
       theme: document.getElementById('setting-theme').value,
-      apiPort: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : store.state.settings.apiPort,
-      taskRetentionDays: Number.isInteger(retention) && retention >= 1 ? retention : store.state.settings.taskRetentionDays
+      apiPort: field(port, {
+        min: 1024,
+        max: 65535,
+        fallback: store.state.settings.apiPort,
+        label: 'API 端口',
+        range: '1024-65535'
+      }),
+      taskRetentionDays: field(retention, {
+        min: 1,
+        max: Number.MAX_SAFE_INTEGER,
+        fallback: store.state.settings.taskRetentionDays,
+        label: '任务保留期',
+        range: '≥1 天'
+      })
     };
+    if (invalidFields.length) {
+      VW.toast.show(`以下输入无效，已保留原值：${invalidFields.join('、')}`, { level: 'warn' });
+    }
 
     try {
       const saved = await VW.api.settings.update(patch);
@@ -161,10 +227,9 @@ VW.views.shell = (() => {
       }
       VW.toast.show('设置已保存');
 
-      // 端口改动后主进程会自动重启本地端点并广播 app:runtime；这里根据最新状态提示结果
+      // 端口改动后主进程会自动重启本地端点并广播 app:runtime，据此提示结果
       if (patch.apiPort !== store.state.apiServer.port) {
-        await new Promise((r) => setTimeout(r, 1200)); // 等待端点重启完成
-        const server = store.state.apiServer;
+        const server = await waitForApiServer();
         if (server.running) VW.toast.show(`API 端点已在 ${server.port} 端口生效`);
         else VW.toast.show(`API 端点启动失败：${server.error || '端口不可用'}`);
       }
