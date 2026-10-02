@@ -18,6 +18,7 @@ const OUT = path.join(RENDERER, 'app.bundle.js');
 /** 加载顺序即依赖顺序：util → api/store → 组件 → 视图 → 入口 */
 const FILES = [
   'js/util.js',
+  'js/icons.js',
   'js/api.js',
   'js/store.js',
   'js/components/toast.js',

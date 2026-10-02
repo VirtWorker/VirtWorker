@@ -57,6 +57,8 @@ VW.views.capabilities = (() => {
         render();
       } catch (error) {
         VW.toast.fromError(error);
+        // C2：加载失败与「暂无数据」可区分，网格内给出可重试错误块
+        VW.util.renderListError(document.getElementById('skill-grid'), { retry: refresh });
       } finally {
         inflight = null;
       }
@@ -75,7 +77,10 @@ VW.views.capabilities = (() => {
   }
 
   async function ensureLoaded() {
-    if (!state.loaded) await refresh();
+    if (state.loaded) return;
+    // C2：首次懒加载期间给出加载占位，不再是「上一次内容或空白」
+    VW.util.renderListLoading(document.getElementById('skill-grid'), '技能与资源加载中…');
+    await refresh();
   }
 
   function mountedCount(capabilityId) {
@@ -274,7 +279,7 @@ VW.views.capabilities = (() => {
     await ensureLoaded();
     await VW.views.workers.refreshAll();
     if (!store.state.workers.length) {
-      VW.toast.show('请先创建 Worker');
+      VW.toast.show(VW.util.LABELS.noWorker);
       return;
     }
     const select = document.getElementById('mount-worker');
@@ -364,10 +369,15 @@ VW.views.capabilities = (() => {
           await refresh();
           VW.toast.show(`已安装「${skill.title}」，可挂载到 Worker 使用`);
         } else if (action === 'uninstall') {
-          if (!window.confirm('卸载后将从所有 Worker 上摘除，确认卸载？')) return;
-          await VW.api.capability.remove(card.dataset.capability);
-          await refresh();
-          VW.toast.show('已卸载');
+          // F3：破坏性确认统一走 submitAction（应用内约定），不再混用原生 window.confirm
+          await VW.util.submitAction(
+            async () => {
+              await VW.api.capability.remove(card.dataset.capability);
+              await refresh();
+              VW.toast.show('已卸载');
+            },
+            { confirm: '卸载后将从所有 Worker 上摘除，确认卸载？' }
+          );
         } else if (action === 'mount') {
           openMount();
         }
@@ -389,10 +399,14 @@ VW.views.capabilities = (() => {
         if (action === 'authorize') return openConnectorModal(key);
         if (action === 'mount') return openMount();
         if (action === 'revoke') {
-          if (!window.confirm('撤销后该连接器将不可用，确认撤销？')) return undefined;
-          await VW.api.capability.revoke(connector.capabilityId);
-          await refresh();
-          VW.toast.show('已撤销授权');
+          await VW.util.submitAction(
+            async () => {
+              await VW.api.capability.revoke(connector.capabilityId);
+              await refresh();
+              VW.toast.show('已撤销授权');
+            },
+            { confirm: '撤销后该连接器将不可用，确认撤销？' }
+          );
         }
       } catch (error) {
         VW.toast.fromError(error);

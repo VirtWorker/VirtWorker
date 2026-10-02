@@ -11,6 +11,7 @@ const httpServer = require('./runtime/http-server');
 const webhookNotifier = require('./runtime/webhook-notifier');
 const taskService = require('./services/task-service');
 const chatService = require('./services/chat-service');
+const capabilityService = require('./services/capability-service');
 const logger = require('./util/logger');
 const bus = require('./runtime/event-bus');
 
@@ -155,6 +156,12 @@ function startDailyMaintenance() {
       if (removed) console.log(`[main] 每日维护：已按保留策略（${retention} 天）清理 ${removed} 条已处理的聊天接入申请（E5）`);
     } catch (error) {
       console.error('[main] 每日维护：聊天申请清理失败:', error.message);
+    }
+    try {
+      const orphanChunks = capabilityService.purgeOrphanChunks();
+      if (orphanChunks) console.log(`[main] 每日维护：清扫孤儿知识库片段 ${orphanChunks} 条（F4）`);
+    } catch (error) {
+      console.error('[main] 每日维护：孤儿片段清扫失败:', error.message);
     }
     try {
       const result = await db.backup();

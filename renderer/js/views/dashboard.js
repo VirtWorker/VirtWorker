@@ -127,6 +127,10 @@ VW.views.dashboard = (() => {
       : 'Worker 们正在休息';
   }
 
+  /** 队列渲染指纹（F5）：上次重建的 HTML 与页签，内容未变时跳过重建 */
+  let lastQueueHtml = null;
+  let lastQueueTab = null;
+
   function renderTabs() {
     const queue = store.state.queue;
     document.querySelector('#dashboard-tabs [data-count="action"]').textContent = String(queue.action.length);
@@ -144,6 +148,7 @@ VW.views.dashboard = (() => {
     const container = document.getElementById('dashboard-tab-list');
 
     if (!list.length) {
+      lastQueueHtml = null; // 清空后下次内容出现必须重建（F5 指纹复位）
       container.innerHTML = '';
       empty.classList.remove('hidden');
       empty.querySelector('.empty-title').textContent =
@@ -156,11 +161,14 @@ VW.views.dashboard = (() => {
     }
 
     empty.classList.add('hidden');
-    // 全量 innerHTML 重建前采集已填写的输入，重建后按 taskId 恢复（重绘竞态不丢用户输入）
+    // 按需重建（F5）：任务每步更新期间本函数被高频触发，内容未变化时跳过
+    // innerHTML 重建与「采集/恢复输入」的整条补偿链（上次渲染结果做指纹比对）
+    const html = list.map((task) => (tab === 'result' ? resultItemHtml(task) : actionItemHtml(task))).join('');
+    if (html === lastQueueHtml && tab === lastQueueTab) return;
+    lastQueueHtml = html;
+    lastQueueTab = tab;
     const savedForm = collectQueueFormState();
-    container.innerHTML = list
-      .map((task) => (tab === 'result' ? resultItemHtml(task) : actionItemHtml(task)))
-      .join('');
+    container.innerHTML = html;
     restoreQueueFormState(savedForm);
   }
 
@@ -168,7 +176,7 @@ VW.views.dashboard = (() => {
   function actionItemHtml(task) {
     const request = task.actionRequest || {};
     return `
-      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${escapeHtml(task.id)}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -225,7 +233,7 @@ VW.views.dashboard = (() => {
   function resultItemHtml(task) {
     const result = task.result || {};
     return `
-      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
+      <div class="queue-item" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${escapeHtml(task.id)}">
         <div class="queue-head">
           <span class="queue-title">${escapeHtml(task.title)}</span>
           ${statusBadge(task.status)}
@@ -303,7 +311,7 @@ VW.views.dashboard = (() => {
       container.innerHTML = tasks
         .map(
           (task) => `
-        <div class="task-row" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
+        <div class="task-row" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${escapeHtml(task.id)}">
           <div class="task-row-main">
             <div class="task-row-title">${escapeHtml(task.title)}</div>
             <div class="task-row-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${escapeHtml(
@@ -336,7 +344,7 @@ VW.views.dashboard = (() => {
                 ? items
                     .map(
                       (task) => `
-              <div class="board-card" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${task.id}">
+              <div class="board-card" tabindex="0" role="button" aria-label="${escapeHtml(task.title)}" data-id="${escapeHtml(task.id)}">
                 <div class="board-card-title">${escapeHtml(task.title)}</div>
                 <div class="board-card-meta">${escapeHtml(assigneeLabel(task.assignee))} · ${statusMeta(task.status).label}</div>
                 ${progressHtml(task)}

@@ -153,10 +153,15 @@ VW.views.capabilitiesKnowledge = (() => {
           return;
         }
         if (action === 'remove') {
-          if (!window.confirm('删除知识库会同时清除其索引，确认删除？')) return;
-          await VW.api.capability.remove(id);
-          await VW.capCtx.refresh();
-          VW.toast.show('知识库已删除');
+          // F3：破坏性确认统一走 submitAction
+          await VW.util.submitAction(
+            async () => {
+              await VW.api.capability.remove(id);
+              await VW.capCtx.refresh();
+              VW.toast.show('知识库已删除');
+            },
+            { confirm: '删除知识库会同时清除其索引，确认删除？' }
+          );
         }
       } catch (error) {
         VW.toast.fromError(error);

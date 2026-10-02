@@ -135,6 +135,55 @@ VW.util = (() => {
     }
   }
 
+  /** 通用文案常量（F3 收编）：同一语义文案此前散落 6+ 处、措辞各自漂移 */
+  const LABELS = Object.freeze({
+    noWorker: '请先创建 Worker',
+    noWorkerOrGroup: '请先创建 Worker 或 Group',
+    noDesc: '暂无描述',
+    enabled: '已启用',
+    disabled: '已停用'
+  });
+
+  /**
+   * 开关切换样板（F3 收编）：成功 → toast + 刷新；失败 → 错误提示 + 刷新回滚。
+   * 此前 atworker 与 automations 两处手写逐行相同的 toggle 链。
+   * @param {HTMLInputElement} toggle 开关 input（读取 checked 终态文案）
+   * @param {(enable: boolean) => Promise} apiFn 提交函数
+   * @param {() => Promise} refresh 成功/失败后共用的刷新（失败刷新即回滚开关状态）
+   */
+  function handleSwitchToggle(toggle, apiFn, refresh) {
+    const enable = Boolean(toggle.checked);
+    apiFn(enable)
+      .then(async () => {
+        VW.toast.show(enable ? LABELS.enabled : LABELS.disabled);
+        await refresh();
+      })
+      .catch(async (error) => {
+        VW.toast.fromError(error);
+        await refresh();
+      });
+  }
+
+  /**
+   * 列表加载失败块（C2）：失败态与空态可区分并提供重试入口——
+   * 此前刷新失败只弹 toast，列表停留在旧数据或显示「暂无数据」误导用户。
+   */
+  function renderListError(container, { title = '数据加载失败', desc = '请检查应用状态后重试', retry } = {}) {
+    container.innerHTML = `
+      <div class="empty-block plain">
+        <h4 class="empty-title">${escapeHtml(title)}</h4>
+        ${desc ? `<p class="empty-desc">${escapeHtml(desc)}</p>` : ''}
+        ${retry ? '<button type="button" class="btn btn-outline btn-sm" data-retry>重试</button>' : ''}
+      </div>`;
+    const button = container.querySelector('[data-retry]');
+    if (button && retry) button.addEventListener('click', retry);
+  }
+
+  /** 列表加载中占位（C2）：首次懒加载期间不再是「上一次内容或空白」 */
+  function renderListLoading(container, text = '加载中…') {
+    container.innerHTML = `<div class="empty-block plain"><p class="empty-desc">${escapeHtml(text)}</p></div>`;
+  }
+
   /**
    * 表单提交在途锁（OPT-4）：await 期间再次提交直接忽略，防止双击重复创建任务/Worker 等。
    * 以 form 元素为锁粒度，并在途时禁用提交按钮给出视觉反馈；结束（含失败）后恢复。
@@ -165,8 +214,12 @@ VW.util = (() => {
     assigneeLabel,
     historyListHtml,
     renderList,
+    renderListError,
+    renderListLoading,
+    handleSwitchToggle,
     submitAction,
     withSubmitting,
+    LABELS,
     PRIORITY_LABEL,
     ACTION_LABEL
   };

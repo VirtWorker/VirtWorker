@@ -203,7 +203,7 @@ VW.views.automations = (() => {
 
   function openModal(automation) {
     if (!store.assigneeOptions().length) {
-      VW.toast.show('请先创建 Worker 或 Group');
+      VW.toast.show(VW.util.LABELS.noWorkerOrGroup);
       return;
     }
     editingId = automation ? automation.id : null;
@@ -340,16 +340,7 @@ VW.views.automations = (() => {
       const toggle = event.target.closest('[data-act="toggle"]');
       if (!toggle) return;
       const id = toggle.closest('.automation-card').dataset.id;
-      VW.api.automation
-        .toggle(id, toggle.checked)
-        .then(async (automation) => {
-          VW.toast.show(automation.enabled ? '已启用' : '已停用');
-          await refresh();
-        })
-        .catch(async (error) => {
-          VW.toast.fromError(error);
-          await refresh(); // 失败时回滚界面开关状态
-        });
+      VW.util.handleSwitchToggle(toggle, (enable) => VW.api.automation.toggle(id, enable), refresh);
     });
 
     list.addEventListener('click', async (event) => {

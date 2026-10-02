@@ -96,7 +96,7 @@ function createWorker(params = {}) {
     id: createId('wk'),
     name,
     role: params.role === undefined ? ROLES[0] : assertEnum(params.role, ROLES, { label: '角色' }),
-    env: normalizeEnv(params.env),
+    env: normalizeEnv(), // 入参已废弃（环境收敛为本地），签名不再接收参数
     desc: optionalText(params.desc, 100),
     status: STATUS.online,
     avatarColor: AVATAR_COLORS[db.count('workers') % AVATAR_COLORS.length], // count 免克隆（B1）
@@ -125,7 +125,7 @@ function updateWorker(id, patch = {}) {
     next.name = name;
   }
   if (patch.role !== undefined) next.role = assertEnum(patch.role, ROLES, { label: '角色' });
-  if (patch.env !== undefined) next.env = normalizeEnv(patch.env, { allowEmpty: false });
+  if (patch.env !== undefined) next.env = normalizeEnv(); // 移除误导性的幽灵第二参数（F4）
   if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
   if (patch.status !== undefined) {
     const status = normalizeStatus(patch.status);

@@ -83,7 +83,7 @@ VW.views.atworker = (() => {
     // 健康态由主进程结构化下发（连接与 Worker 均存在），渲染层不再靠文案反推
     const healthy = Boolean(item.healthy);
     return `
-      <tr data-id="${item.id}">
+      <tr data-id="${escapeHtml(item.id)}">
         <td>
           <div>${escapeHtml(item.chatName)}</div>
           <span class="meta-chip">${escapeHtml(item.chatTypeLabel)}</span>
@@ -163,7 +163,7 @@ VW.views.atworker = (() => {
     list.innerHTML = items
       .map(
         (connection) => `
-      <div class="connection-item" data-id="${connection.id}">
+      <div class="connection-item" data-id="${escapeHtml(connection.id)}">
         <div>
           <div class="connection-name">${escapeHtml(connection.name)}</div>
           <div class="connection-meta">
@@ -279,9 +279,10 @@ VW.views.atworker = (() => {
     document.getElementById('chat-wizard-prev').classList.toggle('hidden', wizard.step === 1);
     document.getElementById('chat-wizard-next').textContent = wizard.step === 3 ? '保存并开通' : '下一步';
 
-    if (wizard.step === 1) renderWizardConnections();
-    if (wizard.step === 2) renderWizardChats();
-    if (wizard.step === 3) fillWorkerSelect('chat-wizard-worker');
+    if (wizard.step === 1) return renderWizardConnections();
+    if (wizard.step === 2) return renderWizardChats(); // 返回 Promise：wizardNext 的 await 才真正等待聊天列表加载（F4 竞态修复）
+    if (wizard.step === 3) return fillWorkerSelect('chat-wizard-worker');
+    return undefined;
   }
 
   function renderWizardConnections() {
@@ -354,21 +355,23 @@ VW.views.atworker = (() => {
     wrap.querySelectorAll('.wizard-option').forEach((option) => {
       option.addEventListener('click', () => {
         wizard.chatId = option.dataset.chatId;
-        renderWizardChats();
+        // 只切换选中态，不重建步骤 DOM（F5）：此前重建会清空用户已在「手动填写」输入框中的内容
+        wrap.querySelectorAll('.wizard-option').forEach((el) => el.classList.toggle('selected', el === option));
       });
     });
   }
 
-  function fillWorkerSelect(selectId, selectedId) {
-    const select = document.getElementById(selectId);
+  /** 填充 Worker 下拉（F3 合并双胞胎）：入参接受元素 id 或元素本身 */
+  function fillWorkerSelect(select, selectedId) {
+    const el = typeof select === 'string' ? document.getElementById(select) : select;
     const workers = store.state.workers;
-    select.innerHTML = workers
+    el.innerHTML = workers
       .map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`)
       .join('');
     const valid = selectedId && workers.some((worker) => worker.id === selectedId);
-    select.value = valid ? selectedId : workers[0]?.id || '';
-    VW.dropdown.refresh(select);
-    return select.value;
+    el.value = valid ? selectedId : workers[0]?.id || '';
+    VW.dropdown.refresh(el);
+    return el.value;
   }
 
   async function wizardNext() {
@@ -412,7 +415,7 @@ VW.views.atworker = (() => {
   async function submitWizard() {
     const workerId = document.getElementById('chat-wizard-worker').value;
     if (!workerId) {
-      VW.toast.show('请先创建 Worker');
+      VW.toast.show(VW.util.LABELS.noWorker);
       return;
     }
     try {
@@ -495,7 +498,7 @@ VW.views.atworker = (() => {
         if (request.status !== 'pending') {
           const approved = request.status === 'approved';
           return `
-          <div class="request-item resolved" data-id="${request.id}">
+          <div class="request-item resolved" data-id="${escapeHtml(request.id)}">
             <div class="request-head">
               <span class="request-chat">${escapeHtml(request.chatName)}</span>
               <span class="status-badge ${approved ? 'status-done' : 'status-canceled'}">${approved ? '已同意' : '已拒绝'}</span>
@@ -504,7 +507,7 @@ VW.views.atworker = (() => {
           </div>`;
         }
         return `
-        <div class="request-item" data-id="${request.id}">
+        <div class="request-item" data-id="${escapeHtml(request.id)}">
           <div class="request-head">
             <span class="request-chat">${escapeHtml(request.chatName)}</span>
             <span class="meta-chip">${escapeHtml(request.chatTypeLabel)}</span>
@@ -543,20 +546,10 @@ VW.views.atworker = (() => {
     // 指派 Worker 下拉统一填充（enhance 之后赋值并同步显示）
     list.querySelectorAll('.request-item:not(.resolved)').forEach((item) => {
       const select = item.querySelector('.request-worker');
-      fillWorkerSelectById(select);
+      fillWorkerSelect(select);
     });
     // 实时刷新后还原用户已填写的审批表单
     restoreRequestFormState(formState);
-  }
-
-  /** 为动态创建的 select 填充 Worker 选项（组件内局部使用） */
-  function fillWorkerSelectById(select) {
-    const workers = store.state.workers;
-    select.innerHTML = workers
-      .map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`)
-      .join('');
-    select.value = workers[0]?.id || '';
-    VW.dropdown.refresh(select);
   }
 
   async function onRequestAction(event) {
@@ -597,7 +590,7 @@ VW.views.atworker = (() => {
     const binding = store.state.chatBindingList.find((item) => item.id === id);
     if (!binding) return;
     if (!store.state.workers.length) {
-      VW.toast.show('请先创建 Worker');
+      VW.toast.show(VW.util.LABELS.noWorker);
       return;
     }
     editingBindingId = id;
@@ -636,7 +629,7 @@ VW.views.atworker = (() => {
     }
     const connectionSelect = document.getElementById('chat-simulate-connection');
     connectionSelect.innerHTML = connections
-      .map((connection) => `<option value="${connection.id}">${escapeHtml(connection.name)}</option>`)
+      .map((connection) => `<option value="${escapeHtml(connection.id)}">${escapeHtml(connection.name)}</option>`)
       .join('');
     const preset = preselectBindingId ? store.state.chatBindings.find((item) => item.id === preselectBindingId) : null;
     if (preset && connections.some((item) => item.id === preset.connectionId)) connectionSelect.value = preset.connectionId;
@@ -703,16 +696,7 @@ VW.views.atworker = (() => {
     const toggle = event.target.closest('[data-act="toggle"]');
     if (!toggle) return;
     const id = toggle.closest('tr').dataset.id;
-    VW.api.chat
-      .toggleBinding(id, toggle.checked)
-      .then(async () => {
-        VW.toast.show(toggle.checked ? '已启用' : '已停用');
-        await refresh();
-      })
-      .catch(async (error) => {
-        VW.toast.fromError(error);
-        await refresh(); // 失败时回滚界面开关状态
-      });
+    VW.util.handleSwitchToggle(toggle, (enable) => VW.api.chat.toggleBinding(id, enable), refresh);
   }
 
   async function onTableAction(event) {

@@ -42,7 +42,7 @@ function makeStep(index, title, extra = {}) {
   return {
     step: index + 1,
     title,
-    status: 'pending',
+    status: taskService.STEP_STATUS.pending,
     startedAt: null,
     finishedAt: null,
     log: '',
@@ -275,6 +275,8 @@ function buildResult(task, worker) {
   };
 }
 
+const taskService = require('../services/task-service');
+
 module.exports = {
   name: 'mock',
   buildSteps,
@@ -295,5 +297,8 @@ module.exports = {
   answerText,
   // 结果汇总公共件（llm 复用）：交付物命名与本地口径汇总句
   deriveArtifacts,
-  localSummary
+  localSummary,
+  // 文本与锚点工具（F1 收编）：此前 executor-llm 抄了一遍 clip/anchorOf
+  clip,
+  anchorOf
 };

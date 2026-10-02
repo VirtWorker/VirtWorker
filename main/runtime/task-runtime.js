@@ -280,8 +280,8 @@ async function dispatchUnsafe(taskId) {
       steps = steps.map((step) => {
         if (step.step >= retryFromStep) return step;
         const prev = (source.steps || []).find((item) => item.step === step.step);
-        if (!prev || prev.status !== 'done') return step;
-        return { ...step, status: 'done', log: prev.log || '', citations: prev.citations || [], finishedAt: prev.finishedAt || null };
+        if (!prev || prev.status !== taskService.STEP_STATUS.done) return step;
+        return { ...step, status: taskService.STEP_STATUS.done, log: prev.log || '', citations: prev.citations || [], finishedAt: prev.finishedAt || null };
       });
     }
   }
@@ -425,7 +425,7 @@ async function pump(taskId) {
         throw error;
       }
 
-      const step = task.steps.find((item) => item.status !== 'done');
+      const step = task.steps.find((item) => item.status !== taskService.STEP_STATUS.done);
       if (!step) return await finish(taskId); // await 保持在 try 内：收口抛错仍走本循环的异常兜底
 
       taskService.startStep(taskId, step.step);
@@ -483,6 +483,12 @@ async function pump(taskId) {
     }
     // 取消识别以 abort 信号为准（不同执行器的 abort 错误文案各异）；取消时 stop() 已完成清理
     if (error.message === 'aborted' || ctx.controller.signal.aborted) return;
+    // 收尾与取消竞争（F4）：succeed 被终态守卫拒绝说明任务已先一步到达终态，
+    // 属正常竞争而非故障——静默释放，此前会打两条误导性错误日志并再次 safeFailTask 被拒
+    if (error?.code === 'INVALID_STATE') {
+      release(taskId);
+      return;
+    }
     console.error(`[runtime] 任务 ${taskId} 执行异常:`, error);
     release(taskId); // 异常路径必须释放并发槽位，否则失败任务累积会锁死运行时
     safeFailTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '执行失败' });

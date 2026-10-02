@@ -187,10 +187,15 @@ VW.views.capabilitiesShares = (() => {
           return;
         }
         if (action === 'remove') {
-          if (!window.confirm('取消分享后分享码立即失效，确认删除该分享记录？')) return;
-          await VW.api.share.remove(share.id);
-          await VW.capCtx.refreshShares();
-          VW.toast.show('已取消分享');
+          // F3：确认文案与弹窗内删除入口统一，路径改走 submitAction
+          await VW.util.submitAction(
+            async () => {
+              await VW.api.share.remove(share.id);
+              await VW.capCtx.refreshShares();
+              VW.toast.show('已取消分享');
+            },
+            { confirm: '取消分享后分享码立即失效，确认删除该分享记录？' }
+          );
         }
       } catch (error) {
         VW.toast.fromError(error);

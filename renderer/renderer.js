@@ -57,9 +57,9 @@
         ? matched
             .map(
               (group) => `
-          <div class="sidebar-worker-item" role="button" tabindex="0" data-group="${group.id}">
+          <div class="sidebar-worker-item" role="button" tabindex="0" data-group="${escapeHtml(group.id)}">
             <span class="avatar avatar-sm avatar-group">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19v-1a6 6 0 0 1 12 0v1"/><circle cx="18" cy="10" r="2.4"/></svg>
+              ${VW.icons.groupIcon(14)}
             </span>
             <span class="w-name">${escapeHtml(group.name)}</span>
             <span class="w-member">${group.memberCount} 人</span>

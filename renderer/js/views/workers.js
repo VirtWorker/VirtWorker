@@ -8,8 +8,7 @@ VW.views = VW.views || {};
 VW.views.workers = (() => {
   const { escapeHtml, debounce } = VW.util;
   const store = VW.store;
-  const PLUS_ICON =
-    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+  const { PLUS_ICON, groupIcon } = VW.icons; // 共享图标常量（F3 收编），不再逐字内联 SVG
 
   /** 按筛选条件刷新列表（过期响应防护统一走 api.latest，O9）。
    *  refresh 与 refreshAll 共用同一 key：只让最后一次请求的结果生效，
@@ -21,7 +20,14 @@ VW.views.workers = (() => {
         () => Promise.all([VW.api.worker.list(store.state.filters.worker), VW.api.group.list()]),
         ([workerList, groups]) => store.set({ workerList, groups })
       )
-      .catch((error) => VW.toast.fromError(error));
+      .catch((error) => {
+        VW.toast.fromError(error);
+        // C2：刷新失败与「暂无 Worker」可区分，网格内给出可重试错误块
+        VW.util.renderListError(document.getElementById('worker-grid'), {
+          desc: 'Worker 列表加载失败',
+          retry: refreshAll
+        });
+      });
   }
 
   /** 全量刷新：新建/删除后同步侧边栏、任务派发下拉等全量数据 */
@@ -37,7 +43,13 @@ VW.views.workers = (() => {
           ]),
         ([workers, workerList, groups]) => store.set({ workers, workerList, groups })
       )
-      .catch((error) => VW.toast.fromError(error));
+      .catch((error) => {
+        VW.toast.fromError(error);
+        VW.util.renderListError(document.getElementById('worker-grid'), {
+          desc: 'Worker 列表加载失败',
+          retry: refreshAll
+        });
+      });
   }
 
   /** 卡片模板（C1 事件委托改造）：innerHTML 一次性拼接 + grid 上单一委托监听器，
@@ -48,14 +60,14 @@ VW.views.workers = (() => {
       <div class="worker-card" data-group-id="${escapeHtml(group.id)}">
         <div class="worker-card-head">
           <span class="avatar avatar-group">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19v-1a6 6 0 0 1 12 0v1"/><circle cx="18" cy="10" r="2.4"/><path d="M15.5 19v-.6a4.4 4.4 0 0 1 5.5-4.2"/></svg>
+            ${groupIcon(18)}
           </span>
           <div>
             <div class="worker-card-name">${escapeHtml(group.name)}</div>
             <div class="worker-card-role">${group.memberCount} 位成员${group.leadWorkerId ? ' · 已设组长' : ''}</div>
           </div>
         </div>
-        <div class="worker-card-desc">${group.desc ? escapeHtml(group.desc) : '暂无描述'}</div>
+        <div class="worker-card-desc">${group.desc ? escapeHtml(group.desc) : VW.util.LABELS.noDesc}</div>
         <div class="group-members">${
           group.members.length
             ? group.members
@@ -85,7 +97,7 @@ VW.views.workers = (() => {
             <div class="worker-card-role">${escapeHtml(worker.role)} · ${escapeHtml(worker.envLabel)}</div>
           </div>
         </div>
-        <div class="worker-card-desc">${worker.desc ? escapeHtml(worker.desc) : '暂无描述'}</div>
+        <div class="worker-card-desc">${worker.desc ? escapeHtml(worker.desc) : VW.util.LABELS.noDesc}</div>
         <div class="worker-card-foot">
           <span class="badge${worker.status === 'offline' ? ' offline' : ''}">
             ${worker.status === 'offline' ? '' : '<span class="status-dot"></span>'}${worker.status === 'offline' ? '离线' : '在线'}

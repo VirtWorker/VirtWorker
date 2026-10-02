@@ -23,7 +23,7 @@ VW.views.capabilitiesFlows = (() => {
     list.innerHTML = flows
       .map(
         (flow) => `
-      <div class="flow-card" data-id="${flow.id}">
+      <div class="flow-card" data-id="${escapeHtml(flow.id)}">
         <div class="flow-head">
           <span class="flow-name">${escapeHtml(flow.name)}</span>
           <span class="status-badge status-done">${flow.nodeCount} 个节点</span>
@@ -94,6 +94,15 @@ VW.views.capabilitiesFlows = (() => {
     submitBtn.classList.toggle('hidden', flowNodes.length >= 8);
   }
 
+  /** 增量更新后的序号回写（F5）：data-index 与展示序号保持和 flowNodes 对齐 */
+  function renumberFlowNodes() {
+    document.querySelectorAll('#flow-nodes .flow-node').forEach((row, index) => {
+      row.dataset.index = String(index);
+      row.querySelector('.flow-node-index').textContent = String(index + 1);
+    });
+    document.getElementById('add-flow-node').classList.toggle('hidden', flowNodes.length >= 8);
+  }
+
   /** 从表单读回节点内容，保证增删排序后不丢用户已填内容 */
   function syncNodesFromForm() {
     document.querySelectorAll('#flow-nodes .flow-node').forEach((row) => {
@@ -107,7 +116,7 @@ VW.views.capabilitiesFlows = (() => {
 
   function openFlowModal(flow) {
     if (!store.state.workers.length) {
-      VW.toast.show('请先创建 Worker');
+      VW.toast.show(VW.util.LABELS.noWorker);
       return;
     }
     editingFlowId = flow ? flow.id : null;
@@ -178,17 +187,25 @@ VW.views.capabilitiesFlows = (() => {
     document.getElementById('flow-nodes').addEventListener('click', (event) => {
       const button = event.target.closest('[data-act]');
       if (!button) return;
-      const index = Number(button.closest('.flow-node').dataset.index);
+      const row = button.closest('.flow-node');
+      const index = Number(row.dataset.index);
       syncNodesFromForm();
 
-      if (button.dataset.act === 'remove-node') flowNodes.splice(index, 1);
-      if (button.dataset.act === 'up' && index > 0) {
+      // 增量更新（F5）：只移动/移除对应 DOM 行并重排序号——
+      // 此前每次点击都全量重建节点 DOM 并对所有 select 重新 enhance（O(节点×Worker) 个按钮元素）
+      if (button.dataset.act === 'remove-node') {
+        flowNodes.splice(index, 1);
+        row.remove();
+      } else if (button.dataset.act === 'up' && index > 0) {
         [flowNodes[index - 1], flowNodes[index]] = [flowNodes[index], flowNodes[index - 1]];
-      }
-      if (button.dataset.act === 'down' && index < flowNodes.length - 1) {
+        row.previousElementSibling.before(row);
+      } else if (button.dataset.act === 'down' && index < flowNodes.length - 1) {
         [flowNodes[index + 1], flowNodes[index]] = [flowNodes[index], flowNodes[index + 1]];
+        row.nextElementSibling.after(row);
+      } else {
+        return;
       }
-      renderFlowNodes();
+      renumberFlowNodes();
     });
 
     document.getElementById('flow-list').addEventListener('click', async (event) => {

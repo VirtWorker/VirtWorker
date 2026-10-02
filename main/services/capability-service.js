@@ -242,8 +242,10 @@ function revokeConnector(id) {
 // ==================== 知识库 ====================
 
 async function normalizeDir(dir) {
-  const target = path.resolve(String(dir ?? '').trim());
-  if (!target) throw fail.validation('请选择要导入的目录');
+  // 先判空再 resolve（F4）：path.resolve('') 返回进程 cwd（真值），原空串检查永远不可达
+  const raw = String(dir ?? '').trim();
+  if (!raw) throw fail.validation('请选择要导入的目录');
+  const target = path.resolve(raw);
   let stat;
   try {
     stat = await fs.promises.stat(target);
@@ -384,7 +386,14 @@ async function createKnowledge(params = {}) {
     throw error;
   }
   const next = { ...capability, source, updatedAt: nowIso() };
-  db.insert('capabilities', next);
+  // 补偿（F4）：insert 失败时清理已写入的数千条 chunks，不留无主片段占用存储与检索索引
+  try {
+    db.insert('capabilities', next);
+  } catch (error) {
+    db.removeWhere('chunks', { capabilityId: capability.id });
+    invalidateChunkIndex();
+    throw error;
+  }
   publish(next, 'capability:created');
   return decorate(next);
 }
@@ -505,6 +514,15 @@ function detachFromWorkers(capabilityId) {
     });
 }
 
+/** 孤儿片段清扫（F4）：删除能力的崩溃窗口可能遗留 capabilityId 已不存在的 chunks。
+ *  由每日维护调用，与 purgeOrphanEvents 同一治理模式 */
+function purgeOrphanChunks() {
+  const knownIds = new Set(db.pluck('capabilities', (item) => item.id));
+  const { removed } = db.removeWhere('chunks', (chunk) => !knownIds.has(chunk.capabilityId));
+  if (removed) invalidateChunkIndex();
+  return removed;
+}
+
 function mountedWorkers(capabilityId) {
   return db.all('workers').filter((worker) => (worker.capabilityIds || []).includes(capabilityId)).length;
 }
@@ -525,5 +543,6 @@ module.exports = {
   searchKnowledge,
   searchForWorker,
   resolveWorkerCapabilities,
+  purgeOrphanChunks,
   mountedWorkers
 };
