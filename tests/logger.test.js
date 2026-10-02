@@ -127,4 +127,22 @@ describe('logger 缓冲写（PERF-4）', () => {
       : '';
     expect(newContent).not.toContain('belongs-to-old');
   });
+
+  test('字符串值内的凭据形态被掩码（SEC-2）', () => {
+    const valueDir = path.join(dir, 'value-mask');
+    logger.init(valueDir);
+    console.log('连不上 https://api.x.com/v1?key=sk-abcdefgh12345678 的地址');
+    console.error('Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 已发送');
+    console.log('query: token=abcdef123456&x=1');
+    logger.close();
+
+    const content = fs.readFileSync(path.join(valueDir, 'main.log'), 'utf8');
+    // sk- 值先被 sk- 模式掩码，再被 key= 模式整体掩码——最终 key=***，明文绝不落盘
+    expect(content).toContain('key=***');
+    expect(content).not.toContain('sk-abcdefgh12345678');
+    expect(content).toContain('Bearer ***');
+    expect(content).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(content).toContain('token=***');
+    expect(content).not.toContain('abcdef123456&');
+  });
 });

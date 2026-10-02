@@ -245,7 +245,7 @@ VW.views.workers = (() => {
         .map(
           (worker) => `
         <label class="member-option">
-          <input type="checkbox" value="${worker.id}" ${memberIds.has(worker.id) ? 'checked' : ''} />
+          <input type="checkbox" value="${escapeHtml(worker.id)}" ${memberIds.has(worker.id) ? 'checked' : ''} />
           <span class="avatar avatar-sm" style="background:${VW.util.safeStyle(worker.avatarColor, '#eef0f2')}">${escapeHtml(worker.name.slice(0, 1))}</span>
           <span class="member-name">${escapeHtml(worker.name)}</span>
           <span class="member-role">${escapeHtml(worker.role)}</span>

@@ -178,6 +178,8 @@ describe('removeGroup / flow.remove / 聊天绑定级联（与 removeWorker 对�
       'automations',
       'flows',
       'capabilities',
+      'tasks',
+      'taskevents',
       'chatconnections',
       'chatbindings',
       'chatrequests'
@@ -251,5 +253,30 @@ describe('removeGroup / flow.remove / 聊天绑定级联（与 removeWorker 对�
 
     expect(result.removedBindings).toBe(1);
     expect(chatService.listBindings().items.length).toBe(0);
+  });
+
+  test('删除 Group 会取消其名下在途任务（BUG-31，与 removeWorker 对称）', () => {
+    const w1 = workerService.createWorker({ name: '在途组长' });
+    const group = workerService.createGroup({ name: '在途删除组', memberIds: [w1.id] });
+    const task = taskService.create({ goal: '组在途任务', assigneeId: group.id });
+
+    const result = workerService.removeGroup(group.id);
+
+    expect(result.canceledTasks).toEqual([task.id]);
+    expect(db.find('tasks', task.id).status).toBe('canceled');
+  });
+
+  test('删除 WorkerFlow 会取消执行者为该流程的在途任务（BUG-31）', () => {
+    const w1 = workerService.createWorker({ name: '在途流程工' });
+    const flow = flowService.create({
+      name: '在途删除流程',
+      nodes: [{ workerId: w1.id, instruction: '执行指令' }]
+    });
+    const task = taskService.create({ goal: '流程在途任务', assigneeId: flow.id });
+
+    const result = flowService.remove(flow.id);
+
+    expect(result.canceledTasks).toEqual([task.id]);
+    expect(db.find('tasks', task.id).status).toBe('canceled');
   });
 });

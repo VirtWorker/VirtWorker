@@ -21,7 +21,19 @@ const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, fatal: 50 };
 const DEFAULT_LEVEL = 'info';
 /** 敏感字段名黑名单：命中即掩码，防止未来任何服务把凭据挂进 error/日志对象造成泄漏 */
 const SENSITIVE_KEY_RE = /(token|secret|password|credential|authorization|api[-_]?key)/i;
+/** 字符串值内的凭据形态（SEC-2）：键名掩码之外，对最终拼接的文本再按值模式掩码——
+ *  防线不依赖「开发者永远不把凭据拼进日志字符串」的脆弱约定（URL 携带 key=、
+ *  Bearer 请求头、sk- 形态 API Key 都在此拦截） */
+const SENSITIVE_VALUE_RES = [
+  [/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***'],
+  [/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer ***'],
+  [/([?&;"'\s]|^)((?:token|key|secret|password|credential)=)([^&\s;"']{4,})/gi, '$1$2***']
+];
 const MASK_DEPTH = 4;
+
+function maskSensitiveText(text) {
+  return SENSITIVE_VALUE_RES.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), text);
+}
 
 let logFile = '';
 let bytesWritten = 0;
@@ -79,19 +91,21 @@ function rotate() {
 
 function format(level, args) {
   const time = new Date().toISOString();
-  const text = args
-    .map((arg) => {
-      if (arg instanceof Error) return arg.stack || arg.message;
-      if (typeof arg === 'object') {
-        try {
-          return JSON.stringify(maskSensitive(arg));
-        } catch (error) {
-          return String(arg);
+  const text = maskSensitiveText(
+    args
+      .map((arg) => {
+        if (arg instanceof Error) return arg.stack || arg.message;
+        if (typeof arg === 'object') {
+          try {
+            return JSON.stringify(maskSensitive(arg));
+          } catch (error) {
+            return String(arg);
+          }
         }
-      }
-      return String(arg);
-    })
-    .join(' ');
+        return String(arg);
+      })
+      .join(' ')
+  );
   return `[${time}] [${level}] ${text}\n`;
 }
 

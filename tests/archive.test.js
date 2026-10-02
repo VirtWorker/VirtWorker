@@ -1,8 +1,9 @@
 /**
- * 任务归档策略测试（BUG-20 写放大治理）
- * 归档只收「已完成且已查收超 30 天」的任务：验证归档迁移、合并读取（getTask/list/stats/detail）、
+ * 任务归档策略测试（BUG-20 写放大治理 + BUG-27 终态退出通道）
+ * 归档收「已定格终态超 30 天」的任务：succeeded 要求已查收（未查收不退出），
+ * failed/canceled 无查收语义、按 finishedAt 计龄。验证归档迁移、合并读取（getTask/list/stats/detail）、
  * 归档任务的 ack 幂等与变更守卫、purgeExpired/purgePreview/purgeOrphanEvents 对归档集合的覆盖。
- * 时间由 resultAckedAt 直写控制（与 task-input.test.js 同款 db.update 手法）。
+ * 时间由 resultAckedAt/finishedAt 直写控制（与 task-input.test.js 同款 db.update 手法）。
  */
 
 import { describe, test, expect, beforeEach, afterAll } from 'vitest';
@@ -37,7 +38,7 @@ function makeTask(title, { status = 'succeeded', ackedDaysAgo = null } = {}) {
 }
 
 describe('archiveAged 归档迁移', () => {
-  test('仅归档「已完成且已查收超 30 天」的任务，其余留在活跃集合', () => {
+  test('归档已查收超 30 天的 succeeded 与超 30 天的 failed/canceled，其余留在活跃集合', () => {
     const oldAcked = makeTask('老任务', { ackedDaysAgo: 40 });
     const recentAcked = makeTask('新任务', { ackedDaysAgo: 10 });
     const failed = makeTask('失败任务', { status: 'failed', ackedDaysAgo: 40 });
@@ -45,13 +46,12 @@ describe('archiveAged 归档迁移', () => {
 
     const { archived, threshold } = taskService.archiveAged();
     expect(threshold).toBe(taskService.ARCHIVE_AFTER_DAYS);
-    expect(archived).toBe(1);
+    expect(archived).toBe(2); // BUG-27：failed 无查收语义，按 finishedAt 走同一归档通道
 
     const activeIds = db.all('tasks').map((task) => task.id);
     const archiveIds = db.all('tasks-archive').map((task) => task.id);
-    expect(archiveIds).toEqual([oldAcked.id]);
+    expect(archiveIds).toEqual([oldAcked.id, failed.id]);
     expect(activeIds).toContain(recentAcked.id);
-    expect(activeIds).toContain(failed.id); // 失败任务是重试候选，不归档
     expect(activeIds).toContain(unacked.id); // 未查收结果用户还没看，不归档
   });
 
@@ -131,10 +131,10 @@ describe('归档合并读取', () => {
 
 describe('归档集合的清理路径', () => {
   test('purgeExpired 同时清理活跃与归档集合中超出保留期的任务（含时间线）', () => {
-    const oldFailed = makeTask('活跃过期', { status: 'failed', ackedDaysAgo: 100 }); // 失败任务不归档，留在活跃集合
+    const oldFailed = makeTask('活跃过期', { status: 'failed', ackedDaysAgo: 100 }); // BUG-27：failed 也归档
     const oldArchived = makeTask('归档过期', { ackedDaysAgo: 100 });
     const keep = makeTask('保留期内', { ackedDaysAgo: 10 });
-    taskService.archiveAged(); // 仅 oldArchived 进归档（oldFailed 非 succeeded）
+    taskService.archiveAged(); // oldArchived 与 oldFailed 均进归档
     const { removed } = taskService.purgeExpired(90);
     expect(removed).toBe(2);
 
@@ -142,6 +142,7 @@ describe('归档集合的清理路径', () => {
     const archiveIds = db.all('tasks-archive').map((task) => task.id);
     expect(activeIds).not.toContain(oldFailed.id);
     expect(archiveIds).not.toContain(oldArchived.id);
+    expect(archiveIds).not.toContain(oldFailed.id);
     expect(activeIds).toContain(keep.id);
     // 时间线连带清理：过期任务的事件不存在，保留任务的事件仍在
     expect(db.where('taskevents', { taskId: oldArchived.id })).toEqual([]);
@@ -170,13 +171,16 @@ describe('归档集合的清理路径', () => {
 });
 
 describe('归档不影响重试路径', () => {
-  test('失败任务不归档，重试链路照常', () => {
+  test('BUG-27 失败任务按 finishedAt 归档，重试链路照常（含归档集合写回）', () => {
     const failed = makeTask('可重试任务', { status: 'failed', ackedDaysAgo: 40 });
     taskService.archiveAged();
 
-    expect(db.all('tasks-archive').map((task) => task.id)).not.toContain(failed.id);
+    expect(db.all('tasks-archive').map((task) => task.id)).toContain(failed.id); // 失败任务已归档
+    // retry 经 getTask 合并读取归档任务；补记「已发起重试」时间线的 mutate
+    // 必须写回归档集合（mutate 集合定位修复），不再抛「记录不存在」
     const retried = taskService.retry(failed.id);
     expect(retried.retryOf).toBe(failed.id);
     expect(retried.status).toBe('queued');
+    expect(db.find('tasks-archive', failed.id)).not.toBeNull();
   });
 });

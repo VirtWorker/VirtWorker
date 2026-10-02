@@ -13,6 +13,7 @@ const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const vault = require('../util/secret-vault');
 const workerService = require('./worker-service');
+const flowService = require('./flow-service');
 const { SKILL_CATALOG, categoryCounts } = require('../data/skill-catalog');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
@@ -165,6 +166,7 @@ function uninstall(id) {
   }
   // 先摘除（Worker 侧校验链路仍完整）再删除能力本体，失败时能力仍在，可重试
   detachFromWorkers(id);
+  flowService.detachCapability(id); // Flow 节点引用同步摘除（BUG-38），防悬空 id 进执行上下文
   db.remove('capabilities', id);
   bus.emit('capability:removed', { id, type: capability.type });
   return { id };
@@ -264,7 +266,7 @@ async function normalizeDir(dir) {
 async function scanFiles(dir) {
   const files = [];
   const visited = new Set(); // 已下钻目录（规范化小写路径，Windows 大小写不敏感）
-  const walk = async (current) => {
+  const walk = async (current, isRoot = false) => {
     if (files.length >= MAX_FILES) return;
     const key = `${path.resolve(current).toLowerCase()}\\`;
     if (visited.has(key)) return;
@@ -273,6 +275,9 @@ async function scanFiles(dir) {
     try {
       entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch (error) {
+      // 根目录不可读必须透出（BUG-37）：静默吞掉后报「没有可索引的文本文件」，
+      // 用户对着「目录已被删除/移动」的真因完全无从排查；子目录不可读仅跳过
+      if (isRoot) throw fail.validation('目录无法读取（不存在、权限不足或已被移动）');
       return;
     }
     for (const entry of entries) {
@@ -293,7 +298,7 @@ async function scanFiles(dir) {
       files.push(full);
     }
   };
-  await walk(dir);
+  await walk(dir, true);
   return files;
 }
 
@@ -401,7 +406,11 @@ async function createKnowledge(params = {}) {
 async function reindexKnowledge(id) {
   const capability = getOrThrow(id);
   if (capability.type !== 'knowledge') throw fail.invalidState('该能力不是知识库');
-  const source = await indexDirectory(id, capability.dir);
+  // 先校验目录可达（BUG-37）：与 createKnowledge 同款防御——目录被删除/移动时
+  // 直接报真因，而不是走到「没有可索引的文本文件」的误导文案；
+  // 校验失败时旧片段原样保留，不会出现 status=indexed 但检索为空的幽灵知识库
+  const dir = await normalizeDir(capability.dir);
+  const source = await indexDirectory(id, dir);
   const next = { ...capability, source, status: 'indexed', updatedAt: nowIso() };
   db.update('capabilities', id, next);
   publish(next, 'capability:updated');

@@ -101,15 +101,22 @@ function normalizeModel(model) {
 /**
  * 解析群聊消息中的 @ 提及：
  * 命中通用点名（@Worker）或绑定 Worker 的名字 → aimed=true，并从文本中剥离该提及得到任务目标。
+ * 整名匹配优先（BUG-36）：MENTION_RE 以空白截断，含空格的 Worker 名（如「数据分析 小王」）
+ * 永远无法被通用正则 @ 中——先按 @<完整名字> 整名匹配，未命中再退回通用点名与逐段匹配。
  */
 function parseMention(text, workerName) {
+  const source = String(text ?? '');
+  if (workerName && source.includes(`@${workerName}`)) {
+    const stripped = source.split(`@${workerName}`).join(' ');
+    return { aimed: true, goal: stripped.replace(/\s+/g, ' ').trim() };
+  }
   const targets = [];
   MENTION_RE.lastIndex = 0;
   let match;
-  while ((match = MENTION_RE.exec(text))) targets.push(match[1]);
+  while ((match = MENTION_RE.exec(source))) targets.push(match[1]);
   const hit = targets.find((name) => name === GENERIC_MENTION || (workerName && name === workerName));
-  if (!hit) return { aimed: false, goal: text };
-  const stripped = text.replace(new RegExp(`@${escapeRegExp(hit)}`, 'g'), '');
+  if (!hit) return { aimed: false, goal: source };
+  const stripped = source.replace(new RegExp(`@${escapeRegExp(hit)}`, 'g'), ' ');
   return { aimed: true, goal: stripped.replace(/\s+/g, ' ').trim() };
 }
 
@@ -414,8 +421,11 @@ function approveRequest(id, params = {}) {
   if (request.status === REQUEST_STATUS.approved && request.bindingId) {
     const existing = db.find('chatbindings', request.bindingId);
     if (existing) return { request: decorateRequest(request), binding: existing };
+    // 绑定已被删除（BUG-35）：此前落到「该申请已处理」抛错，申请永远无法重新开通，
+    // 只能走手动向导绕行。视同 pending 重新走创建流程，成功后重置 bindingId
+  } else if (request.status !== REQUEST_STATUS.pending) {
+    throw fail.invalidState('该申请已处理，请刷新列表');
   }
-  if (request.status !== REQUEST_STATUS.pending) throw fail.invalidState('该申请已处理，请刷新列表');
 
   // 同意即开通：直接生成绑定；聊天已被占用（如先经向导开通）时按冲突提示
   assertChatFree(request.connectionId, request.chatId);
@@ -683,15 +693,17 @@ function answerPendingAction(bindingId, text) {
   }
   const task = pending[0];
   const request = task.actionRequest;
+  // 应答口径统一（F1 收编闭环）：此前本函数自行实现选项匹配，selection 不命中直接抛错——
+  // 同一文本应用内可提交、聊天侧报错。统一走 task-service 的 normalizeAnswer
+  // （value/label 匹配、无选项时回退自由文本），差异只保留聊天侧错误提示列出可选 label
   let answer;
-  if (request.type === 'selection' || request.type === 'confirm') {
-    const option = (request.options || []).find((item) => item.value === value || item.label === value);
-    if (!option) {
+  try {
+    answer = taskService.normalizeAnswer(request, { value });
+  } catch (error) {
+    if (request.type === 'selection' || request.type === 'confirm') {
       throw fail.validation(`请回复有效选项：${(request.options || []).map((item) => item.label).join(' / ')}`);
     }
-    answer = { value: option.value };
-  } else {
-    answer = { value: value.slice(0, 500) };
+    throw error;
   }
   const result = taskService.answer({ taskId: task.id, answer });
   bus.emit('chat:answered', { bindingId: binding.id, taskId: task.id });

@@ -77,7 +77,7 @@
       ? online
           .map(
             (worker) => `
-        <div class="sidebar-worker-item" role="button" tabindex="0" data-worker="${worker.id}">
+        <div class="sidebar-worker-item" role="button" tabindex="0" data-worker="${escapeHtml(worker.id)}">
           <span class="avatar avatar-sm" style="background:${VW.util.safeStyle(worker.avatarColor, '#eef0f2')}">${escapeHtml(worker.name.slice(0, 1))}</span>
           <span class="w-name">${escapeHtml(worker.name)}</span>
           <span class="status-dot" title="在线"></span>

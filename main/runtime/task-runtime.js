@@ -231,7 +231,9 @@ function dispatch(taskId) {
   return dispatchUnsafe(taskId).catch((error) => {
     console.error(`[runtime] 任务 ${taskId} 派发失败:`, error);
     release(taskId); // markRunning 前已占用并发槽位，异常时必须释放，否则槽位泄漏
-    safeFailTask(taskId, { code: 'RUNTIME_ERROR', message: error.message || '派发失败' });
+    // 构建步骤的超时（BUG-32）按步骤超时口径落库（挂起兜底语义），其余派发异常仍是 RUNTIME_ERROR
+    const code = error?.code === 'STEP_TIMEOUT' ? 'STEP_TIMEOUT' : 'RUNTIME_ERROR';
+    safeFailTask(taskId, { code, message: error.message || '派发失败' });
   });
 }
 
@@ -262,10 +264,14 @@ async function dispatchUnsafe(taskId) {
 
   contexts.set(taskId, createContext({ executor }));
   const isFlow = execution.kind === 'flow';
-  // 契约统一 await：步骤计划允许异步生成（真实 LLM 执行器常见）；同步实现零成本兼容
-  let steps = await (isFlow
-    ? executor.buildFlowSteps(task, execution.plan)
-    : executor.buildSteps(task, execution.worker));
+  // 契约统一 await：步骤计划允许异步生成（真实 LLM 执行器常见）；同步实现零成本兼容。
+  // 超时兜底（BUG-32）：与 runStep 同口径，挂起的计划生成不得永久占用并发槽位
+  const planTimeoutMs = executorStepTimeoutMs(executor);
+  let steps = await withTimeout(
+    () => (isFlow ? executor.buildFlowSteps(task, execution.plan) : executor.buildSteps(task, execution.worker)),
+    planTimeoutMs,
+    `构建执行步骤超过 ${Math.round(planTimeoutMs / 1000)} 秒未返回，已中止`
+  );
   // await 期间任务可能已被取消/删除：非排队态不得再标记运行（与 pump 的 afterRun 守卫同款）
   const fresh = taskService.getTask(taskId);
   if (!fresh || fresh.status !== taskService.STATUS.queued) {
@@ -361,19 +367,19 @@ function sleep(ms, signal) {
 }
 
 /**
- * 带超时保护的单步执行：真实执行器（LLM 网络调用）挂起时若不设防，
- * 任务将永久卡在 running 并占用并发槽位。超时是兜底失败，不改变取消语义。
+ * 通用超时保护（BUG-32）：执行器接口的任何 await 挂起点——构建步骤、操作注入——
+ * 此前都没有兜底（只有 runStep 有）。当前执行器这些方法是同步实现所以未暴露，
+ * 一旦真实执行器在计划阶段做网络调用（如让模型规划步骤），一次挂起即永久占用
+ * 并发槽位锁死运行时，这正是文件头声称已杜绝的场景。超时是兜底失败，不改变取消语义。
  */
-async function runStepWithTimeout(executor, task, step, ctx) {
-  const declared = typeof executor.stepTimeoutMs === 'function' ? Number(executor.stepTimeoutMs()) : 0;
-  const timeoutMs = declared > 0 ? declared : STEP_TIMEOUT_MS;
+async function withTimeout(factory, timeoutMs, message) {
   let timer;
   try {
     return await Promise.race([
-      executor.runStep(task, step, { signal: ctx.controller.signal }),
+      Promise.resolve().then(factory),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const error = new Error(`步骤执行超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已中止`);
+          const error = new Error(message);
           error.code = 'STEP_TIMEOUT';
           reject(error);
         }, timeoutMs);
@@ -383,6 +389,25 @@ async function runStepWithTimeout(executor, task, step, ctx) {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** 步骤级超时口径：执行器可声明 stepTimeoutMs() 覆盖，未声明/非法时用默认值 */
+function executorStepTimeoutMs(executor) {
+  const declared = typeof executor.stepTimeoutMs === 'function' ? Number(executor.stepTimeoutMs()) : 0;
+  return declared > 0 ? declared : STEP_TIMEOUT_MS;
+}
+
+/**
+ * 带超时保护的单步执行：真实执行器（LLM 网络调用）挂起时若不设防，
+ * 任务将永久卡在 running 并占用并发槽位。超时是兜底失败，不改变取消语义。
+ */
+async function runStepWithTimeout(executor, task, step, ctx) {
+  const timeoutMs = executorStepTimeoutMs(executor);
+  return withTimeout(
+    () => executor.runStep(task, step, { signal: ctx.controller.signal }),
+    timeoutMs,
+    `步骤执行超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已中止`
+  );
 }
 
 /**
@@ -435,7 +460,13 @@ async function pump(taskId) {
       if (!fresh) return release(taskId);
       if (fresh.status !== taskService.STATUS.running) return;
 
-      const action = await executor.maybeAction(fresh, step, { actionUsed: ctx.actionUsed });
+      // 操作注入同样可能异步（BUG-32）：超时按步骤超时口径抛出，走挂起兜底失败路径
+      const actionTimeoutMs = executorStepTimeoutMs(executor);
+      const action = await withTimeout(
+        () => executor.maybeAction(fresh, step, { actionUsed: ctx.actionUsed }),
+        actionTimeoutMs,
+        `操作注入检查超过 ${Math.round(actionTimeoutMs / 1000)} 秒未返回，已中止`
+      );
 
       if (action) {
         ctx.actionUsed = true;

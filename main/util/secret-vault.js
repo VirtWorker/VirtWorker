@@ -45,10 +45,12 @@ function isEncryptionAvailable() {
 
 function seal(plain) {
   const text = String(plain ?? '');
+  // 版本字段（SEC-8）：密文结构带格式版本，未来 DPAPI 迁移或算法升级可按 v 分支灰度；
+  // open 对缺失 v 的既有数据按 v1 兼容读取，无迁移成本
   if (isEncryptionAvailable()) {
-    return { mode: 'encrypted', value: safeStorage.encryptString(text).toString('base64') };
+    return { mode: 'encrypted', v: 1, value: safeStorage.encryptString(text).toString('base64') };
   }
-  return { mode: 'base64', value: Buffer.from(text, 'utf8').toString('base64') };
+  return { mode: 'base64', v: 1, value: Buffer.from(text, 'utf8').toString('base64') };
 }
 
 function open(sealed) {

@@ -60,4 +60,12 @@ describe('share validatePayload', () => {
     expect(() => validatePayload({ ...validWorker, version: 99 })).toThrow(/版本/);
     expect(() => validatePayload({ ...validWorker, resourceType: 'skill' })).toThrow(/不支持/);
   });
+
+  test('version 非整数 / 0 / 负数 / 缺失被拒绝（BUG-39，此前 NaN 全部放行）', () => {
+    expect(() => validatePayload({ ...validWorker, version: Number.NaN })).toThrow(/版本/);
+    expect(() => validatePayload({ ...validWorker, version: 0 })).toThrow(/版本/);
+    expect(() => validatePayload({ ...validWorker, version: -1 })).toThrow(/版本/);
+    expect(() => validatePayload({ ...validWorker, version: '1' })).toThrow(/版本/);
+    expect(() => validatePayload({ ...validWorker, version: undefined })).toThrow(/版本/);
+  });
 });

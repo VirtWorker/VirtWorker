@@ -326,9 +326,14 @@ function removeGroup(id) {
     '其执行者 Group 已被删除，请重新指定执行者后再启用'
   );
 
+  // 级联：取消该 Group 名下的在途任务（BUG-31），与 removeWorker/updateGroup 成员清空对称。
+  // 缺失时任务要等并发槽位释放重新 dispatch 才经 resolveExecution 的 invalid 分支落为失败，
+  // 期间以幽灵执行者的名义占据看板与统计
+  const canceledTasks = taskService.cancelActiveByAssignees([id], '执行者 Group 已被删除，任务自动取消');
+
   db.remove('groups', id);
   bus.emit('group:removed', { id });
-  return { id, disabledAutomations };
+  return { id, disabledAutomations, canceledTasks };
 }
 
 function attachGroup(workerId, groupId) {

@@ -12,6 +12,7 @@ const db = require('../store/db');
 const vault = require('../util/secret-vault');
 const workerService = require('../services/worker-service');
 const capabilityService = require('../services/capability-service');
+const { normalizeHttpUrl } = require('../util/validate');
 const mock = require('./executor-mock');
 
 const name = 'llm';
@@ -32,7 +33,7 @@ const SUMMARY_TIMEOUT_MS = 30 * 1000;
 let cachedDerived = null; // { version, baseUrl, model, temperature, maxTokens, maxParallel, apiKeyEntry }
 let cachedVersion = -1;
 
-function readConfig() {
+function readDerivedConfig() {
   const version = db.getSettingsVersion();
   if (!cachedDerived || cachedVersion !== version) {
     const all = db.getSettings().executorConfig || {};
@@ -50,7 +51,20 @@ function readConfig() {
     };
     cachedVersion = version;
   }
-  return { ...cachedDerived, apiKey: plainApiKey(cachedDerived.apiKeyEntry) };
+  return cachedDerived;
+}
+
+/** 非敏感配置视图（BUG-34）：maxParallel 等热路径询问使用，绝不触发 DPAPI 解密——
+ *  此前 readConfig 无条件解封 apiKey，capacity() 每次派发都做一次 OS 级解密，
+ *  与「apiKey 仅在真正发请求时解封、缩短明文驻留」的自身设计意图相悖 */
+function readPublicConfig() {
+  return readDerivedConfig();
+}
+
+/** 完整配置（含明文 apiKey）：仅在真正发请求（runStep/buildResult）时调用，缩短明文驻留 */
+function readConfig() {
+  const derived = readDerivedConfig();
+  return { ...derived, apiKey: plainApiKey(derived.apiKeyEntry) };
 }
 
 /** apiKey 在库内为 { sealed, mask } 形态（executor:configure 的 vault 加密约定），解封为明文供请求头使用 */
@@ -89,7 +103,7 @@ function stepRetryLimit() {
 }
 
 function maxParallel() {
-  return readConfig().maxParallel;
+  return readPublicConfig().maxParallel;
 }
 
 // ==================== 执行 ====================
@@ -132,6 +146,9 @@ function buildMessages(task, step, worker, citations, skills = []) {
 /** 调用 OpenAI 兼容接口；网络失败 / 非 2xx / 空响应均抛错（由运行时步骤级重试或失败收口） */
 async function chatCompletion(cfg, messages, signal) {
   if (signal?.aborted) throw new Error('aborted');
+  // 出站 URL 校验（SEC-5）：与自动化通知地址同一放行口径（http/https、拒绝 userinfo），
+  // 拦截被攻破/误配的地址把带凭据的请求打到内网或云元数据地址；配置写入时已校验一次，此处兜底旧数据
+  const target = normalizeHttpUrl(cfg.baseUrl, { label: '模型服务地址' });
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
   const body = { model: cfg.model, messages, temperature: cfg.temperature, stream: false };
@@ -139,7 +156,7 @@ async function chatCompletion(cfg, messages, signal) {
 
   let response;
   try {
-    response = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    response = await fetch(`${target}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -148,7 +165,7 @@ async function chatCompletion(cfg, messages, signal) {
   } catch (error) {
     // 取消识别以信号为准（task-runtime 以 error.message === 'aborted' 或 signal.aborted 判定取消）
     if (signal?.aborted) throw new Error('aborted', { cause: error });
-    throw new Error(`无法连接模型服务（${cfg.baseUrl}）：${error.message || error}`, { cause: error });
+    throw new Error(`无法连接模型服务（${target}）：${error.message || error}`, { cause: error });
   }
   if (!response.ok) {
     const detail = clip(await response.text().catch(() => ''), 300);
@@ -201,12 +218,9 @@ async function runStep(task, step, ctx) {
  */
 function maybeAction(task, step, ctx) {
   if (ctx?.actionUsed) return null;
-  const anchorOf = (pattern) => {
-    const matched = task.steps.find((item) => pattern.test(item.title));
-    return matched ? matched.step : task.steps.length > 1 ? task.steps.length - 1 : null;
-  };
-  if (task.confirmFirst && step.step === anchorOf(mock.COLLECT_ANCHOR)) return mock.confirmRequest();
-  if (mock.CONFIRM_KEYWORDS.some((keyword) => task.goal.includes(keyword)) && step.step === anchorOf(mock.PROCESS_ANCHOR)) {
+  // anchorOf 复用 mock（F1 收编遗留）：此前在本文件重写了一遍，两处语义可能漂移
+  if (task.confirmFirst && step.step === mock.anchorOf(task, mock.COLLECT_ANCHOR)) return mock.confirmRequest();
+  if (mock.CONFIRM_KEYWORDS.some((keyword) => task.goal.includes(keyword)) && step.step === mock.anchorOf(task, mock.PROCESS_ANCHOR)) {
     return mock.selectionRequest(task);
   }
   return null;

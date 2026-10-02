@@ -22,6 +22,7 @@
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const vault = require('../util/secret-vault');
+const { normalizeHttpUrl } = require('../util/validate');
 
 /** @type {Map<string, object>} */
 const adapters = new Map();
@@ -101,6 +102,9 @@ const mockAdapter = register({
   }
 });
 
+/** 出站推送超时（SEC-7）：与 webhook-notifier 的 10 秒口径一致 */
+const OUTBOUND_TIMEOUT_MS = 10 * 1000;
+
 /** 连接凭据明文（webhook 适配器出站用）；损坏/缺失返回空串 */
 function openCredential(connection) {
   const credential = connection?.credential;
@@ -133,19 +137,37 @@ const webhookAdapter = register({
   },
   async sendMessage(connection, chatId, content) {
     const target = openCredential(connection).trim();
-    if (!/^https?:\/\//i.test(target)) {
-      // 凭据仅作入站 Token（非 URL）：无出站目标，不算错误
+    if (!target) {
+      // 凭据为空：无出站目标，不算错误
       return { ok: false, skipped: true, reason: 'credential_not_url' };
     }
-    const response = await fetch(target, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId: String(chatId ?? ''), text: String(content ?? '') })
-    });
-    if (!response.ok) {
-      throw new Error(`Webhook 推送返回 HTTP ${response.status}`);
+    let targetUrl;
+    try {
+      // 出站 URL 校验（SEC-5）：此前仅 ^https?:// 前缀判断，userinfo/畸形地址会原样 fetch；
+      // 非 URL 凭据仅作入站 Token，静默跳过出站
+      targetUrl = normalizeHttpUrl(target, { label: 'Webhook 地址' });
+    } catch (error) {
+      return { ok: false, skipped: true, reason: 'credential_not_url' };
     }
-    return { ok: true, status: response.status };
+    // 出站超时（SEC-7）：挂起的目标（半开连接）会悬挂 chat-service 的出站链路，
+    // 节流回复等「尽力而为」路径也被拖住；与 webhook-notifier 的 10 秒口径一致
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OUTBOUND_TIMEOUT_MS);
+    timer.unref?.();
+    try {
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: String(chatId ?? ''), text: String(content ?? '') }),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        throw new Error(`Webhook 推送返回 HTTP ${response.status}`);
+      }
+      return { ok: true, status: response.status };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 });
 

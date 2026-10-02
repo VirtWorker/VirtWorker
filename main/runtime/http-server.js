@@ -15,7 +15,7 @@
  */
 
 const http = require('node:http');
-const { timingSafeEqual } = require('node:crypto');
+const { timingSafeEqual, createHash } = require('node:crypto');
 const db = require('../store/db');
 const automationService = require('../services/automation-service');
 const chatService = require('../services/chat-service');
@@ -51,40 +51,72 @@ function failRequest(res, statusCode, code, message) {
   send(res, statusCode, { ok: false, error: { code, message }, apiVersion: 1 });
 }
 
-/** 定长比较，避免通过响应时间推断 Token */
+/** 定长比较（SEC-3）：双侧 SHA-256 归一为 32 字节再比较——长度不等提前返回会泄露
+ *  Token 长度的时序信号，归一后响应时间与输入长度/内容无关 */
 function tokenMatches(expected, provided) {
   if (!expected || !provided) return false;
-  const a = Buffer.from(String(expected));
-  const b = Buffer.from(String(provided));
-  if (a.length !== b.length) return false;
+  const a = createHash('sha256').update(String(expected)).digest();
+  const b = createHash('sha256').update(String(provided)).digest();
   return timingSafeEqual(a, b);
 }
 
 /**
  * Token 认证失败限速：时序防护挡不住无时间差的暴力枚举，回环上的任意本地进程
- * 可高频尝试。连续失败达阈值后进入冷却窗口（期间一律 429），成功认证或 start() 重启时复位。
+ * 可高频尝试。连续失败达阈值后进入冷却窗口（期间一律 429）。
+ * 分桶（SEC-4）：按目标（自动化/连接 id）计数——全局单桶会让任一目标的爆破冷却全部端点，
+ * 合法脚本被误伤且无法定位爆破源；伪造 id 的桶数有上限（超限只记全局桶），
+ * 全局总量超限仍全局冷却，防「散开打」绕过单桶限制。
  */
 const AUTH_FAIL_LIMIT = 10;
 const AUTH_COOLDOWN_MS = 30 * 1000;
-let authFailCount = 0;
-let authBlockedUntil = 0;
+const AUTH_GLOBAL_FAIL_LIMIT = AUTH_FAIL_LIMIT * 5;
+const AUTH_BUCKETS_MAX = 100;
+const authFailBuckets = new Map(); // targetId → { count, blockedUntil }
+let globalFailCount = 0;
+let globalBlockedUntil = 0;
 
-function authRateLimited() {
-  return Date.now() < authBlockedUntil;
+function authRateLimited(targetId) {
+  const now = Date.now();
+  if (now < globalBlockedUntil) return true;
+  const bucket = targetId ? authFailBuckets.get(targetId) : null;
+  return Boolean(bucket && now < bucket.blockedUntil);
 }
 
-function recordAuthFailure() {
-  authFailCount += 1;
-  if (authFailCount >= AUTH_FAIL_LIMIT) {
-    authBlockedUntil = Date.now() + AUTH_COOLDOWN_MS;
-    authFailCount = 0;
-    console.warn('[api] Token 连续认证失败达到上限，进入 30 秒冷却');
+function recordAuthFailure(targetId) {
+  if (targetId) {
+    let bucket = authFailBuckets.get(targetId);
+    if (!bucket && authFailBuckets.size < AUTH_BUCKETS_MAX) {
+      bucket = { count: 0, blockedUntil: 0 };
+      authFailBuckets.set(targetId, bucket);
+    }
+    if (bucket) {
+      bucket.count += 1;
+      if (bucket.count >= AUTH_FAIL_LIMIT) {
+        bucket.blockedUntil = Date.now() + AUTH_COOLDOWN_MS;
+        bucket.count = 0;
+        console.warn(`[api] 目标 ${targetId} 连续认证失败达上限，进入 30 秒冷却`);
+      }
+    }
+  }
+  globalFailCount += 1;
+  if (globalFailCount >= AUTH_GLOBAL_FAIL_LIMIT) {
+    globalBlockedUntil = Date.now() + AUTH_COOLDOWN_MS;
+    globalFailCount = 0;
+    console.warn('[api] 认证失败总量达到上限，全部端点进入 30 秒冷却');
   }
 }
 
-function recordAuthSuccess() {
-  authFailCount = 0;
-  authBlockedUntil = 0;
+function recordAuthSuccess(targetId) {
+  if (targetId) authFailBuckets.delete(targetId);
+  globalFailCount = 0;
+  globalBlockedUntil = 0;
+}
+
+/** 端点（重）启动时复位全部认证限速状态 */
+function resetAuthState() {
+  authFailBuckets.clear();
+  globalFailCount = 0;
+  globalBlockedUntil = 0;
 }
 
 function readToken(req) {
@@ -147,7 +179,7 @@ async function handle(req, res) {
   if (match) {
     if (req.method !== 'POST') return failRequest(res, 405, 'METHOD_NOT_ALLOWED', '请使用 POST');
     // 冷却期直接拒绝：连自动化 ID 的枚举探测也一并挡下
-    if (authRateLimited()) {
+    if (authRateLimited(match[1])) {
       return failRequest(res, 429, 'TOO_MANY_REQUESTS', '认证失败次数过多，请稍后重试');
     }
 
@@ -160,10 +192,10 @@ async function handle(req, res) {
     // BUG-22 鉴权前置：ID 不存在 / Token 错误 / 缺 Token / 非 API 类型，一律同形 401——
     // 若先查资源后鉴权，404（存在性）与 400（类型/启用状态）的差异会成为无凭证探测探测器
     if (!automation || !tokenMatches(automationService.revealApiToken(automation), readToken(req))) {
-      recordAuthFailure();
+      recordAuthFailure(match[1]);
       return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
     }
-    recordAuthSuccess();
+    recordAuthSuccess(match[1]);
     if (automation.trigger.type !== 'api') {
       return failRequest(res, 400, 'INVALID_STATE', '该自动任务不是 API 触发类型');
     }
@@ -197,17 +229,17 @@ async function handle(req, res) {
   const chatMatch = pathname.match(/^\/chat\/([A-Za-z0-9_]+)\/inbound$/);
   if (chatMatch) {
     if (req.method !== 'POST') return failRequest(res, 405, 'METHOD_NOT_ALLOWED', '请使用 POST');
-    if (authRateLimited()) {
+    if (authRateLimited(chatMatch[1])) {
       return failRequest(res, 429, 'TOO_MANY_REQUESTS', '认证失败次数过多，请稍后重试');
     }
 
     const connection = chatService.findConnectionById(chatMatch[1]);
     const expected = chatService.revealCredential(connection);
     if (!connection || !tokenMatches(expected, readToken(req))) {
-      recordAuthFailure();
+      recordAuthFailure(chatMatch[1]);
       return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
     }
-    recordAuthSuccess();
+    recordAuthSuccess(chatMatch[1]);
 
     let body;
     try {
@@ -247,7 +279,7 @@ function start(onSettled) {
     return current;
   }
   const port = Number(db.getSettings().apiPort) || DEFAULT_PORT;
-  recordAuthSuccess(); // 端点（重）启动时复位认证限速状态
+  resetAuthState(); // 端点（重）启动时复位认证限速状态
   let settled = false;
   const settle = () => {
     if (settled) return;

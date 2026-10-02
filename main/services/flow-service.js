@@ -7,6 +7,7 @@
 const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const automationService = require('./automation-service');
+const taskService = require('./task-service');
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
@@ -91,6 +92,27 @@ function buildPlan(flowId) {
   };
 }
 
+/** 能力被卸载时从所有流程节点摘除引用（capability-service.uninstall 调用，BUG-38）：
+ *  悬空的 capabilityIds 会在 buildPlan 时把已删除能力带进执行上下文，
+ *  与 worker 侧的 detachFromWorkers 同一治理模式 */
+function detachCapability(capabilityId) {
+  db.all('flows')
+    .filter((flow) => (flow.nodes || []).some((node) => (node.capabilityIds || []).includes(capabilityId)))
+    .forEach((flow) => {
+      const next = {
+        ...flow,
+        nodes: flow.nodes.map((node) =>
+          (node.capabilityIds || []).includes(capabilityId)
+            ? { ...node, capabilityIds: node.capabilityIds.filter((cid) => cid !== capabilityId) }
+            : node
+        ),
+        updatedAt: nowIso()
+      };
+      db.update('flows', flow.id, next);
+      bus.emit('flow:updated', decorate(next));
+    });
+}
+
 // ==================== 增删改 ====================
 
 function create(params = {}) {
@@ -141,9 +163,13 @@ function remove(id) {
     '其引用的 WorkerFlow 已删除，请重新指定执行者后再启用'
   );
 
+  // 级联：取消执行者为该流程的在途任务（BUG-31），与 Worker/Group 的级联取消对齐——
+  // 缺失时任务要等下次派发经 buildPlan 抛 NOT_FOUND 才失败，期间以幽灵执行者占据看板
+  const canceledTasks = taskService.cancelActiveByAssignees([id], '执行者 WorkerFlow 已删除，任务自动取消');
+
   db.remove('flows', id);
   bus.emit('flow:removed', { id });
-  return { id, disabledAutomations };
+  return { id, disabledAutomations, canceledTasks };
 }
 
-module.exports = { MAX_NODES, list, stats, detail, buildPlan, create, update, remove };
+module.exports = { MAX_NODES, list, stats, detail, buildPlan, detachCapability, create, update, remove };

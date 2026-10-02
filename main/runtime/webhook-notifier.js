@@ -8,6 +8,7 @@
  * - 仅由任务触发来源 refId 关联到对应自动化；手动/聊天任务没有配置入口，不投递
  */
 
+const { createHmac } = require('node:crypto');
 const bus = require('./event-bus');
 const taskService = require('../services/task-service');
 const automationService = require('../services/automation-service');
@@ -51,9 +52,18 @@ async function deliver(payload = {}) {
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     timer.unref?.();
     try {
+      const headers = { 'Content-Type': 'application/json', 'X-VirtWorker-Event': 'task.finished' };
+      // 请求签名（SEC-9）：配置了签名密钥时附 HMAC-SHA256（对 body）与时间戳头，
+      // 接收方可验证「通知确实来自本应用」，时间戳辅助接收端做重放窗口判断。
+      // 签名在循环内计算：body 恒定，成本可忽略，且避免把密钥留在循环外的作用域
+      const secret = automationService.revealNotifySecret(automation);
+      if (secret) {
+        headers['X-VirtWorker-Timestamp'] = String(Date.now());
+        headers['X-VirtWorker-Signature'] = `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+      }
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-VirtWorker-Event': 'task.finished' },
+        headers,
         body,
         signal: controller.signal
       });

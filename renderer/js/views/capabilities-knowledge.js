@@ -22,7 +22,7 @@ VW.views.capabilitiesKnowledge = (() => {
     const hits = search.results[library.id] || [];
     const open = Boolean(search.open[library.id]);
     return `
-      <div class="knowledge-card" data-id="${library.id}">
+      <div class="knowledge-card" data-id="${escapeHtml(library.id)}">
         <div class="knowledge-head">
           <span class="knowledge-name">${escapeHtml(library.title)}</span>
           <span class="status-badge status-done">已索引</span>
@@ -49,7 +49,7 @@ VW.views.capabilitiesKnowledge = (() => {
                      ? `<div class="knowledge-hits">${hits
                          .map(
                            (hit) => `<div class="knowledge-hit">
-                             <div class="hit-file">${escapeHtml(hit.file)} · 命中分 ${hit.score}</div>
+                             <div class="hit-file">${escapeHtml(hit.file)} · 命中分 ${escapeHtml(hit.score)}</div>
                              <div class="hit-snippet">${escapeHtml(hit.snippet)}</div>
                            </div>`
                          )

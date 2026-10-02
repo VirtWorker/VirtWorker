@@ -19,7 +19,7 @@ VW.assigneeSelect = (() => {
     const options = VW.store.assigneeOptions();
     const head = placeholder ? [`<option value="">${VW.util.escapeHtml(placeholder)}</option>`] : [];
     select.innerHTML = head
-      .concat(options.map((item) => `<option value="${item.value}">${VW.util.escapeHtml(item.label)}</option>`))
+      .concat(options.map((item) => `<option value="${VW.util.escapeHtml(item.value)}">${VW.util.escapeHtml(item.label)}</option>`))
       .join('');
     const valid = selectedId && options.some((item) => item.value === selectedId);
     select.value = valid ? selectedId : placeholder ? '' : options[0]?.value || '';

@@ -152,10 +152,23 @@ function onTaskFinished(payload = {}) {
   });
 }
 
-/** 重排下一次唤醒；没有待触发的定时任务时不占用定时器 */
+/**
+ * 重排下一次唤醒；没有待触发的定时任务时不占用定时器。
+ * 异常自愈（BUG-33）：earliestNextRun 抛错时若不设防，异常会从 tick 的 finally
+ * 变成未捕获异常——timer 已置空且无人再排程，所有定时自动化静默停摆
+ * （直到下一次 automation:changed 才恢复）。失败时按 MAX_TIMER_MS 兜底重排，
+ * 调度循环保证自愈，下一轮 tick 重算时若服务恢复即回到正常节奏。
+ */
 function arm() {
   stop();
-  const next = automationService.earliestNextRun();
+  let next;
+  try {
+    next = automationService.earliestNextRun() || 0;
+  } catch (error) {
+    console.error('[scheduler] 计算最近触发时间失败，稍后重试:', error.message || error);
+    timer = setTimeout(tick, MAX_TIMER_MS);
+    return;
+  }
   if (!next) return;
   const delay = Math.min(Math.max(next - Date.now(), MIN_TIMER_MS), MAX_TIMER_MS);
   timer = setTimeout(tick, delay);

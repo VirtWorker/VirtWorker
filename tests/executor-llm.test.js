@@ -5,7 +5,7 @@
  * 纯 Node 环境（无 electron），db 经 setup.js 的临时目录初始化。
  */
 
-import { describe, test, expect, beforeEach, afterAll } from 'vitest';
+import { describe, test, expect, beforeEach, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { initTempDb, cleanupTempDb, db, executor, workerService } from './setup.js';
 
@@ -85,6 +85,14 @@ describe('executor-llm runStep', () => {
 
   test('未配置 baseUrl/model 时抛出可读错误', async () => {
     await expect(llm.runStep(task, step, {})).rejects.toThrow(/未配置/);
+    expect(fetchCalls).toBe(0);
+  });
+
+  test('baseUrl 带 userinfo 在请求前被拦截（SEC-5 出站校验兜底旧数据）', async () => {
+    db.setSettings({
+      executorConfig: { llm: { baseUrl: 'https://user:pass@api.example.com', model: 'test-model' } }
+    });
+    await expect(llm.runStep(task, step, {})).rejects.toThrow(/userinfo/);
     expect(fetchCalls).toBe(0);
   });
 
@@ -301,5 +309,37 @@ describe('executor-llm Skill 注入（E2）', () => {
     });
     await llm.runStep({ ...task }, { ...step, workerId: worker.id }, {});
     expect(captured.body.messages[1].content).not.toContain('已挂载以下技能');
+  });
+});
+
+describe('executor-llm 配置派生与写入校验（BUG-34 / SEC-5）', () => {
+  test('maxParallel 不触发 apiKey 解密：热路径免 DPAPI 解密（BUG-34）', () => {
+    const plain = 'sk-vault-roundtrip-key';
+    db.setSettings({
+      executorConfig: {
+        llm: {
+          baseUrl: 'https://api.example.com',
+          model: 'm',
+          maxParallel: 4,
+          apiKey: { sealed: vault.seal(plain), mask: '••••' }
+        }
+      }
+    });
+    const openSpy = vi.spyOn(vault, 'open');
+    try {
+      expect(llm.maxParallel()).toBe(4);
+      expect(openSpy).not.toHaveBeenCalled(); // 修复前：readConfig 无条件解封，每次派发一次 DPAPI 解密
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  test('executor:configure 写入时校验 llm baseUrl（SEC-5），合法地址去尾斜杠', () => {
+    const settingsDomain = require('../main/ipc/settings');
+    expect(() =>
+      settingsDomain.mergeExecutorConfig({ llm: { baseUrl: 'https://user:pass@evil.example.com' } })
+    ).toThrow(/userinfo/);
+    const merged = settingsDomain.mergeExecutorConfig({ llm: { baseUrl: 'https://api.example.com/v1///' } });
+    expect(merged.llm.baseUrl).toBe('https://api.example.com/v1');
   });
 });

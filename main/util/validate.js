@@ -54,4 +54,35 @@ function toPositiveInt(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-module.exports = { requiredText, optionalText, assertUniqueName, assertEnum, requireArray, toPositiveInt };
+/**
+ * 出站 http(s) 地址校验（SEC-5）：仅接受 http/https 且拒绝 userinfo（https://evil.com@host 形态）。
+ * 用于主进程代用户发起外联的目标地址（LLM baseUrl、IM webhook 凭据等），
+ * 与 main.js openExternalIfSafe 的放行口径一致；返回去除尾部斜杠的原始地址。
+ */
+function normalizeHttpUrl(value, { label = '地址' } = {}) {
+  const raw = String(value ?? '').trim();
+  if (!raw) throw fail.validation(`请填写${label}`);
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch (error) {
+    throw fail.validation(`${label}不是合法的 URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw fail.validation(`${label}仅支持 http/https 协议`);
+  }
+  if (parsed.username || parsed.password) {
+    throw fail.validation(`${label}不应包含用户名密码（userinfo）`);
+  }
+  return raw.replace(/\/+$/, '');
+}
+
+module.exports = {
+  requiredText,
+  optionalText,
+  assertUniqueName,
+  assertEnum,
+  requireArray,
+  toPositiveInt,
+  normalizeHttpUrl
+};

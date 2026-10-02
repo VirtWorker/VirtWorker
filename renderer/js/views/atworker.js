@@ -301,7 +301,7 @@ VW.views.atworker = (() => {
     wrap.innerHTML = connections
       .map(
         (connection) => `
-      <div class="wizard-option ${connection.id === wizard.connectionId ? 'selected' : ''}" role="button" tabindex="0" data-value="${connection.id}">
+      <div class="wizard-option ${connection.id === wizard.connectionId ? 'selected' : ''}" role="button" tabindex="0" data-value="${escapeHtml(connection.id)}">
         <span class="wizard-option-title">${escapeHtml(connection.name)}</span>
         <span class="meta-chip">${escapeHtml(connection.platformLabel)}</span>
       </div>`
@@ -335,7 +335,7 @@ VW.views.atworker = (() => {
       ${chats.length ? chats.map((chat) => `
         <div class="wizard-option ${chat.chatId === wizard.chatId ? 'selected' : ''}" role="button" tabindex="0" data-chat-id="${escapeHtml(chat.chatId)}">
           <span class="wizard-option-title">${escapeHtml(chat.chatName)}</span>
-          <span class="meta-chip">${CHAT_TYPE_LABEL[chat.chatType] || chat.chatType}</span>
+          <span class="meta-chip">${escapeHtml(CHAT_TYPE_LABEL[chat.chatType] || chat.chatType)}</span>
         </div>`).join('') : '<p class="form-hint">该连接暂无可选聊天，可在下方手动填写。</p>'}
       <div class="wizard-divider">或手动填写聊天</div>
       <div class="form-row">
@@ -658,8 +658,8 @@ VW.views.atworker = (() => {
     chatSelect.innerHTML = chats
       .map(
         (chat) => `
-      <option value="${escapeHtml(chat.chatId)}" data-chat-name="${escapeHtml(chat.chatName)}" data-chat-type="${chat.chatType}">
-        ${escapeHtml(chat.chatName)}（${CHAT_TYPE_LABEL[chat.chatType] || chat.chatType}）
+      <option value="${escapeHtml(chat.chatId)}" data-chat-name="${escapeHtml(chat.chatName)}" data-chat-type="${escapeHtml(chat.chatType)}">
+        ${escapeHtml(chat.chatName)}（${escapeHtml(CHAT_TYPE_LABEL[chat.chatType] || chat.chatType)}）
       </option>`
       )
       .join('');

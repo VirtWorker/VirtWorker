@@ -245,7 +245,7 @@ describe('数据快照备份与恢复（F5）', () => {
     expect(remaining.length).toBe(7);
   });
 
-  test('listBackups 新→旧排列；restore 覆盖数据目录并触发只读保护', () => {
+  test('listBackups 新→旧排列；restore 覆盖数据目录并触发只读保护', async () => {
     const list = db.listBackups();
     expect(list.length).toBeGreaterThan(0);
     expect(list[0].files).toBeGreaterThan(0);
@@ -258,7 +258,8 @@ describe('数据快照备份与恢复（F5）', () => {
     db.flush();
     expect(db.count('workers')).toBe(0);
 
-    const result = db.restore(list[0].name);
+    // restore 已排入备份串行化链（BUG-28）：await 到真正恢复完成
+    const result = await db.restore(list[0].name);
     expect(result.restored).toBe(list[0].name);
     expect(result.files).toBeGreaterThan(0);
     expect(db.isReadOnly()).toBe(true); // 恢复后本会话禁止写盘，防内存态覆盖恢复结果
@@ -475,7 +476,7 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     expect(fs.readFileSync(path.join(snap.dir, 'taskevents.log'), 'utf8')).toBe('');
   });
 
-  test('restore 删除遗留追加日志：快照之后追加的事件不复活', () => {
+  test('restore 删除遗留追加日志：快照之后追加的事件不复活', async () => {
     const names = db.listBackups();
     const snapDir = path.join(db.backupsRoot(), names[0].name);
     // 模拟旧版快照（无 taskevents.log 的快照格式）：删掉快照里的日志文件
@@ -485,7 +486,7 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     db.append('taskevents', event('ev_b2_late'));
     expect(fs.existsSync(logOf())).toBe(true);
 
-    db.restore(names[0].name);
+    await db.restore(names[0].name); // BUG-28：恢复已串行化，await 到拷贝完成
     // 一致性屏障：快照缺失日志 → 现行遗留日志必须被清除，否则重启回放会复活 ev_b2_late
     expect(fs.existsSync(logOf())).toBe(false);
 
@@ -493,7 +494,7 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     expect(db.where('taskevents', { taskId: 'tk_br' }).map((item) => item.id)).toEqual(['ev_b1']);
   });
 
-  test('restore 兼容自带日志的快照：json + 日志回放组合出快照时刻的完整状态', () => {
+  test('restore 兼容自带日志的快照：json + 日志回放组合出快照时刻的完整状态', async () => {
     // 手工构造旧式快照：json 只有 ev_s1，日志里还有一条未压缩的 ev_s2
     const legacyDir = path.join(db.backupsRoot(), '19990101-000000');
     fs.mkdirSync(legacyDir, { recursive: true });
@@ -504,7 +505,7 @@ describe('BUG-21 快照一致性：备份写入屏障与恢复日志清理', () 
     );
     fs.writeFileSync(path.join(legacyDir, 'taskevents.log'), `${JSON.stringify(event('ev_s2'))}\n`, 'utf8');
 
-    db.restore('19990101-000000');
+    await db.restore('19990101-000000'); // BUG-28：await 到拷贝完成
     expect(fs.existsSync(logOf())).toBe(true); // 快照自带日志 → 拷贝覆盖保留
     db.init(dataDir());
     expect(db.where('taskevents', { taskId: 'tk_br' }).map((item) => item.id)).toEqual(['ev_s1', 'ev_s2']);
@@ -596,5 +597,61 @@ describe('BUG-25 并发快照串行化', () => {
     } finally {
       fs.promises.copyFile = originalCopy;
     }
+  });
+});
+
+describe('BUG-28 恢复串行化与失败整体回滚', () => {
+  let tempDir28;
+
+  beforeAll(() => {
+    tempDir28 = fs.mkdtempSync(path.join(os.tmpdir(), 'vw-b28-'));
+    db.init(path.join(tempDir28, 'data'));
+  });
+
+  afterAll(() => {
+    try {
+      fs.rmSync(tempDir28, { recursive: true, force: true });
+    } catch (error) {
+      // 忽略清理失败
+    }
+  });
+
+  test('恢复中途拷贝失败：数据目录整体回滚到恢复前，只读保护解除，可再次恢复', async () => {
+    db.insert('workers', { id: 'wk_b28', name: '回滚测试', groupIds: [], capabilityIds: [] });
+    db.flush();
+    const snap = await db.backup();
+
+    // 破坏当前数据，准备从快照恢复
+    db.removeWhere('workers', () => true);
+    db.flush();
+    expect(db.count('workers')).toBe(0);
+
+    // 钩住 copyFileSync：恢复拷贝第一个 json 目标文件时抛错，模拟磁盘故障
+    const originalCopy = fs.copyFileSync.bind(fs);
+    let failed = false;
+    fs.copyFileSync = (src, dest, ...rest) => {
+      if (!failed && String(dest).endsWith('.json')) {
+        failed = true;
+        throw new Error('EIO: 模拟拷贝故障');
+      }
+      return originalCopy(src, dest, ...rest);
+    };
+    try {
+      await expect(db.restore(path.basename(snap.dir))).rejects.toThrow(/模拟拷贝故障/);
+    } finally {
+      fs.copyFileSync = originalCopy;
+    }
+
+    // 整体回滚：磁盘仍是恢复前状态（wk_b28 已删除），无 .restoring 暂存残留、无半恢复内容
+    const onDisk = JSON.parse(fs.readFileSync(path.join(tempDir28, 'data', 'workers.json'), 'utf8'));
+    expect(onDisk.items.map((item) => item.id)).not.toContain('wk_b28');
+    expect(fs.readdirSync(path.join(tempDir28, 'data')).some((name) => name.includes('.restoring'))).toBe(false);
+    expect(db.isReadOnly()).toBe(false); // 本次恢复引入的只读已随回滚解除
+
+    // 回滚后再次恢复可成功
+    const result = await db.restore(path.basename(snap.dir));
+    expect(result.files).toBeGreaterThan(0);
+    db.init(path.join(tempDir28, 'data')); // 模拟重启加载恢复的数据
+    expect(db.find('workers', 'wk_b28')).toBeTruthy();
   });
 });

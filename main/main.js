@@ -125,6 +125,9 @@ function restoreExecutorPreference() {
 /** 首次维护延迟：备份是整目录同步拷贝，数据目录大时直接在启动路径上跑会造成启动卡顿 */
 const MAINTENANCE_START_DELAY_MS = 30 * 1000;
 
+/** 退出时等待在途快照收口的上限：快照拷贝通常亚秒级完成，超时即放行，绝不卡死退出 */
+const QUIT_BACKUP_WAIT_MS = 5 * 1000;
+
 /**
  * 每日维护（O7）：启动 30 秒后首跑，此后每 24 小时一次。
  * - 过期任务清理：保留策略此前只在启动时执行，长期运行的自动化场景下过期任务会持续堆积
@@ -383,8 +386,12 @@ function safeTeardown(name, fn) {
   }
 }
 
-// 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流
-app.on('before-quit', () => {
+/** 退出收口是否已完成：防止 finalizeQuit 里 app.quit() 再次触发 before-quit 时重复清理 */
+let quitFinalized = false;
+
+function finalizeQuit() {
+  if (quitFinalized) return;
+  quitFinalized = true;
   // 「重启应用」不再走 app.exit(0)（会跳过本钩子导致脏缓存不落盘）：
   // 在完整清理后登记 relaunch，退出流程继续并自动拉起新实例
   if (ipc.consumeRelaunchRequest()) {
@@ -397,4 +404,19 @@ app.on('before-quit', () => {
   safeTeardown('httpServer.stop', () => httpServer.stop());
   safeTeardown('db.flush', () => db.flush()); // 脏缓存落盘
   safeTeardown('logger.close', () => logger.close()); // 日志流关闭，必须在 flush 之后
+  app.quit(); // 重新进入退出流程：quitFinalized 已置位，before-quit 不再拦截
+}
+
+// 退出前释放调度定时器、本地端点与运行时任务状态，落盘待写数据并关闭日志流。
+// 在途快照期间退出（BUG-27）：快照拷贝会推迟 flush，直接收口会把拷贝窗口内的脏缓存
+// 留在内存随进程消亡。改为 preventDefault 异步收口——先停止接受新快照并等待备份链排空
+// （限时放行防卡死），再执行完整清理与落盘，最后重新发起退出。
+app.on('before-quit', (event) => {
+  if (quitFinalized) return;
+  event.preventDefault();
+  db.beginShutdown();
+  db
+    .whenBackupIdle(QUIT_BACKUP_WAIT_MS)
+    .catch(() => false)
+    .then(() => finalizeQuit());
 });

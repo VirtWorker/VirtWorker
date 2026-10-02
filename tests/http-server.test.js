@@ -154,7 +154,7 @@ describe('http-server Token 鉴权', () => {
     expect(JSON.parse(missing.body).error.message).toBe(JSON.parse(scheduleRes.body).error.message);
   });
 
-  test('连续认证失败达阈值后进入冷却一律 429，重启端点复位（BUG-13）', async () => {
+  test('认证失败按目标分桶冷却，总量超限全局冷却，重启端点复位（BUG-13 / SEC-4）', async () => {
     dir = dir || initTempDb();
     await httpServer.restart(); // 复位限速状态（start 时清零），换独立端口避免污染前序用例
     const port = 20000 + (process.pid % 20000) + 2;
@@ -170,15 +170,30 @@ describe('http-server Token 鉴权', () => {
         });
         expect(res.statusCode).toBe(401);
       }
-      // 达到阈值后冷却：连不存在的自动化 ID 的枚举探测也一并 429，正确 Token 也暂被拒
-      const blockedProbe = await request(port, { path: '/automations/at_none/run', method: 'POST' });
-      expect(blockedProbe.statusCode).toBe(429);
+      // 达到阈值后该目标进入冷却：正确 Token 也暂被拒（429）
       const blockedValid = await request(port, {
         path: `/automations/${id}/run`,
         method: 'POST',
         headers: { 'X-VirtWorker-Token': token, 'Content-Type': 'application/json' }
       });
       expect(blockedValid.statusCode).toBe(429);
+
+      // 分桶语义（SEC-4）：其他目标不受该目标的冷却牵连，仍按 401 正常应答
+      // （全局单桶时代这里会误伤为 429）；本次探测本身计入全局失败量
+      const otherTarget = await request(port, { path: '/automations/at_none/run', method: 'POST' });
+      expect(otherTarget.statusCode).toBe(401);
+
+      // 全局兜底：累计失败达 AUTH_FAIL_LIMIT×5（50）后全部端点 429，防「散开打」绕过单桶。
+      // 注意用不同目标各计一次失败——同一目标打满 10 次会先进自己的分桶冷却（429 不计全局）
+      for (let i = 0; i < 39; i += 1) {
+        await request(port, {
+          path: `/automations/at_global_${i}/run`,
+          method: 'POST',
+          headers: { 'X-VirtWorker-Token': 'vw_wrong_token' }
+        });
+      }
+      const globalBlocked = await request(port, { path: '/automations/at_none3/run', method: 'POST' });
+      expect(globalBlocked.statusCode).toBe(429);
 
       // 重启端点（start 复位限速）后正确 Token 恢复 200
       await httpServer.restart();

@@ -16,7 +16,7 @@ VW.views.capabilitiesShares = (() => {
 
   function shareCardHtml(share) {
     return `
-      <div class="share-card" data-id="${share.id}">
+      <div class="share-card" data-id="${escapeHtml(share.id)}">
         <div class="share-head">
           <span class="share-name">${escapeHtml(share.title)}</span>
           <span class="meta-chip">${escapeHtml(share.typeLabel)}</span>

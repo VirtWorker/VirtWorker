@@ -4,7 +4,7 @@
  * 注意：生产模块统一经 setup.js 的 createRequire 导出，确保与运行时共享同一 db 单例。
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { initTempDb, cleanupTempDb, db, bus, scheduler, nowIso, workerService, automationService } from './setup.js';
 
 let dir;
@@ -231,5 +231,41 @@ describe('事件/API 触发限速（A3）：最小触发间隔防风暴', () => 
     const again = scheduler.fire(db.find('automations', automation.id), '窗口外触发');
     expect(again).toBeTruthy();
     expect(again.trigger.refId).toBe(automation.id);
+  });
+});
+
+describe('调度器自愈（BUG-33）', () => {
+  beforeAll(() => {
+    dir = initTempDb();
+    scheduler.start(); // 文件内第二次 start：事件监听重复注册对本用例无害（arm 幂等）
+  });
+
+  afterAll(() => {
+    scheduler.stop();
+    cleanupTempDb(dir);
+  });
+
+  test('earliestNextRun 抛错不产生未捕获异常，恢复后调度循环继续', async () => {
+    const real = automationService.earliestNextRun.bind(automationService);
+    let calls = 0;
+    const spy = vi.spyOn(automationService, 'earliestNextRun').mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) throw new Error('计算失败');
+      return real();
+    });
+    try {
+      // 修复前：arm() 的异常从 tick 的 finally 变成未捕获异常，调度器永久停摆
+      //（生产环境会触发全局兜底直接退出应用）。修复后 arm 内部捕获并按 MAX_TIMER_MS 兜底重排
+      expect(() => bus.command('automation:changed', 'at_heal')).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(calls).toBeGreaterThanOrEqual(1);
+
+      // spy 恢复后再次重排回到正常路径，调度循环存活
+      spy.mockRestore();
+      expect(() => bus.command('automation:changed', 'at_heal_2')).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

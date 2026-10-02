@@ -8,6 +8,7 @@ const db = require('../store/db');
 const bus = require('../runtime/event-bus');
 const httpServer = require('../runtime/http-server');
 const vault = require('../util/secret-vault');
+const { normalizeHttpUrl } = require('../util/validate');
 
 const DEFAULT_SETTINGS = {
   taskView: 'list',
@@ -80,7 +81,11 @@ function sanitizeSettings(patch = {}) {
       return;
     }
     if (key === 'actionTimeoutPolicy' && !['fail', 'continue', 'remind'].includes(patch[key])) return;
-    safe[key] = typeof DEFAULT_SETTINGS[key] === 'boolean' ? Boolean(patch[key]) : patch[key];
+    // 类型必须与默认值一致（SEC-1）：兜底分支对每个新增设置键默认安全——
+    // 未来新增数值/字符串键若漏写显式分支，任意类型（含嵌套对象）不再原样落库并下发渲染层
+    const expectedType = typeof DEFAULT_SETTINGS[key];
+    if (typeof patch[key] !== expectedType) return;
+    safe[key] = expectedType === 'boolean' ? Boolean(patch[key]) : patch[key];
   });
   return safe;
 }
@@ -131,6 +136,11 @@ function mergeExecutorConfig(patch = {}) {
       }
     }
     next[name] = merged;
+    // 出站 URL 写入时校验（SEC-5）：LLM baseUrl 是主进程带凭据外联的目标，
+    // 配置时即拦截非法协议/userinfo，而不是等任务执行时才失败
+    if (name === 'llm' && typeof merged.baseUrl === 'string' && merged.baseUrl.trim()) {
+      merged.baseUrl = normalizeHttpUrl(merged.baseUrl, { label: '模型服务 API 地址' });
+    }
   }
   // 系统密钥链不可用时密钥仅 base64 编码存储，必须让用户知情（与连接器凭据同款告警，BUG-6）
   if (sealedUnprotected) {

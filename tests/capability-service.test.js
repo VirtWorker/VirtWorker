@@ -11,6 +11,7 @@ import { initTempDb, cleanupTempDb, db, workerService, bus } from './setup.js';
 
 const require = createRequire(import.meta.url);
 const capabilityService = require('../main/services/capability-service');
+const flowService = require('../main/services/flow-service');
 const { SKILL_CATALOG } = require('../main/data/skill-catalog');
 
 let dir;
@@ -160,5 +161,30 @@ describe('capability-service：resolveWorkerCapabilities 分组与摘除', () =>
     expect(workerService.getWorker(worker.id).capabilityIds).toEqual([]);
     expect(workerService.getWorker(other.id).capabilityIds).toEqual([]);
     expect(events.length).toBe(2);
+  });
+});
+
+describe('capability-service：Flow 节点引用摘除（BUG-38）', () => {
+  beforeEach(() => {
+    ['workers', 'capabilities', 'chunks', 'flows'].forEach((name) => db.removeWhere(name, () => true));
+  });
+
+  test('卸载能力时从所有流程节点摘除引用并广播 flow:updated', () => {
+    const skill = capabilityService.installSkill(SKILL_CATALOG[0].id);
+    const nodeWorker = workerService.createWorker({ name: '流程节点工' });
+    const flow = flowService.create({
+      name: '引用摘除流程',
+      nodes: [{ workerId: nodeWorker.id, instruction: '用技能干活', capabilityIds: [skill.id] }]
+    });
+    expect(db.find('flows', flow.id).nodes[0].capabilityIds).toEqual([skill.id]);
+
+    const events = [];
+    const off = bus.on('flow:updated', (payload) => events.push(payload.id));
+    capabilityService.uninstall(skill.id);
+    off();
+
+    // 修复前：Flow 节点的 capabilityIds 悬空，buildPlan 会把已删除能力带进执行上下文
+    expect(db.find('flows', flow.id).nodes[0].capabilityIds).toEqual([]);
+    expect(events).toContain(flow.id);
   });
 });

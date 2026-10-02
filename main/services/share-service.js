@@ -132,7 +132,13 @@ function buildPayload(resourceType, resourceId) {
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') throw fail.validation('文件内容不是合法的资源包');
   if (payload.kind !== EXPORT_KIND) throw fail.validation('文件类型不匹配（缺少 VirtWorker 标识）');
-  if (Number(payload.version) > EXPORT_VERSION) throw fail.validation('资源包版本高于当前应用支持的版本');
+  // 版本校验（BUG-39）：Number(payload.version) > EXPORT_VERSION 对 NaN/0/负数全部放行
+  // （NaN 与任何值比较为 false），畸形包此前靠后续防御兜底；改为严格整数区间
+  if (!Number.isInteger(payload.version) || payload.version < 1 || payload.version > EXPORT_VERSION) {
+    throw fail.validation(
+      Number(payload.version) > EXPORT_VERSION ? '资源包版本高于当前应用支持的版本' : '资源包版本不合法'
+    );
+  }
   if (!SUPPORTED_TYPES.includes(payload.resourceType)) throw fail.validation('暂不支持该类型的资源包');
   const resource = payload.resource;
   if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {

@@ -226,6 +226,14 @@ function revealApiToken(automation) {
   return vault.open(token.sealed);
 }
 
+/** 取通知签名密钥明文（SEC-9，仅供主进程投递签名，绝不下发渲染层）；兼容旧版明文字符串 */
+function revealNotifySecret(automation) {
+  const secret = automation?.notify?.webhookSecret;
+  if (!secret) return '';
+  if (typeof secret === 'string') return secret;
+  return vault.open(secret.sealed);
+}
+
 /** 重新生成 API Token：旧 Token 立即失效（泄漏后的换锁入口），归档一并作废 */
 function regenerateToken(id) {
   const automation = getOrThrow(id);
@@ -254,10 +262,12 @@ function normalizeInput(input = {}) {
   };
 }
 
-/** 出站通知配置（F2）：任务终态时向 webhookUrl POST 结构化事件（由 runtime/webhook-notifier 投递） */
+/** 出站通知配置（F2）：任务终态时向 webhookUrl POST 结构化事件（由 runtime/webhook-notifier 投递）。
+ *  webhookSecret（SEC-9）可选：请求签名密钥，字符串经 vault.seal 落库（与 API Token 同一保险箱标准）；
+ *  库内密文对象（合并路径未轮换时）原样透传；空值清除。decorate 只下发掩码形态。 */
 function normalizeNotify(input = {}) {
   const url = String(input?.webhookUrl ?? '').trim().slice(0, 500);
-  if (!url) return { webhookUrl: '' };
+  if (!url) return { webhookUrl: '', webhookSecret: '' };
   let parsed;
   try {
     parsed = new URL(url);
@@ -270,7 +280,16 @@ function normalizeNotify(input = {}) {
   if (parsed.username || parsed.password) {
     throw fail.validation('Webhook 地址不应携带账号密码（请在接收端校验签名）');
   }
-  return { webhookUrl: parsed.href };
+  let webhookSecret = '';
+  const rawSecret = input?.webhookSecret;
+  if (rawSecret && typeof rawSecret === 'object' && rawSecret.sealed) {
+    webhookSecret = rawSecret; // 既有密文透传：合并路径中未提供新密钥即保留
+  } else if (typeof rawSecret === 'string' && rawSecret.trim()) {
+    const plain = rawSecret.trim().slice(0, 200);
+    const sealed = vault.seal(plain);
+    webhookSecret = { sealed, mask: vault.mask(plain), mode: sealed.mode };
+  }
+  return { webhookUrl: parsed.href, webhookSecret };
 }
 
 function listAll() {
@@ -305,8 +324,21 @@ function decorate(automation) {
         }
       }
     : rest.trigger;
+  // 通知签名密钥同款掩码（SEC-9）：密文绝不出库，掩码回传等价于保留
+  const notify =
+    rest.notify?.webhookSecret && rest.notify.webhookSecret.sealed
+      ? {
+          ...rest.notify,
+          webhookSecret: {
+            masked: true,
+            mask: rest.notify.webhookSecret.mask || '',
+            mode: rest.notify.webhookSecret.mode || ''
+          }
+        }
+      : rest.notify;
   return {
     ...rest,
+    notify,
     trigger,
     triggerLabel: TRIGGER_LABEL[rest.trigger.type],
     triggerText: describeTrigger(rest.trigger),
@@ -411,7 +443,13 @@ function update(id, patch = {}) {
   }
   if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
   if (patch.input !== undefined) next.input = normalizeInput({ ...automation.input, ...patch.input });
-  if (patch.notify !== undefined) next.notify = normalizeNotify({ ...automation.notify, ...patch.notify });
+  if (patch.notify !== undefined) {
+    const incomingNotify = { ...patch.notify };
+    // 只读掩码回传 = 保留现有签名密钥（SEC-9，与 API Token 的 O6 契约同款语义）：
+    // 若把掩码对象合并进 normalizeNotify，会被当作垃圾值清空既有密钥
+    if (isMaskedToken(incomingNotify.webhookSecret)) delete incomingNotify.webhookSecret;
+    next.notify = normalizeNotify({ ...automation.notify, ...incomingNotify });
+  }
   if (patch.executorId !== undefined) {
     const executor = taskService.resolveAssignee(patch.executorId);
     next.executor = { type: executor.type, id: executor.id, name: executor.name };
@@ -597,5 +635,6 @@ module.exports = {
   listEnabledByEvent,
   regenerateToken,
   revealApiToken,
+  revealNotifySecret,
   buildInvocation
 };

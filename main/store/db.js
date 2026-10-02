@@ -141,11 +141,20 @@ function notifyStorageIssue(message, title = '数据存储异常') {
 /**
  * 进入只读保护（幂等）：首次调用记录原因并告警，此后所有写盘被拒绝。
  * 只在重新 init()（应用升级后重启 / 测试重装）时复位。
+ * 返回本次实际记录的原因；已处于只读时返回 null（供恢复失败回滚判断是否由自己引入）。
  */
 function enterReadOnly(reason) {
-  if (readOnlyReason) return;
+  if (readOnlyReason) return null;
   readOnlyReason = reason;
   notifyStorageIssue(reason, '数据已进入只读保护');
+  return reason;
+}
+
+/** 解除只读保护（仅限恢复失败回滚场景）：按原因精确匹配，避免误清「数据版本过高」等保护 */
+function exitReadOnly(reason) {
+  if (reason && readOnlyReason === reason) {
+    readOnlyReason = null;
+  }
 }
 
 function isReadOnly() {
@@ -753,9 +762,30 @@ function rotateBackups() {
  * 把所有 backup 调用串到一条 Promise 链上：后到者等前一个完整收口后再启动自己的快照。
  */
 let backupChain = Promise.resolve();
+/**
+ * 退出阶段标志（BUG-27）：置位后拒绝新的快照。此前「快照拷贝期间退出」时，
+ * before-quit 的 flush 被快照屏障跳过、flushTimer 已 unref，拷贝窗口内累积的脏缓存随进程消亡。
+ * 退出路径先 beginShutdown() 再 whenBackupIdle() 等在途快照收口，然后 flush 落盘。
+ */
+let shuttingDown = false;
+
+/** 进入退出阶段：不再接受新的快照（进行中的快照照常收口，finally 里的 flush 负责兜底落盘） */
+function beginShutdown() {
+  shuttingDown = true;
+}
+
+/** 等待在途/排队的快照全部收口（含链上后到者）。超时放行避免卡死退出流程；
+ *  返回 true 表示链已排空，false 表示超时（脏数据仍会由 backupOnce finally 的 flush 尽力落盘） */
+function whenBackupIdle(timeoutMs = 5 * 1000) {
+  const timeout = new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([backupChain.then(() => true), timeout]);
+}
 
 function backup() {
-  if (!baseDir) return Promise.resolve({ dir: '', files: 0, kept: 0 });
+  if (!baseDir || shuttingDown) return Promise.resolve({ dir: '', files: 0, kept: 0 });
   const run = backupChain.then(() => backupOnce(), () => backupOnce()); // 前次失败不阻断后续快照
   backupChain = run.then(() => {}, () => {}); // 链条本身永不 rejected
   return run;
@@ -810,33 +840,86 @@ function listBackups() {
  * 一致性屏障（BUG-21）：快照缺失 taskevents.log（如旧版快照、或日志未生成的全新安装）
  * 时，必须删除当前数据目录的追加日志——遗留的现行日志在重启回放时会把「快照之后
  * 已删除/已修剪」的事件复活（按 id 去重防不了复活）；快照自带日志时拷贝覆盖，天然一致。
+ * 串行化与原子性（BUG-28）：恢复排入备份串行化链（与在途异步快照互斥）——此前并发时
+ * 快照拷贝可能读到恢复到一半的数据目录产出混合内容的脏快照，恢复也可能单文件失败跳过，
+ * 留下「一半新一半旧」的数据目录且无回退手段。改为「整批让位（同盘 rename 瞬时原子）
+ * → 整批拷贝，任意失败整体回滚」，数据目录要么是恢复前、要么是恢复后的完整状态。
  */
 function restore(name) {
   const snapshot = String(name ?? '');
   if (!BACKUP_NAME_PATTERN.test(snapshot)) throw fail.validation('备份快照名不合法');
   const source = path.join(backupsRoot(), snapshot);
   if (!fs.existsSync(source)) throw fail.notFound('备份快照不存在');
-  enterReadOnly(`正在恢复备份「${snapshot}」，本会话已暂停写入，重启后生效`);
+  const run = backupChain.then(() => restoreOnce(snapshot, source), () => restoreOnce(snapshot, source));
+  backupChain = run.then(() => {}, () => {}); // 链条本身永不 rejected
+  return run;
+}
+
+async function restoreOnce(snapshot, source) {
+  const ownReadOnlyReason = enterReadOnly(`正在恢复备份「${snapshot}」，本会话已暂停写入，重启后生效`);
   const snapshotFiles = new Set(fs.readdirSync(source));
-  let files = 0;
+  const entries = [];
   for (const entry of snapshotFiles) {
-    const src = path.join(source, entry);
     try {
-      if (!fs.statSync(src).isFile()) continue;
-      fs.copyFileSync(src, path.join(baseDir, entry));
+      if (fs.statSync(path.join(source, entry)).isFile()) entries.push(entry);
+    } catch (error) {
+      console.error(`[store] 恢复预检跳过 ${entry}:`, error.message);
+    }
+  }
+  const stashed = [];
+  try {
+    // 第一阶段：整批让位。同盘 rename 瞬时完成，目标文件被占用等问题在此即暴露，
+    // 此时数据目录尚未发生任何内容变更
+    for (const entry of entries) {
+      const dst = path.join(baseDir, entry);
+      if (fs.existsSync(dst)) {
+        fs.renameSync(dst, `${dst}.restoring`);
+        stashed.push(dst);
+      }
+    }
+    // 第二阶段：整批拷贝
+    let files = 0;
+    for (const entry of entries) {
+      fs.copyFileSync(path.join(source, entry), path.join(baseDir, entry));
       files += 1;
-    } catch (error) {
-      console.error(`[store] 恢复跳过 ${entry}:`, error.message);
     }
-  }
-  if (!snapshotFiles.has(EVENTS_LOG_NAME)) {
-    try {
-      fs.rmSync(path.join(baseDir, EVENTS_LOG_NAME), { force: true });
-    } catch (error) {
-      console.error('[store] 恢复清理遗留追加日志失败:', error.message);
+    for (const dst of stashed) {
+      try {
+        fs.rmSync(`${dst}.restoring`, { force: true });
+      } catch (error) {
+        console.error(`[store] 清理恢复暂存 ${path.basename(dst)} 失败:`, error.message);
+      }
     }
+    if (!snapshotFiles.has(EVENTS_LOG_NAME)) {
+      try {
+        fs.rmSync(path.join(baseDir, EVENTS_LOG_NAME), { force: true });
+      } catch (error) {
+        console.error('[store] 恢复清理遗留追加日志失败:', error.message);
+      }
+    }
+    return { restored: snapshot, files };
+  } catch (error) {
+    // 整体回滚：删除已拷贝的半成品，让位的原文件全部改回原名——数据目录回到恢复前状态
+    for (const entry of entries) {
+      try {
+        fs.rmSync(path.join(baseDir, entry), { force: true });
+      } catch (rollbackError) {
+        console.error(`[store] 恢复回滚清理 ${entry} 失败:`, rollbackError.message);
+      }
+    }
+    for (const dst of stashed) {
+      try {
+        fs.renameSync(`${dst}.restoring`, dst);
+      } catch (rollbackError) {
+        console.error(`[store] 恢复回滚 ${path.basename(dst)} 失败:`, rollbackError.message);
+      }
+    }
+    if (ownReadOnlyReason) {
+      exitReadOnly(ownReadOnlyReason);
+      notifyStorageIssue(`备份「${snapshot}」恢复失败已回滚，数据未改动，应用已恢复写入`, '备份恢复失败');
+    }
+    throw error;
   }
-  return { restored: snapshot, files };
 }
 
 module.exports = {
@@ -862,6 +945,8 @@ module.exports = {
   getSettingsVersion,
   setSettings,
   flush,
+  beginShutdown,
+  whenBackupIdle,
   setNotify,
   drainNotices,
   isReadOnly,

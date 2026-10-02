@@ -6,7 +6,7 @@
  *       创建知识库时必须携带匹配的 ticket，授权即消费，防止重放。
  */
 
-const { randomBytes, timingSafeEqual } = require('node:crypto');
+const { randomBytes, timingSafeEqual, createHash } = require('node:crypto');
 
 const TTL_MS = 5 * 60 * 1000; // 签发后 5 分钟内有效
 const MAX_GRANTS = 20; // 只保留最近的授权，防内存膨胀
@@ -37,9 +37,11 @@ function consume(ticket, dir) {
   const record = grants.get(ticket);
   if (!record) return false;
   grants.delete(ticket); // 无论成败都消费，防重放
-  const a = Buffer.from(String(record.dir));
-  const b = Buffer.from(String(dir ?? ''));
-  return a.length === b.length && timingSafeEqual(a, b);
+  // 定长比较（SEC-3）：双侧 SHA-256 归一为 32 字节再比较——长度不等提前返回
+  // 会泄露路径长度的时序信号，归一后响应时间与输入无关
+  const a = createHash('sha256').update(String(record.dir)).digest();
+  const b = createHash('sha256').update(String(dir ?? '')).digest();
+  return timingSafeEqual(a, b);
 }
 
 module.exports = { grant, consume };

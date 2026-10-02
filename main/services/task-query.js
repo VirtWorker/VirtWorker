@@ -140,27 +140,45 @@ function ackAll(period = 'month') {
 }
 
 /** 归档阈值（BUG-20）：已查收且查收时间早于该天数 → 移入 tasks-archive。
- *  只归档 succeeded+acked：failed/canceled 是重试候选、未查收结果用户还没看，
- *  两者都留在活跃集合。归档后活跃集合规模被压在「30 天已查收 + 进行中 + 未查收」窗口内，
+ *  succeeded 仍要求已查收（未查收的结果用户还没看，不退出活跃集合）；
+ *  failed/canceled 无查收语义（BUG-27）：按 finishedAt 计龄走同一归档/保留通道——
+ *  此前两者没有任何退出通道，失败风暴与级联取消产生的终态任务永久滞留活跃集合，
+ *  归档治理「活跃集合规模有界」的前提被打破。重试候选语义不受影响：
+ *  retry 经 getTask 合并读归档集合，新任务照常入队。
+ *  归档后活跃集合规模被压在「30 天已定格终态 + 进行中 + 未查收结果」窗口内，
  *  create/completeStep 等高频写的 O(N) 拷贝与全量重写成本随之有界。 */
 const ARCHIVE_AFTER_DAYS = 30;
 
-/** 过期判定：已结束、已查收且超出保留期（未查收的结果不会被清理，避免用户还没看就消失） */
+/** 终态定格时间（BUG-27）：succeeded 取查收时间（未查收返回 null 保持不清理语义），
+ *  failed/canceled 取 finishedAt（无查收语义，失败信息本身即用户可见的终态结果） */
+function settledAtOf(task) {
+  if (task.status === STATUS.succeeded) {
+    if (!task.resultAckedAt) return null;
+    return settledTime(task.resultAckedAt);
+  }
+  return settledTime(task.finishedAt);
+}
+
+function settledTime(raw) {
+  if (!raw) return null;
+  const time = new Date(raw).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/** 过期判定：已结束、已定格且超出保留期（未查收的成功结果不会被清理，避免用户还没看就消失） */
 function expiredPredicate(threshold) {
   return (task) => {
     if (!FINISHED_STATUS.includes(task.status)) return false;
-    if (!task.resultAckedAt) return false;
-    const settledAt = new Date(task.resultAckedAt).getTime();
-    return !Number.isNaN(settledAt) && settledAt < threshold;
+    const settledAt = settledAtOf(task);
+    return settledAt !== null && settledAt < threshold;
   };
 }
 
-/** 归档判定：已完成、已查收且超出归档阈值（严格弱于过期判定，归档是删除前的中间层） */
+/** 归档判定：已定格且超出归档阈值（严格弱于过期判定，归档是删除前的中间层） */
 function agedPredicate(threshold) {
   return (task) => {
-    if (task.status !== STATUS.succeeded || !task.resultAckedAt) return false;
-    const settledAt = new Date(task.resultAckedAt).getTime();
-    return !Number.isNaN(settledAt) && settledAt < threshold;
+    const settledAt = settledAtOf(task);
+    return settledAt !== null && settledAt < threshold;
   };
 }
 

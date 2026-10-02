@@ -53,6 +53,15 @@ describe('secret-vault 凭据保险箱', () => {
     expect(vault.open(sealed)).toBe('plain-fallback');
   });
 
+  test('密文携带格式版本字段 v=1，旧数据（无 v）按 v1 兼容读取（SEC-8）', () => {
+    encryptionAvailable = true;
+    const sealed = vault.seal('versioned-secret');
+    expect(sealed.v).toBe(1);
+    expect(vault.open(sealed)).toBe('versioned-secret');
+    // 旧版密文结构无 v 字段：open 不依赖版本字段存在，兼容读取
+    expect(vault.open({ mode: 'encrypted', value: sealed.value })).toBe('versioned-secret');
+  });
+
   test('open 对畸形/空输入安全返回空串', () => {
     expect(vault.open(null)).toBe('');
     expect(vault.open(undefined)).toBe('');

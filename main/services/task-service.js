@@ -38,6 +38,14 @@ const TRIGGER_LABEL = {
 const STEP_STATUS = Object.freeze({ pending: 'pending', running: 'running', done: 'done' });
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+
+/** 优先级归一（BUG-29）：未传/空保持默认 normal（内部默认值语义）；
+ *  外部显式传入非法值一律校验失败——静默回退 normal 会让 API/IM/自动化入参错误被吞掉，排障困难 */
+function normalizePriority(raw) {
+  if (raw === undefined || raw === null || raw === '') return 'normal';
+  if (!PRIORITIES.includes(raw)) throw fail.validation('无效的任务优先级');
+  return raw;
+}
 const MAX_EVENTS = 200;
 /** 任务级总超时上限（分钟）：从开始执行起算的墙钟上限（E3），缺省/0 = 不限时 */
 const TASK_TIMEOUT_MAX_MINUTES = 7 * 24 * 60;
@@ -78,22 +86,33 @@ function publish(task, eventType) {
  * 未来若在 updater 中引入 await，必须先为任务增加 revision 乐观锁，否则会产生读-改-写竞态。
  */
 function mutate(id, updater, { allowFinished = false } = {}) {
-  const task = getOrThrow(id);
+  const located = locateTask(id);
+  if (!located.task) throw fail.notFound('任务不存在');
+  const task = located.task;
   if (!allowFinished && FINISHED_STATUS.includes(task.status)) {
     throw fail.invalidState(`任务已结束（${task.status}），不能再变更状态`);
   }
   updater(task);
   task.updatedAt = nowIso();
-  // writeBack（PERF-7）：mutate 自持完整草稿、不依赖返回值，省去 update 返回值的一次全任务深克隆
-  db.writeBack('tasks', id, task);
+  // writeBack（PERF-7）：mutate 自持完整草稿、不依赖返回值，省去 update 返回值的一次全任务深克隆；
+  // 写回集合随任务所在位置（BUG-27）：归档任务（failed/canceled 现同样归档）的审计写入必须落回归档集合
+  db.writeBack(located.collection, id, task);
   return task;
 }
 
 /** 读取任务：先查活跃集合，未命中再查归档集合（BUG-20）。
- *  归档任务均为「已完成且已查收」，所有变更类操作都会被 mutate 的终态守卫拒绝
- *  （ack 幂等早返回），因此合并读取不会造成跨集合误写。 */
+ *  终态任务的所有变更类操作都会被 mutate 的终态守卫拒绝（ack 幂等早返回），
+ *  因此合并读取不会造成跨集合误写；仅 allowFinished 的审计类写入（如 retry 补记时间线）
+ *  会真正落库，走 locateTask 回到任务所在的原集合。 */
+function locateTask(id) {
+  const active = db.find('tasks', id);
+  if (active) return { task: active, collection: 'tasks' };
+  const archived = db.find('tasks-archive', id);
+  return archived ? { task: archived, collection: 'tasks-archive' } : { task: null, collection: null };
+}
+
 function getTask(id) {
-  return db.find('tasks', id) || db.find('tasks-archive', id);
+  return locateTask(id).task;
 }
 
 function getOrThrow(id) {
@@ -203,7 +222,7 @@ function create(params = {}) {
     title: title.slice(0, 60),
     goal,
     status: STATUS.queued,
-    priority: PRIORITIES.includes(params.priority) ? params.priority : 'normal',
+    priority: normalizePriority(params.priority),
     timeoutMinutes,
     trigger,
     assignee,
@@ -541,6 +560,7 @@ module.exports = {
   ACTIVE_STATUS,
   FINISHED_STATUS,
   TRIGGER_LABEL,
+  PRIORITIES,
   TASK_TIMEOUT_MAX_MINUTES,
   create,
   detail,
@@ -551,6 +571,7 @@ module.exports = {
   getTask,
   resolveAssignee,
   resolveAnswerOption,
+  normalizeAnswer,
   cancelActiveByAssignees,
   listNeedAction,
   touchActionReminder,

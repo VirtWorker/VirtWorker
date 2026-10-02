@@ -794,3 +794,86 @@ describe('chat-service：接入申请保留期清理（E5）', () => {
     expect(chatService.purgeExpiredRequests(90).removed).toBe(0); // 幂等
   });
 });
+
+describe('批次一修复回归（A9）', () => {
+  let tempDir;
+
+  beforeAll(() => {
+    tempDir = initTempDb();
+  });
+
+  afterAll(() => {
+    db.flush();
+    cleanupTempDb(tempDir);
+  });
+
+  test('parseMention 支持含空格的 Worker 整名 @（BUG-36）', () => {
+    const parsed = chatService.parseMention('@数据分析 小王 请整理本周数据', '数据分析 小王');
+    expect(parsed.aimed).toBe(true);
+    expect(parsed.goal).toBe('请整理本周数据');
+
+    // 通用点名仍走原路径；部分名字不命中（与原语义一致：必须 @ 完整名字）
+    expect(chatService.parseMention('@Worker 干活', '数据分析 小王').aimed).toBe(true);
+    expect(chatService.parseMention('@小王 开会', '数据分析 小王').aimed).toBe(false);
+  });
+
+  test('聊天应答与任务应答口径统一：selection 无选项时回退自由文本（F1 收编闭环）', () => {
+    const worker = workerService.createWorker({ name: '口径执行者' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `口径连接 ${Date.now()}` });
+    const binding = chatService.createBinding({
+      connectionId: connection.id,
+      chatId: 'chat-a9-answer',
+      chatName: '口径测试群',
+      workerId: worker.id
+    });
+    const task = taskService.create({
+      goal: '口径确认目标',
+      assigneeId: worker.id,
+      trigger: { type: 'chat', refId: binding.id }
+    });
+    db.update('tasks', task.id, {
+      status: 'need_action',
+      actionRequest: {
+        id: 'ar_a9',
+        taskId: task.id,
+        type: 'selection',
+        title: '确认口径',
+        options: [],
+        defaultValue: null,
+        answer: null,
+        createdAt: nowIso(),
+        answeredAt: null
+      }
+    });
+
+    // 修复前：聊天侧自行匹配选项，无选项 + 自由文本直接抛「请回复有效选项」，
+    // 而应用内同一输入可通过——两端口径分裂。修复后统一走 taskService.normalizeAnswer
+    const result = chatService.answerPendingAction(binding.id, '就按方案二执行');
+    expect(result.answer.value).toBe('就按方案二执行');
+  });
+
+  test('审批幂等：绑定被删后可重新审批开通（BUG-35）', () => {
+    const worker = workerService.createWorker({ name: '重审批执行者' });
+    const connection = chatService.createConnection({ platform: 'mock', name: `重审批连接 ${Date.now()}` });
+
+    // 未绑定聊天先产生接入申请
+    const ingest = chatService.ingest({
+      connectionId: connection.id,
+      chatId: 'chat-a9-reapprove',
+      chatName: '重审批群',
+      chatType: 'group',
+      sender: '同事',
+      text: '@Worker 帮忙'
+    });
+    expect(ingest.kind).toBe('request_created');
+
+    const first = chatService.approveRequest(ingest.requestId, { workerId: worker.id });
+    expect(first.binding.id).toMatch(/^cb_/);
+
+    // 删除绑定后再审批：修复前抛「该申请已处理」，申请永久卡死只能走向导绕行
+    chatService.removeBinding(first.binding.id);
+    const second = chatService.approveRequest(ingest.requestId, { workerId: worker.id });
+    expect(second.binding.id).not.toBe(first.binding.id);
+    expect(second.request.status).toBe('approved');
+  });
+});

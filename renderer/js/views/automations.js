@@ -66,7 +66,7 @@ VW.views.automations = (() => {
     const endpoint = showEndpoint ? `http://127.0.0.1:${port}${automation.endpoint}` : '';
 
     return `
-      <div class="automation-card" data-id="${automation.id}">
+      <div class="automation-card" data-id="${escapeHtml(automation.id)}">
         <div class="automation-head">
           <div class="automation-title-wrap">
             <span class="automation-title">${escapeHtml(automation.name)}</span>

@@ -405,11 +405,14 @@ function register() {
     const error = await shell.openPath(db.backupsRoot());
     return { opened: !error, error };
   });
-  handle('app:restore-backup', ({ name } = {}) => {
-    const result = db.restore(name);
+  handle('app:restore-backup', async ({ name } = {}) => {
+    // restore 已排入备份串行化链（BUG-28）：await 到真正恢复完成后再响应与退出
+    const result = await db.restore(name);
     // 恢复后必须重启加载新数据；quit 流程的 flush 在只读保护下不会覆盖刚恢复的文件
     relaunchRequested = true;
-    app.quit();
+    // 先把响应送达渲染层再退出（BUG-30）：同步 quit 会让响应与退出竞速，
+    // 渲染层收不到结果，无法展示「恢复中」过渡态，用户可能误以为点击无效而重复操作
+    setTimeout(() => app.quit(), 300);
     return result;
   });
   handle('app:relaunch', () => {

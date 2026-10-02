@@ -73,7 +73,7 @@ VW.views.capabilitiesFlows = (() => {
             ${workers
               .map(
                 (worker) =>
-                  `<option value="${worker.id}" ${node.workerId === worker.id ? 'selected' : ''}>${escapeHtml(
+                  `<option value="${escapeHtml(worker.id)}" ${node.workerId === worker.id ? 'selected' : ''}>${escapeHtml(
                     worker.name
                   )}（${escapeHtml(worker.role)}）</option>`
               )

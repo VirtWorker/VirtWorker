@@ -186,4 +186,35 @@ describe('webhook 出站投递（F2）', () => {
       notifier.RETRY_DELAYS_MS.splice(0, notifier.RETRY_DELAYS_MS.length, ...originalDelays);
     }
   });
+
+  test('配置签名密钥时投递附 HMAC-SHA256 签名与时间戳头（SEC-9）', async () => {
+    const { createHmac } = require('node:crypto');
+    const worker = workerService.createWorker({ name: '签名执行者' });
+    const automation = automationService.create({
+      name: `签名通知自动化 ${Date.now()}`,
+      executorId: worker.id,
+      trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } },
+      input: { goal: '目标' },
+      notify: { webhookUrl: `http://127.0.0.1:${port}/signed`, webhookSecret: 'shared-webhook-secret' }
+    });
+    // 密文落库、对外只下发掩码形态
+    expect(automation.notify.webhookSecret.masked).toBe(true);
+    expect(JSON.stringify(automation.notify)).not.toContain('shared-webhook-secret');
+
+    const task = taskService.create({
+      goal: '签名目标',
+      assigneeId: worker.id,
+      trigger: { type: 'schedule', refId: automation.id }
+    });
+    taskService.succeed(task.id, { summary: '签名完成' });
+
+    await waitForWebhookEvent(task.id);
+    const hit = received.find((item) => item.url === '/signed');
+    expect(hit).toBeTruthy();
+    const expected = `sha256=${createHmac('sha256', 'shared-webhook-secret')
+      .update(JSON.stringify(hit.body))
+      .digest('hex')}`;
+    expect(hit.headers['x-virtworker-signature']).toBe(expected);
+    expect(hit.headers['x-virtworker-timestamp']).toBeTruthy();
+  });
 });

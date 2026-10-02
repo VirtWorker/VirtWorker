@@ -920,3 +920,43 @@ describe('Group 协作语义（E6）：派发时在时间线记录组长与协�
     expect(events).not.toContain('协作');
   });
 });
+
+describe('执行器挂起超时保护（BUG-32）', () => {
+  test('buildSteps 挂起按步骤超时兜底失败并释放槽位', async () => {
+    const hangPlan = {
+      ...fastExecutor,
+      name: 'hang-plan-test',
+      stepTimeoutMs: () => 60,
+      buildSteps: () => new Promise(() => {}) // 永不返回：模拟执行器在计划阶段挂起
+    };
+    executor.register(hangPlan);
+    executor.setActive('hang-plan-test');
+    const worker = workerService.createWorker({ name: '计划挂起者' });
+    const task = taskService.create({ goal: '计划挂起目标', assigneeId: worker.id });
+
+    const failed = await waitForStatus(task.id, 'failed', 3000);
+    expect(failed.error.code).toBe('STEP_TIMEOUT');
+
+    // 槽位已释放：换回快速执行器后后续任务照常完成
+    executor.setActive('fast-test');
+    const ok = taskService.create({ goal: '槽位恢复目标', assigneeId: worker.id });
+    await waitForStatus(ok.id, 'succeeded');
+  });
+
+  test('maybeAction 挂起同样按步骤超时兜底失败', async () => {
+    const hangAction = {
+      ...fastExecutor,
+      name: 'hang-action-test',
+      stepTimeoutMs: () => 60,
+      maybeAction: () => new Promise(() => {}) // 永不返回：模拟操作注入检查挂起
+    };
+    executor.register(hangAction);
+    executor.setActive('hang-action-test');
+    const worker = workerService.createWorker({ name: '操作挂起者' });
+    const task = taskService.create({ goal: '操作挂起目标', assigneeId: worker.id });
+
+    const failed = await waitForStatus(task.id, 'failed', 3000);
+    expect(failed.error.code).toBe('STEP_TIMEOUT');
+    executor.setActive('fast-test');
+  });
+});

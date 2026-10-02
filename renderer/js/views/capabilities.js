@@ -216,7 +216,7 @@ VW.views.capabilities = (() => {
         const isAuthorized = connector.status === 'authorized';
         const mounted = connector.capabilityId ? mountedCount(connector.capabilityId) : 0;
         return `
-        <div class="connector-card" data-key="${connector.key}">
+        <div class="connector-card" data-key="${escapeHtml(connector.key)}">
           <div class="connector-head">
             <span class="connector-name">${escapeHtml(connector.name)}</span>
             <span class="status-badge ${isAuthorized ? 'status-running' : 'status-canceled'}">${isAuthorized ? '已授权' : '未授权'}</span>
@@ -262,7 +262,7 @@ VW.views.capabilities = (() => {
                 .map(
                   (item) => `
           <label class="member-option">
-            <input type="checkbox" value="${item.id}" ${current.includes(item.id) ? 'checked' : ''} />
+            <input type="checkbox" value="${escapeHtml(item.id)}" ${current.includes(item.id) ? 'checked' : ''} />
             <span class="member-name">${escapeHtml(item.label)}</span>
           </label>`
                 )
