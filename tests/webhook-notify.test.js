@@ -72,6 +72,7 @@ describe('webhook 出站投递（F2）', () => {
   let tempDir;
   let server;
   let port;
+  let flakyHits = 0;
   /** 收到的 POST 体 */
   const received = [];
 
@@ -83,7 +84,16 @@ describe('webhook 出站投递（F2）', () => {
         body += chunk;
       });
       req.on('end', () => {
-        received.push({ headers: req.headers, body: JSON.parse(body || '{}') });
+        received.push({ headers: req.headers, body: JSON.parse(body || '{}'), url: req.url });
+        if (req.url === '/flaky') {
+          // E4 重试路径：前两次返回 500，第三次恢复成功
+          flakyHits += 1;
+          if (flakyHits < 3) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end('{"ok":false}');
+            return;
+          }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"ok":true}');
       });
@@ -147,5 +157,33 @@ describe('webhook 出站投递（F2）', () => {
     expect(received.length).toBe(1); // 没有新增投递
     const events = taskService.detail(task.id).task.events;
     expect(events.some((event) => event.message.includes('Webhook'))).toBe(false);
+  });
+
+  test('投递失败按指数退避重试，恢复后成功并记录重试次数（E4）', async () => {
+    const originalDelays = notifier.RETRY_DELAYS_MS.slice();
+    notifier.RETRY_DELAYS_MS.splice(0, notifier.RETRY_DELAYS_MS.length, 10, 10); // 测试用短退避
+    try {
+      const worker = workerService.createWorker({ name: '重试执行者' });
+      const automation = automationService.create({
+        name: `抖动通知自动化 ${Date.now()}`,
+        executorId: worker.id,
+        trigger: { type: 'schedule', schedule: { mode: 'daily', hour: 9, minute: 0 } },
+        input: { goal: '目标' },
+        notify: { webhookUrl: `http://127.0.0.1:${port}/flaky` }
+      });
+      const task = taskService.create({
+        goal: '重试目标',
+        assigneeId: worker.id,
+        trigger: { type: 'schedule', refId: automation.id }
+      });
+      taskService.succeed(task.id, { summary: '完成' });
+
+      await new Promise((r) => setTimeout(r, 200));
+      const hit = await waitForWebhookEvent(task.id, 3000);
+      expect(flakyHits).toBe(3); // 前两次 500 + 第三次成功
+      expect(hit.message).toContain('重试 2 次后成功');
+    } finally {
+      notifier.RETRY_DELAYS_MS.splice(0, notifier.RETRY_DELAYS_MS.length, ...originalDelays);
+    }
   });
 });

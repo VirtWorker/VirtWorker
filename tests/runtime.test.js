@@ -888,3 +888,35 @@ describe('任务级总超时（E3）：timeoutMinutes 墙钟上限', () => {
     expect(finished.timeoutMinutes).toBeNull();
   });
 });
+
+describe('Group 协作语义（E6）：派发时在时间线记录组长与协作成员', () => {
+  test('Group 任务的时间线包含组长执行与协作成员', async () => {
+    db.removeWhere('tasks', () => true);
+    executor.setActive('fast-test');
+    const lead = workerService.createWorker({ name: '组长小明' });
+    const memberA = workerService.createWorker({ name: '组员小红' });
+    const group = workerService.createGroup({
+      name: `协作组${Date.now().toString(36)}`.slice(0, 20),
+      memberIds: [lead.id, memberA.id],
+      leadWorkerId: lead.id
+    });
+
+    const task = taskService.create({ goal: '协作目标', assigneeId: group.id });
+    const finished = await waitForStatus(task.id, 'succeeded');
+
+    // 执行者归一为组长（既有语义），协作成员写入时间线（E6 新增）
+    expect(finished.assignee.name).toBe(group.name);
+    const events = taskService.detail(task.id).task.events.map((event) => event.message).join('\n');
+    expect(events).toContain('组长「组长小明」执行');
+    expect(events).toContain('组员小红」协作');
+  });
+
+  test('单 Worker 任务不产生协作记录', async () => {
+    db.removeWhere('tasks', () => true);
+    const worker = workerService.createWorker({ name: '单干执行者' });
+    const task = taskService.create({ goal: '单干目标', assigneeId: worker.id });
+    await waitForStatus(task.id, 'succeeded');
+    const events = taskService.detail(task.id).task.events.map((event) => event.message).join('\n');
+    expect(events).not.toContain('协作');
+  });
+});

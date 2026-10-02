@@ -14,7 +14,7 @@ VirtWorker 让你像管理一支真实团队一样管理数字员工：创建 Wo
 | --- | --- |
 | 任务看板 | 任务统计卡片、需要操作 / 查收结果页签、列表与看板双视图、多维筛选与搜索、任务详情时间线 |
 | Worker 管理 | Worker 的创建、编辑、删除、搜索筛选；Group 建组与编组（可设组长）；Worker 导入导出与分享 |
-| @Worker | IM 连接管理、聊天接入申请审批、聊天绑定；聊天中 @ Worker 即解析为任务进入看板 |
+| @Worker | IM 连接管理（内置模拟与通用 Webhook 接入）、聊天接入申请审批、聊天绑定；聊天中 @ Worker 即解析为任务进入看板 |
 | 自主工作 | 定时 / 事件 / API 三类触发的自动任务，调度器常驻补跑错过的定时任务，运行历史可下钻到任务；任务终态可配置 Webhook 出站通知外部系统 |
 | 能力与资源 | Skills 技能市场、连接器授权、知识库索引、WorkerFlow 可视化编排、公开项目分享 |
 | 设置 | 浅色 / 深色 / 跟随系统主题、任务保留期、本地触发端口（修改后重启失败自动回滚） |
@@ -165,6 +165,18 @@ curl -X POST http://127.0.0.1:17891/automations/<automationId>/run \
 ```
 
 端点仅绑定 `127.0.0.1`，不对外网暴露；Token 经常数时间比较校验。
+
+### IM 入站推送（通用 Webhook 接入）
+
+创建平台为「通用 Webhook」的 IM 连接后，外部 IM 机器人/桥接可把消息推送到本地端点，统一汇入 @Worker 的绑定分流、接入审批与任务创建链路：
+
+```bash
+curl -X POST http://127.0.0.1:17891/chat/<connectionId>/inbound   -H "X-VirtWorker-Token: <连接凭据>"   -H "Content-Type: application/json"   -d '{"chatId": "room-1", "chatType": "direct", "sender": "王工", "text": "请整理本周数据"}'
+```
+
+- 连接凭据即入站 Token（常数时间比较校验，连续错误进入冷却）；
+- 凭据为 http(s) 地址（群机器人 Webhook 形态）时，任务回执会同步 POST 推送到该地址；
+- 飞书 / 钉钉等专属适配器实现同一 `im-adapter` 契约后 `register()` 即可接入。
 
 ### Webhook 出站通知
 

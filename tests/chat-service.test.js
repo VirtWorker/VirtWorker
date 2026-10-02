@@ -35,9 +35,11 @@ describe('chat-service：IM 连接', () => {
     cleanupTempDb(tempDir);
   });
 
-  test('平台目录：mock 可用，真实平台目录可见但不可创建', () => {
+  test('平台目录：mock 与通用 Webhook 可用，专属平台目录可见但不可创建', () => {
     const platforms = chatService.platformCatalog();
     expect(platforms.find((item) => item.key === 'mock').available).toBe(true);
+    const webhook = platforms.find((item) => item.key === 'webhook');
+    expect(webhook.available).toBe(true); // E1：通用 Webhook 桥接已可用
     const feishu = platforms.find((item) => item.key === 'feishu');
     expect(feishu.available).toBe(false);
     expect(feishu.label).toContain('飞书');
@@ -78,6 +80,61 @@ describe('chat-service：IM 连接', () => {
 
   test('listChats：连接不存在返回 NOT_FOUND', () => {
     expectAppError(() => chatService.listChats('imc_not_exist'), 'NOT_FOUND');
+  });
+
+  test('webhook 适配器：listChats 返回稳定默认目标，sendMessage 推送到凭据 URL（E1）', async () => {
+    const connection = chatService.createConnection({
+      platform: 'webhook',
+      name: `Webhook连接 ${Date.now()}`,
+      secret: 'https://hook.example.com/robot'
+    });
+    expect(connection.status).toBe('connected');
+    // 凭据不出服务层：decorateConnection 将 credential 置为 undefined，仅暴露掩码
+    expect(connection.credential).toBeUndefined();
+    expect(connection.credentialMask).toContain('•');
+
+    const chats = chatService.listChats(connection.id).chats;
+    expect(chats.length).toBe(1);
+    expect(chats[0].chatId).toBe(`${connection.id}:default`);
+
+    // sendMessage：解封凭据 URL 并 POST { chatId, text }
+    const raw = db.find('chatconnections', connection.id);
+    let captured = null;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+      captured = { url, body: JSON.parse(options.body) };
+      return { ok: true, status: 200 };
+    };
+    try {
+      const result = await imAdapter.resolve('webhook').sendMessage(raw, 'room-1', '任务已完成');
+      expect(result.ok).toBe(true);
+      expect(captured.url).toBe('https://hook.example.com/robot');
+      expect(captured.body).toEqual({ chatId: 'room-1', text: '任务已完成' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('webhook 适配器：凭据非 URL 时出站静默跳过（仅入站 Token 场景）', async () => {
+    const connection = chatService.createConnection({
+      platform: 'webhook',
+      name: `Token连接 ${Date.now()}`,
+      secret: 'inbound-shared-token'
+    });
+    const raw = db.find('chatconnections', connection.id);
+    let fetchCalled = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      fetchCalled += 1;
+      return { ok: true, status: 200 };
+    };
+    try {
+      const result = await imAdapter.resolve('webhook').sendMessage(raw, 'room-1', 'hi');
+      expect(result.skipped).toBe(true);
+      expect(fetchCalled).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -692,5 +749,48 @@ describe('chat-service：出站回执与应答回流（F3）', () => {
     expect(answerLatest.taskId).toBe(second.taskId);
     const answerOlder = chatService.answerPendingAction(binding.id, '按条数');
     expect(answerOlder.taskId).toBe(first.taskId);
+  });
+});
+
+describe('chat-service：接入申请保留期清理（E5）', () => {
+  let tempDir;
+  let connection;
+  let workerId;
+
+  beforeAll(() => {
+    tempDir = initTempDb();
+    workerId = workerService.createWorker({ name: '清理审批员', role: '数据分析' }).id;
+    connection = chatService.createConnection({ platform: 'mock', name: '清理测试连接' });
+  });
+
+  afterAll(() => {
+    db.flush();
+    cleanupTempDb(tempDir);
+  });
+
+  test('已处理且超出保留期的申请被清理，挂起中的永不清理，重复执行幂等', () => {
+    const approved = chatService.ingest({
+      connectionId: connection.id, chatId: 'chat-purge-a', chatName: '审批群A', chatType: 'group', text: '申请A'
+    });
+    const rejected = chatService.ingest({
+      connectionId: connection.id, chatId: 'chat-purge-b', chatName: '审批群B', chatType: 'group', text: '申请B'
+    });
+    const pending = chatService.ingest({
+      connectionId: connection.id, chatId: 'chat-purge-c', chatName: '审批群C', chatType: 'group', text: '申请C'
+    });
+    chatService.approveRequest(approved.requestId, { workerId });
+    chatService.rejectRequest(rejected.requestId);
+
+    // 回拨已处理申请的 resolvedAt 到保留期之外
+    const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+    db.update('chatrequests', approved.requestId, { resolvedAt: old });
+    db.update('chatrequests', rejected.requestId, { resolvedAt: old });
+
+    const { removed, retention } = chatService.purgeExpiredRequests(90);
+    expect(retention).toBe(90);
+    expect(removed).toBe(2); // 已同意 + 已拒绝
+    expect(db.find('chatrequests', pending.requestId)).not.toBeNull(); // 挂起中的不受清理影响
+
+    expect(chatService.purgeExpiredRequests(90).removed).toBe(0); // 幂等
   });
 });

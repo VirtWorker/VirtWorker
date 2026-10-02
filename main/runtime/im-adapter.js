@@ -21,6 +21,7 @@
 
 const { createId } = require('../util/id');
 const { nowIso } = require('../util/time');
+const vault = require('../util/secret-vault');
 
 /** @type {Map<string, object>} */
 const adapters = new Map();
@@ -100,4 +101,52 @@ const mockAdapter = register({
   }
 });
 
-module.exports = { register, resolve, registeredKeys, mockAdapter, listOutbox, clearOutbox };
+/** 连接凭据明文（webhook 适配器出站用）；损坏/缺失返回空串 */
+function openCredential(connection) {
+  const credential = connection?.credential;
+  if (!credential) return '';
+  if (typeof credential === 'string') return credential; // 旧版明文数据兼容
+  try {
+    return vault.open(credential.sealed);
+  } catch (error) {
+    return '';
+  }
+}
+
+/**
+ * 通用 Webhook 适配器（E1，Phase 5 第一切片）：
+ * - 入站：外部 IM 机器人/桥接把消息 POST 到本地端点 /chat/:connectionId/inbound
+ *   （X-VirtWorker-Token = 连接凭据），由 http-server 鉴权后统一汇入 chat-service.ingest()；
+ *   适配器接口本身不承载入站（契约注释第 17-19 行的既定设计）
+ * - 出站：凭据为 http(s) 地址（群机器人 Webhook 的常见形态）时，任务回执 POST { chatId, text }
+ *   推送到该地址；凭据仅作入站 Token（非 URL）时静默跳过出站
+ * - listChats 返回稳定的「默认目标」聊天：绑定向导可正常走通，外部推送可用任意 chatId 分流
+ */
+const webhookAdapter = register({
+  key: 'webhook',
+  label: '通用 Webhook',
+  listChats(connection) {
+    return [{ chatId: `${connection.id}:default`, chatName: connection?.name || 'Webhook 目标', chatType: 'group' }];
+  },
+  receiveSupported() {
+    return true;
+  },
+  async sendMessage(connection, chatId, content) {
+    const target = openCredential(connection).trim();
+    if (!/^https?:\/\//i.test(target)) {
+      // 凭据仅作入站 Token（非 URL）：无出站目标，不算错误
+      return { ok: false, skipped: true, reason: 'credential_not_url' };
+    }
+    const response = await fetch(target, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId: String(chatId ?? ''), text: String(content ?? '') })
+    });
+    if (!response.ok) {
+      throw new Error(`Webhook 推送返回 HTTP ${response.status}`);
+    }
+    return { ok: true, status: response.status };
+  }
+});
+
+module.exports = { register, resolve, registeredKeys, mockAdapter, webhookAdapter, listOutbox, clearOutbox };

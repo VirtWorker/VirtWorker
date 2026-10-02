@@ -94,8 +94,8 @@ function maxParallel() {
 
 // ==================== 执行 ====================
 
-/** 组装 prompt：系统设定（角色人设）+ 用户消息（目标 / 步骤 / 指令 / 知识片段 / 用户补充） */
-function buildMessages(task, step, worker, citations) {
+/** 组装 prompt：系统设定（角色人设）+ 用户消息（目标 / 步骤 / 指令 / 技能 / 知识片段 / 用户补充） */
+function buildMessages(task, step, worker, citations, skills = []) {
   const persona = worker
     ? `你是数字员工「${worker.name}」，角色：${worker.role || '通用助理'}${worker.desc ? `。职责：${clip(worker.desc, 200)}` : ''}`
     : '你是数字员工的执行引擎';
@@ -107,6 +107,12 @@ function buildMessages(task, step, worker, citations) {
   ];
   if (step.instruction) lines.push(`节点指令：${step.instruction}`);
   if (task.workspace?.cwd) lines.push(`工作目录：${task.workspace.cwd}`);
+  // Skill 注入（E2）：挂载的技能作为执行上下文进入提示词——
+  // 此前技能只影响结果汇总文案（装饰性能力），安装/挂载链路对任务执行无实效
+  if (skills.length) {
+    lines.push('该 Worker 已挂载以下技能，请按步骤需要参考其方法论执行：');
+    skills.forEach((skill) => lines.push(`- ${skill.title}：${clip(skill.desc || '', 150)}`));
+  }
   if (citations.length) {
     lines.push('以下是与任务相关的本地知识库片段，可在成果中引用：');
     citations.forEach((hit, index) => {
@@ -172,12 +178,17 @@ async function runStep(task, step, ctx) {
   const worker = step.workerId
     ? workerService.getWorker(step.workerId)
     : workerService.resolveExecutorWorker(task.assignee);
+  const capabilities = worker ? capabilityService.resolveWorkerCapabilities(worker.id) : null;
   const citations =
     worker && (step.instruction || mock.RETRIEVE_ANCHOR.test(step.title))
       ? capabilityService.searchForWorker(worker.id, task.goal, 2)
       : [];
 
-  const { content, usage } = await chatCompletion(cfg, buildMessages(task, step, worker, citations), signal);
+  const { content, usage } = await chatCompletion(
+    cfg,
+    buildMessages(task, step, worker, citations, capabilities ? capabilities.skills : []),
+    signal
+  );
 
   const citeText = citations.length ? `\n（引用：${citations.map((hit) => hit.file).join('、')}）` : '';
   const usageText = usage?.total_tokens ? `\n（tokens：${usage.prompt_tokens ?? '?'} + ${usage.completion_tokens ?? '?'} = ${usage.total_tokens}）` : '';

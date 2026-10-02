@@ -4,7 +4,7 @@
  * 否则调用方（settings:update 端口回滚逻辑）无法判断重启结果。
  */
 
-import { describe, test, expect, afterAll, vi } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -20,14 +20,16 @@ afterAll(() => {
 });
 
 /** 原生 http 请求（fetch 不允许伪造 Host 头，rebinding 场景必须用原始套接字模拟） */
-function request(port, { path = '/health', method = 'GET', headers = {} } = {}) {
+function request(port, { path = '/health', method = 'GET', headers = {}, body = undefined } = {}) {
   return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (res) => {
-      let body = '';
-      res.on('data', (chunk) => (body += chunk));
-      res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));
     });
     req.on('error', reject);
+    if (payload !== null) req.write(payload);
     req.end();
   });
 }
@@ -267,5 +269,92 @@ describe('http-server 启动失败可恢复（error 后句柄必须释放，star
     } finally {
       httpServer.stop();
     }
+  });
+});
+
+describe('http-server IM 入站推送（E1）', () => {
+  const chatService = require('../main/services/chat-service');
+  const workerService = require('../main/services/worker-service');
+
+  const TOKEN = 'e2b-inbound-shared-token';
+  let connectionId;
+  let workerId;
+  let boundChatId;
+
+  beforeAll(() => {
+    dir = dir || initTempDb();
+    const worker = workerService.createWorker({ name: '入站执行者' });
+    workerId = worker.id;
+    const connection = chatService.createConnection({
+      platform: 'webhook',
+      name: `入站连接 ${Date.now()}`,
+      secret: TOKEN
+    });
+    connectionId = connection.id;
+    // 预绑定默认目标聊天（外部推送可用任意 chatId 分流，未绑定聊天会走接入申请）
+    boundChatId = chatService.listChats(connectionId).chats[0].chatId;
+    chatService.createBinding({
+      connectionId,
+      chatId: boundChatId,
+      chatName: '入站目标',
+      chatType: 'group',
+      workerId
+    });
+  });
+
+  function inbound(body, token = TOKEN) {
+    const port = ensureServer();
+    return request(port, {
+      path: `/chat/${connectionId}/inbound`,
+      method: 'POST',
+      headers: token ? { 'X-VirtWorker-Token': token, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' },
+      body
+    });
+  }
+
+  test('缺少凭据与错误凭据一律同形 401（不暴露连接存在性）', async () => {
+    expect((await inbound({ chatId: 'c', text: 'hi' }, '')).statusCode).toBe(401);
+    expect((await inbound({ chatId: 'c', text: 'hi' }, 'wrong-token')).statusCode).toBe(401);
+    expect((await request(ensureServer(), { path: `/chat/imc_missing/inbound`, method: 'POST', headers: { 'X-VirtWorker-Token': 'x' } })).statusCode).toBe(401);
+  });
+
+  test('绑定聊天推送消息 → 创建会话触发任务', async () => {
+    const res = await inbound({
+      chatId: boundChatId,
+      chatName: '入站目标',
+      chatType: 'direct', // 单聊语义：无需 @ 提及
+      sender: '王工',
+      text: '请整理本周数据'
+    });
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.ok).toBe(true);
+    expect(payload.data.kind).toBe('task_created');
+    expect(String(payload.data.taskId)).toMatch(/^tk_/);
+    const task = db.find('tasks', payload.data.taskId);
+    expect(task.trigger.type).toBe('chat');
+    expect(task.input.payload.source).toBe('im');
+  });
+
+  test('未绑定聊天推送 → 生成接入申请（审批分流一致）', async () => {
+    const res = await inbound({
+      chatId: `${connectionId}:unbound-room`,
+      chatName: '未绑定房间',
+      chatType: 'group',
+      sender: '李工',
+      text: '@入站执行者 看看这个'
+    });
+    const payload = JSON.parse(res.body);
+    expect(payload.data.kind).toBe('request_created');
+  });
+
+  test('空消息返回 400 VALIDATION_FAILED，GET 方法返回 405', async () => {
+    const empty = await inbound({ chatId: boundChatId, text: '   ' });
+    expect(empty.statusCode).toBe(400);
+    expect(JSON.parse(empty.body).error.code).toBe('VALIDATION_FAILED');
+
+    const port = ensureServer();
+    const get = await request(port, { path: `/chat/${connectionId}/inbound`, headers: { 'X-VirtWorker-Token': TOKEN } });
+    expect(get.statusCode).toBe(405);
   });
 });

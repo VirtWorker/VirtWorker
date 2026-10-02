@@ -151,6 +151,12 @@ function startDailyMaintenance() {
       console.error('[main] 每日维护：孤儿时间线清扫失败:', error.message);
     }
     try {
+      const { removed, retention } = chatService.purgeExpiredRequests();
+      if (removed) console.log(`[main] 每日维护：已按保留策略（${retention} 天）清理 ${removed} 条已处理的聊天接入申请（E5）`);
+    } catch (error) {
+      console.error('[main] 每日维护：聊天申请清理失败:', error.message);
+    }
+    try {
       const result = await db.backup();
       if (result.files) console.log(`[main] 每日维护：数据快照完成（${result.files} 个文件）→ ${result.dir}`);
     } catch (error) {

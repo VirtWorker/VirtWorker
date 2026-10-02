@@ -290,6 +290,10 @@ async function dispatchUnsafe(taskId) {
     : `已派发给「${execution.worker.name}」`;
   taskService.markRunning(taskId, steps, message);
   retryAttempts.delete(taskId); // 派发成功即重置退避计数：Worker 恢复在线后不再沿用旧退避
+  // Group 协作语义（E6）：派发时把组长与协作成员写入时间线（仅 queued → running 一次，
+  // 暂停恢复走 resumeRunning 不会重复记录）
+  const collaboration = workerService.describeGroupCollaboration(task.assignee);
+  if (collaboration) taskService.recordEvent(taskId, collaboration);
   pump(taskId);
 }
 

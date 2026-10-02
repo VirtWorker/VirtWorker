@@ -12,6 +12,9 @@ import { initTempDb, cleanupTempDb, db, executor, workerService } from './setup.
 const require = createRequire(import.meta.url);
 const llm = require('../main/runtime/executor-llm');
 const vault = require('../main/util/secret-vault');
+const { SKILL_CATALOG } = require('../main/data/skill-catalog');
+const capabilityService = require('../main/services/capability-service');
+const SKILL_FIRST_ID = SKILL_CATALOG[0].id;
 
 const dir = initTempDb();
 
@@ -252,5 +255,51 @@ describe('executor-llm 执行计划（复用 mock 模板）', () => {
       { nodes: [{ title: '起草', instruction: '围绕 {goal} 起草', worker: null }] }
     );
     expect(steps[0].instruction).toBe('围绕 季度总结 起草');
+  });
+});
+
+describe('executor-llm Skill 注入（E2）', () => {
+  const task = {
+    id: 'tk_llm_skill',
+    goal: '整理周报要点',
+    title: '周报',
+    steps: [{ step: 1, title: '理解任务目标' }],
+    actionRequest: null
+  };
+  const step = { step: 1, title: '理解任务目标', workerId: null, instruction: '' };
+
+  beforeEach(() => {
+    ['workers', 'capabilities'].forEach((name) => db.removeWhere(name, () => true));
+    db.setSettings({
+      executorConfig: { llm: { baseUrl: 'https://api.example.com/v1', model: 'test-model' } }
+    });
+  });
+
+  test('挂载的 Skill 以执行上下文进入提示词（此前技能只影响结果文案）', async () => {
+    const skill = capabilityService.installSkill(SKILL_FIRST_ID);
+    const worker = workerService.createWorker({ name: '带技能执行者' });
+    workerService.updateWorker(worker.id, { capabilityIds: [skill.id] });
+
+    let captured;
+    stubFetch(async (url, options) => {
+      captured = { body: JSON.parse(options.body) };
+      return okResponse('ok');
+    });
+    await llm.runStep({ ...task }, { ...step, workerId: worker.id }, {});
+
+    const userContent = captured.body.messages[1].content;
+    expect(userContent).toContain('已挂载以下技能');
+    expect(userContent).toContain(skill.title);
+  });
+
+  test('未挂载技能的 Worker 不注入技能段', async () => {
+    const worker = workerService.createWorker({ name: '无技能执行者' });
+    let captured;
+    stubFetch(async (url, options) => {
+      captured = { body: JSON.parse(options.body) };
+      return okResponse('ok');
+    });
+    await llm.runStep({ ...task }, { ...step, workerId: worker.id }, {});
+    expect(captured.body.messages[1].content).not.toContain('已挂载以下技能');
   });
 });

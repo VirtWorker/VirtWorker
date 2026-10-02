@@ -358,6 +358,28 @@ function resolveExecutorWorker(assignee) {
   return leadId ? getWorker(leadId) : null;
 }
 
+/**
+ * Group 派发的协作语义（E6）：蓝图 §4.2「派发给组长，其余成员记为协作」的落地——
+ * 派发时把组长与协作成员写入任务时间线，看板详情可回答「这个组里谁参与了」。
+ * 非 Group 执行者返回 null（运行时据此跳过）。
+ */
+function describeGroupCollaboration(assignee) {
+  if (!assignee || assignee.type !== 'group') return null;
+  const group = db.find('groups', assignee.id);
+  if (!group) return null;
+  const leadId = group.leadWorkerId || group.memberIds[0];
+  const lead = leadId ? getWorker(leadId) : null;
+  if (!lead) return null;
+  const collaborators = group.memberIds
+    .filter((memberId) => memberId !== lead.id)
+    .map((memberId) => getWorker(memberId))
+    .filter(Boolean)
+    .map((worker) => worker.name);
+  return collaborators.length
+    ? `Group「${group.name}」由组长「${lead.name}」执行，成员「${collaborators.join('、')}」协作`
+    : `Group「${group.name}」由组长「${lead.name}」执行（当前无其他成员协作）`;
+}
+
 module.exports = {
   ROLES,
   decorateWorker,
@@ -370,5 +392,6 @@ module.exports = {
   createGroup,
   updateGroup,
   removeGroup,
-  resolveExecutorWorker
+  resolveExecutorWorker,
+  describeGroupCollaboration
 };

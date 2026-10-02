@@ -1,18 +1,24 @@
 /**
- * 本地触发端点（API 触发）
- * 仅绑定回环地址 127.0.0.1，按自动任务持有的专属 Token 鉴权（长期有效，支持手动轮换）；
- * 用于脚本、其他工具或后续 IM 回调触发自动任务，不对外网暴露。
+ * 本地触发端点（API 触发 + IM 入站推送）
+ * 仅绑定回环地址 127.0.0.1，按自动化/聊天连接持有的专属凭据鉴权（长期有效，支持手动轮换）；
+ * 用于脚本、其他工具或外部 IM 桥接触发，不对外网暴露。
  *
  * GET  /health                      → 存活探针（免鉴权）
  * POST /automations/:id/run         → 触发指定 API 型自动任务（需 Token）
  *   请求头：X-VirtWorker-Token: <token>  或  Authorization: Bearer <token>
  *   请求体（可选）：{ "goal": "覆盖目标", "payload": { ... } }
+ * POST /chat/:connectionId/inbound  → 外部 IM 桥接推送消息 → @Worker 建任务（E1）
+ *   请求头：X-VirtWorker-Token: <连接凭据>
+ *   请求体：{ "chatId": "房间ID", "chatName": "房间名", "chatType": "group|direct",
+ *             "sender": "发送者", "text": "消息内容" }
+ *   消息统一汇入 chat-service.ingest()（绑定分流/审批/节流与 @Worker 页面完全一致）
  */
 
 const http = require('node:http');
 const { timingSafeEqual } = require('node:crypto');
 const db = require('../store/db');
 const automationService = require('../services/automation-service');
+const chatService = require('../services/chat-service');
 const scheduler = require('./scheduler');
 
 const DEFAULT_PORT = 17891;
@@ -183,6 +189,46 @@ async function handle(req, res) {
       }
       console.error('[api] 触发自动任务失败:', error);
       return failRequest(res, 400, error.code || 'INTERNAL', error.message || '触发失败');
+    }
+  }
+
+  // IM 入站推送（E1）：外部 IM 桥接/机器人 → @Worker 任务。鉴权与自动化同款：
+  // 连接不存在 / 凭据缺失或错误一律同形 401（不暴露 connectionId 存在性）
+  const chatMatch = pathname.match(/^\/chat\/([A-Za-z0-9_]+)\/inbound$/);
+  if (chatMatch) {
+    if (req.method !== 'POST') return failRequest(res, 405, 'METHOD_NOT_ALLOWED', '请使用 POST');
+    if (authRateLimited()) {
+      return failRequest(res, 429, 'TOO_MANY_REQUESTS', '认证失败次数过多，请稍后重试');
+    }
+
+    const connection = chatService.findConnectionById(chatMatch[1]);
+    const expected = chatService.revealCredential(connection);
+    if (!connection || !tokenMatches(expected, readToken(req))) {
+      recordAuthFailure();
+      return failRequest(res, 401, 'UNAUTHORIZED', 'Token 无效');
+    }
+    recordAuthSuccess();
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (error) {
+      return failRequest(res, 400, 'VALIDATION_FAILED', error.message);
+    }
+
+    try {
+      const result = chatService.ingest({
+        connectionId: connection.id,
+        chatId: typeof body.chatId === 'string' ? body.chatId.trim() : '',
+        chatName: typeof body.chatName === 'string' ? body.chatName.trim().slice(0, 100) : '',
+        chatType: body.chatType,
+        sender: typeof body.sender === 'string' ? body.sender : '',
+        text: typeof body.text === 'string' ? body.text : ''
+      });
+      return ok(res, result);
+    } catch (error) {
+      console.error('[api] IM 入站消息处理失败:', error.message || error);
+      return failRequest(res, 400, error.code || 'INTERNAL', error.message || '入站消息处理失败');
     }
   }
 

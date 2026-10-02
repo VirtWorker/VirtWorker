@@ -16,9 +16,13 @@ const { requiredText, assertUniqueName } = require('../util/validate');
 const { nowIso } = require('../util/time');
 const { fail } = require('../util/errors');
 
-/** 平台目录：available=false 的平台目录可见但暂不可创建（真实适配器后续版本接入） */
+/** 平台目录：available=false 的平台目录可见但暂不可创建（真实适配器后续版本接入）。
+ *  webhook（E1，Phase 5 第一切片）：通用入站/出站 Webhook 桥接——
+ *  外部 IM 机器人/桥接把消息 POST 到本地 /chat/:connectionId/inbound（Token = 连接凭据），
+ *  凭据为 http(s) 地址时出站回执同步推送到该地址。飞书/钉钉等专属适配器在此之上接入 */
 const PLATFORM_CATALOG = [
   { key: 'mock', label: '模拟 IM（内置）', requiresCredential: false, available: true },
+  { key: 'webhook', label: '通用 Webhook', requiresCredential: true, available: true },
   { key: 'feishu', label: '飞书', requiresCredential: true, available: false },
   { key: 'dingtalk', label: '钉钉', requiresCredential: true, available: false },
   { key: 'wecom', label: '企业微信', requiresCredential: true, available: false },
@@ -64,6 +68,23 @@ function connectionOrThrow(id) {
   const connection = getConnection(id);
   if (!connection) throw fail.notFound('IM 连接不存在');
   return connection;
+}
+
+/** 按 id 读取连接（找不到返回 null）：入站端点鉴权用，免异常控制流 */
+function findConnectionById(id) {
+  return getConnection(id);
+}
+
+/** 取连接凭据明文（仅供主进程入站鉴权与出站推送，绝不下发渲染层）；损坏/缺失返回空串 */
+function revealCredential(connection) {
+  const credential = connection?.credential;
+  if (!credential) return '';
+  if (typeof credential === 'string') return credential; // 旧版明文数据兼容
+  try {
+    return vault.open(credential.sealed);
+  } catch (error) {
+    return '';
+  }
 }
 
 function escapeRegExp(text) {
@@ -539,6 +560,23 @@ function ingest(params = {}) {
 
 // ==================== 统计 ====================
 
+/**
+ * 接入申请保留期清理（E5）：已处理（approved/rejected）且 resolvedAt 超出保留期的申请删除。
+ * 此前 chatrequests 只增不删（仅删除连接级联清理），长期运行下每次入站消息的
+ * 挂起申请查找随全量增长退化。挂起中的申请永不清理（审批入口仍在用）；
+ * 由每日维护调用，与 taskRetentionDays 的保留策略同一治理模式。
+ */
+function purgeExpiredRequests(days = 90) {
+  const retention = Number(days) > 0 ? Number(days) : 90;
+  const threshold = Date.now() - retention * 24 * 60 * 60 * 1000;
+  const predicate = (item) => {
+    if (item.status === REQUEST_STATUS.pending) return false;
+    const resolvedAt = new Date(item.resolvedAt || '').getTime();
+    return !Number.isNaN(resolvedAt) && resolvedAt < threshold;
+  };
+  return { removed: db.removeWhere('chatrequests', predicate).removed, retention };
+}
+
 function stats() {
   const bindings = allBindings();
   return {
@@ -596,10 +634,15 @@ function notifyTaskEvent(payload = {}) {
   if (task.status === taskService.STATUS.needAction) {
     const request = task.actionRequest;
     if (!request) return;
+    // 适配器可能返回 Promise（webhook 等真实出站）：统一兜住异步拒绝，避免未处理 rejection
     if (typeof adapter.deliverAction === 'function') {
-      adapter.deliverAction(connection, binding.chatId, request);
+      Promise.resolve(adapter.deliverAction(connection, binding.chatId, request)).catch((error) =>
+        console.warn('[chat] 操作请求卡片推送失败:', error.message || error)
+      );
     } else {
-      adapter.sendMessage(connection, binding.chatId, `【需要操作】${request.title}——请在 VirtWorker 中处理`);
+      Promise.resolve(
+        adapter.sendMessage(connection, binding.chatId, `【需要操作】${request.title}——请在 VirtWorker 中处理`)
+      ).catch((error) => console.warn('[chat] 操作请求回执推送失败:', error.message || error));
     }
     return;
   }
@@ -613,7 +656,9 @@ function notifyTaskEvent(payload = {}) {
   } else {
     return;
   }
-  adapter.sendMessage(connection, binding.chatId, content);
+  Promise.resolve(adapter.sendMessage(connection, binding.chatId, content)).catch((error) =>
+    console.warn('[chat] 终态回执推送失败:', error.message || error)
+  );
 }
 
 /**
@@ -662,6 +707,8 @@ module.exports = {
   listChats,
   startNotifier,
   answerPendingAction,
+  findConnectionById,
+  revealCredential,
   listConnections: () => allConnections().map(decorateConnection),
   createConnection,
   updateConnection,
@@ -676,5 +723,6 @@ module.exports = {
   approveRequest,
   rejectRequest,
   ingest,
+  purgeExpiredRequests,
   stats
 };
