@@ -89,7 +89,8 @@ function listWorkers(filter = {}) {
 
 function createWorker(params = {}) {
   const name = requiredText(params.name, { label: 'Worker 名称', max: 20 });
-  assertUniqueName(listAll(), name, { label: 'Worker' });
+  // 免克隆唯一性校验（B1）：existsFn 替代「listAll() 全量深拷贝后 some」
+  assertUniqueName((candidate) => db.exists('workers', (w) => w.name === candidate), name, { label: 'Worker' });
 
   const worker = {
     id: createId('wk'),
@@ -98,7 +99,7 @@ function createWorker(params = {}) {
     env: normalizeEnv(params.env),
     desc: optionalText(params.desc, 100),
     status: STATUS.online,
-    avatarColor: AVATAR_COLORS[listAll().length % AVATAR_COLORS.length],
+    avatarColor: AVATAR_COLORS[db.count('workers') % AVATAR_COLORS.length], // count 免克隆（B1）
     capabilityIds: [],
     groupIds: [],
     createdAt: nowIso(),
@@ -117,7 +118,10 @@ function updateWorker(id, patch = {}) {
   const next = { ...worker };
   if (patch.name !== undefined) {
     const name = requiredText(patch.name, { label: 'Worker 名称', max: 20 });
-    assertUniqueName(listAll(), name, { label: 'Worker', exceptId: id });
+    assertUniqueName((candidate) => db.exists('workers', (w) => w.name === candidate && w.id !== id), name, {
+      label: 'Worker',
+      exceptId: id
+    });
     next.name = name;
   }
   if (patch.role !== undefined) next.role = assertEnum(patch.role, ROLES, { label: '角色' });
@@ -155,19 +159,19 @@ function removeWorker(id) {
     );
   }
 
-  // 同步从 Group 成员中摘除，避免出现悬空引用
+  // 同步从 Group 成员中摘除，避免出现悬空引用（query 只克隆命中项，B1）
   const emptiedGroupIds = [];
-  db.all('groups')
-    .filter((group) => group.memberIds.includes(id))
-    .forEach((group) => {
-      const next = {
-        ...group,
-        memberIds: group.memberIds.filter((memberId) => memberId !== id),
-        leadWorkerId: group.leadWorkerId === id ? null : group.leadWorkerId,
-        updatedAt: nowIso()
-      };
-      if (!next.memberIds.length) emptiedGroupIds.push(group.id);
-      db.update('groups', group.id, next);
+  db.query('groups', (group) => group.memberIds.includes(id))
+    .map((group) => ({
+      ...group,
+      memberIds: group.memberIds.filter((memberId) => memberId !== id),
+      leadWorkerId: group.leadWorkerId === id ? null : group.leadWorkerId,
+      updatedAt: nowIso()
+    }))
+    .forEach((next) => {
+      const emptied = !next.memberIds.length;
+      db.update('groups', next.id, next);
+      if (emptied) emptiedGroupIds.push(next.id);
       bus.emit('group:updated', decorateGroup(next));
     });
 
@@ -184,9 +188,10 @@ function removeWorker(id) {
   ];
 
   // 级联：事件触发器里限定执行者指向被删 Worker 时清空限定（变为不限执行者）。
-  // 悬空后事件条件永不命中，自动化会静默失效且无任何提示
-  automationService.listAll().forEach((automation) => {
-    if (automation.trigger.type === 'event' && automation.trigger.event?.assigneeId === id) {
+  // 悬空后事件条件永不命中，自动化会静默失效且无任何提示（query 只克隆事件型，B1）
+  db
+    .query('automations', (a) => a.trigger.type === 'event' && a.trigger.event?.assigneeId === id)
+    .forEach((automation) => {
       automationService.update(automation.id, {
         trigger: { type: 'event', event: { source: automation.trigger.event.source, assigneeId: '' } }
       });
@@ -195,8 +200,7 @@ function removeWorker(id) {
         title: `自动任务「${automation.name}」已解除执行者限定`,
         body: '其事件触发器限定的 Worker 已被删除，现在任意执行者的任务都能触发它'
       });
-    }
-  });
+    });
 
   // 级联：取消该 Worker（及其被清空 Group）名下的在途任务。
   // 否则任务要等到槽位释放或离线退避重试才失败，成为"延迟僵尸"，还会以幽灵执行者的名义继续执行
@@ -244,7 +248,7 @@ function normalizeMemberIds(memberIds) {
 
 function createGroup(params = {}) {
   const name = requiredText(params.name, { label: 'Group 名称', max: 20 });
-  assertUniqueName(db.all('groups'), name, { label: 'Group' });
+  assertUniqueName((candidate) => db.exists('groups', (g) => g.name === candidate), name, { label: 'Group' });
 
   const memberIds = normalizeMemberIds(params.memberIds);
   const leadWorkerId = memberIds.includes(params.leadWorkerId) ? params.leadWorkerId : memberIds[0] || null;
@@ -272,7 +276,10 @@ function updateGroup(id, patch = {}) {
   const next = { ...group };
   if (patch.name !== undefined) {
     const name = requiredText(patch.name, { label: 'Group 名称', max: 20 });
-    assertUniqueName(db.all('groups'), name, { label: 'Group', exceptId: id });
+    assertUniqueName((candidate) => db.exists('groups', (g) => g.name === candidate && g.id !== id), name, {
+      label: 'Group',
+      exceptId: id
+    });
     next.name = name;
   }
   if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);

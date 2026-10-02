@@ -802,10 +802,16 @@ VW.views.atworker = (() => {
       refresh();
     });
 
-    store.on(['chatBindingList', 'chatBindings', 'chatStats'], render);
-    // 审批弹窗打开期间收到新申请/申请更新（角标变化）时实时重渲染列表，审批人不漏处理
-    store.on('chatStats', () => {
-      if (VW.modal.isOpen('chat-requests-modal')) renderRequests();
+    // chatStats 合并到同一订阅（C1）：此前 chatStats 变化会同时触发 render()（含审批
+    // 弹窗打开时的全量重建）和独立的 renderRequests()，一次事件两轮重建。合并为
+    // 「按弹窗状态分派」：审批弹窗打开时只重渲染申请列表，其余情况走整页 render
+    store.on(['chatBindingList', 'chatBindings', 'chatStats'], () => {
+      if (VW.modal.isOpen('chat-requests-modal')) {
+        renderBadge(); // 弹窗后的角标保持新鲜，关闭弹窗不出现过期数字
+        renderRequests();
+        return;
+      }
+      render();
     });
     // 向导/连接弹窗打开期间连接数据变化（如从向导内新建连接）时同步刷新对应列表
     store.on('chatConnections', () => {

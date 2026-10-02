@@ -186,7 +186,8 @@ function importWorker(payload) {
   const resource = payload.resource || {};
   const name = uniqueName(
     String(resource.name || '导入的 Worker').trim() || '导入的 Worker',
-    (candidate) => db.all('workers').some((worker) => worker.name === candidate)
+    // db.exists 命中即短路（B1）：此前 while 循环每迭代一次就全量深拷贝一遍 workers
+    (candidate) => db.exists('workers', (worker) => worker.name === candidate)
   );
 
   const worker = workerService.createWorker({
@@ -233,7 +234,7 @@ function importFlow(payload) {
 
   const name = uniqueName(
     String(resource.name || '导入的流程').trim() || '导入的流程',
-    (candidate) => db.all('flows').some((flow) => flow.name === candidate)
+    (candidate) => db.exists('flows', (flow) => flow.name === candidate)
   );
 
   const warnings = [];

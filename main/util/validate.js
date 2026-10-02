@@ -20,9 +20,14 @@ function optionalText(value, max = 100) {
   return String(value ?? '').trim().slice(0, max);
 }
 
-/** 唯一性校验：items 中已存在同名记录（可排除自身）时抛 CONFLICT */
+/**
+ * 唯一性校验：同名记录已存在（可排除自身）时抛 CONFLICT。
+ * items 可传数组（全量克隆的旧用法）或免克隆的 existsFn（B1）：
+ * existsFn(candidate, exceptId) 返回是否冲突——服务层配合 db.exists 做零克隆校验。
+ */
 function assertUniqueName(items, name, { label, exceptId } = {}) {
-  const conflict = items.some((item) => item.name === name && item.id !== exceptId);
+  const conflict =
+    typeof items === 'function' ? items(name, exceptId) : items.some((item) => item.name === name && item.id !== exceptId);
   if (conflict) throw fail.conflict(`已存在同名${label}「${name}」`);
   return name;
 }

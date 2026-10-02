@@ -23,20 +23,34 @@ const STEP_TIMEOUT_MS = 180 * 1000;
 /** 结果汇报的超时（独立于步骤超时，失败仅降级为本地汇总，不影响任务完成） */
 const SUMMARY_TIMEOUT_MS = 30 * 1000;
 
+/**
+ * 派生配置缓存（B1）：按 settings 版本缓存非敏感字段——
+ * capacity() 的热路径（drainWaiting/dispatch 每次派发都询问 maxParallel）此前每次
+ * 都触发 getSettings 深拷贝 + vault.open DPAPI 解密；现在只在设置变更后重算一次。
+ * apiKey 是解密结果，不进缓存：仅在真正发请求（runStep/buildResult）时解封，缩短明文驻留。
+ */
+let cachedDerived = null; // { version, baseUrl, model, temperature, maxTokens, maxParallel, apiKeyEntry }
+let cachedVersion = -1;
+
 function readConfig() {
-  const all = db.getSettings().executorConfig || {};
-  const cfg = all.llm || {};
-  const temperature = Number(cfg.temperature);
-  const maxTokens = Number(cfg.maxTokens);
-  const maxParallel = Number(cfg.maxParallel);
-  return {
-    baseUrl: String(cfg.baseUrl || '').trim().replace(/\/+$/, ''),
-    model: String(cfg.model || '').trim(),
-    apiKey: plainApiKey(cfg.apiKey),
-    temperature: temperature >= 0 && temperature <= 2 ? temperature : 0.7,
-    maxTokens: maxTokens > 0 ? Math.min(Math.round(maxTokens), 8192) : 0,
-    maxParallel: maxParallel >= 1 && maxParallel <= 10 ? Math.round(maxParallel) : 2
-  };
+  const version = db.getSettingsVersion();
+  if (!cachedDerived || cachedVersion !== version) {
+    const all = db.getSettings().executorConfig || {};
+    const cfg = all.llm || {};
+    const temperature = Number(cfg.temperature);
+    const maxTokens = Number(cfg.maxTokens);
+    const maxParallel = Number(cfg.maxParallel);
+    cachedDerived = {
+      baseUrl: String(cfg.baseUrl || '').trim().replace(/\/+$/, ''),
+      model: String(cfg.model || '').trim(),
+      apiKeyEntry: cfg.apiKey || null,
+      temperature: temperature >= 0 && temperature <= 2 ? temperature : 0.7,
+      maxTokens: maxTokens > 0 ? Math.min(Math.round(maxTokens), 8192) : 0,
+      maxParallel: maxParallel >= 1 && maxParallel <= 10 ? Math.round(maxParallel) : 2
+    };
+    cachedVersion = version;
+  }
+  return { ...cachedDerived, apiKey: plainApiKey(cachedDerived.apiKeyEntry) };
 }
 
 /** apiKey 在库内为 { sealed, mask } 形态（executor:configure 的 vault 加密约定），解封为明文供请求头使用 */

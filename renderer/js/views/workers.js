@@ -40,84 +40,44 @@ VW.views.workers = (() => {
       .catch((error) => VW.toast.fromError(error));
   }
 
-  function render() {
-    const grid = document.getElementById('worker-grid');
-    const empty = document.getElementById('worker-empty');
-    const actionBtn = document.getElementById('worker-empty-action');
-    const { manageSeg } = store.state.ui;
-    const groups = store.state.groups;
-
-    grid.innerHTML = '';
-    document.querySelectorAll('#manage-segmented .segment').forEach((segment) => {
-      segment.classList.toggle('active', segment.dataset.seg === manageSeg);
-    });
-
-    if (manageSeg === 'group') {
-      document.getElementById('worker-count-label').textContent = `${groups.length} 个 Group`;
-      actionBtn.innerHTML = `${PLUS_ICON}新建 Group`;
-      if (!groups.length) {
-        empty.classList.remove('hidden');
-        empty.querySelector('.empty-title').textContent = '暂无 Group';
-        empty.querySelector('.empty-desc').textContent = '创建 Group 后，可以将多个 Worker 编组协同工作。';
-        return;
-      }
-      empty.classList.add('hidden');
-      groups.forEach((group) => {
-        const card = document.createElement('div');
-        card.className = 'worker-card';
-        card.innerHTML = `
-          <div class="worker-card-head">
-            <span class="avatar avatar-group">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19v-1a6 6 0 0 1 12 0v1"/><circle cx="18" cy="10" r="2.4"/><path d="M15.5 19v-.6a4.4 4.4 0 0 1 5.5-4.2"/></svg>
-            </span>
-            <div>
-              <div class="worker-card-name">${escapeHtml(group.name)}</div>
-              <div class="worker-card-role">${group.memberCount} 位成员${group.leadWorkerId ? ' · 已设组长' : ''}</div>
-            </div>
+  /** 卡片模板（C1 事件委托改造）：innerHTML 一次性拼接 + grid 上单一委托监听器，
+   *  替代此前「逐卡 createElement + 每卡 5 个 addEventListener」（N 个 Worker 时每次渲染 5N 个闭包）；
+   *  卡片只携带 id，点击时再从 store 取最新实体，避免闭包持有过期数据 */
+  function groupCardHtml(group) {
+    return `
+      <div class="worker-card" data-group-id="${escapeHtml(group.id)}">
+        <div class="worker-card-head">
+          <span class="avatar avatar-group">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19v-1a6 6 0 0 1 12 0v1"/><circle cx="18" cy="10" r="2.4"/><path d="M15.5 19v-.6a4.4 4.4 0 0 1 5.5-4.2"/></svg>
+          </span>
+          <div>
+            <div class="worker-card-name">${escapeHtml(group.name)}</div>
+            <div class="worker-card-role">${group.memberCount} 位成员${group.leadWorkerId ? ' · 已设组长' : ''}</div>
           </div>
-          <div class="worker-card-desc">${group.desc ? escapeHtml(group.desc) : '暂无描述'}</div>
-          <div class="group-members">${
-            group.members.length
-              ? group.members
-                  .slice(0, 5)
-                  .map((member) => `<span class="chip">${escapeHtml(member.name)}</span>`)
-                  .join('')
-              : '<span class="chip chip-muted">暂无成员</span>'
-          }</div>
-          <div class="worker-card-foot">
-            <span class="badge">可协同</span>
-            <div class="worker-card-actions">
-              <button class="mini-btn" data-act="start">新建任务</button>
-              <button class="mini-btn" data-act="edit-group">编辑</button>
-              <button class="mini-btn" data-act="remove-group">删除</button>
-            </div>
-          </div>`;
-        card.querySelector('[data-act="start"]').addEventListener('click', () =>
-          VW.views.dashboard.openCreateTask(group.id)
-        );
-        card.querySelector('[data-act="edit-group"]').addEventListener('click', () => openGroupModal(group));
-        card.querySelector('[data-act="remove-group"]').addEventListener('click', () => removeGroup(group));
-        grid.appendChild(card);
-      });
-      return;
-    }
+        </div>
+        <div class="worker-card-desc">${group.desc ? escapeHtml(group.desc) : '暂无描述'}</div>
+        <div class="group-members">${
+          group.members.length
+            ? group.members
+                .slice(0, 5)
+                .map((member) => `<span class="chip">${escapeHtml(member.name)}</span>`)
+                .join('')
+            : '<span class="chip chip-muted">暂无成员</span>'
+        }</div>
+        <div class="worker-card-foot">
+          <span class="badge">可协同</span>
+          <div class="worker-card-actions">
+            <button class="mini-btn" data-act="start">新建任务</button>
+            <button class="mini-btn" data-act="edit-group">编辑</button>
+            <button class="mini-btn" data-act="remove-group">删除</button>
+          </div>
+        </div>
+      </div>`;
+  }
 
-    const workers = store.state.workerList;
-    document.getElementById('worker-count-label').textContent = `${workers.length} 个 Worker`;
-    actionBtn.innerHTML = `${PLUS_ICON}新建 Worker`;
-
-    if (!workers.length) {
-      empty.classList.remove('hidden');
-      empty.querySelector('.empty-title').textContent = '暂无 Worker';
-      empty.querySelector('.empty-desc').textContent = '创建 Worker 后，可以在这里集中管理 Worker。';
-      return;
-    }
-
-    empty.classList.add('hidden');
-    workers.forEach((worker) => {
-      const card = document.createElement('div');
-      card.className = 'worker-card';
-      card.innerHTML = `
+  function workerCardHtml(worker) {
+    return `
+      <div class="worker-card" data-worker-id="${escapeHtml(worker.id)}">
         <div class="worker-card-head">
           <span class="avatar" style="background:${VW.util.safeStyle(worker.avatarColor, '#eef0f2')}">${escapeHtml(worker.name.slice(0, 1))}</span>
           <div>
@@ -137,20 +97,50 @@ VW.views.workers = (() => {
             <button class="mini-btn" data-act="edit">编辑</button>
             <button class="mini-btn" data-act="remove">删除</button>
           </div>
-        </div>`;
-      card.querySelector('[data-act="start"]').addEventListener('click', () =>
-        VW.views.dashboard.openCreateTask(worker.id)
-      );
-      card.querySelector('[data-act="mount"]').addEventListener('click', () =>
-        VW.views.capabilities.openMount(worker.id)
-      );
-      card.querySelector('[data-act="share"]').addEventListener('click', () =>
-        VW.views.capabilities.openShare('worker', worker.id)
-      );
-      card.querySelector('[data-act="edit"]').addEventListener('click', () => openWorkerModal(worker));
-      card.querySelector('[data-act="remove"]').addEventListener('click', () => removeWorker(worker));
-      grid.appendChild(card);
+        </div>
+      </div>`;
+  }
+
+  function render() {
+    const grid = document.getElementById('worker-grid');
+    const empty = document.getElementById('worker-empty');
+    const actionBtn = document.getElementById('worker-empty-action');
+    const { manageSeg } = store.state.ui;
+    const groups = store.state.groups;
+
+    document.querySelectorAll('#manage-segmented .segment').forEach((segment) => {
+      segment.classList.toggle('active', segment.dataset.seg === manageSeg);
     });
+
+    if (manageSeg === 'group') {
+      document.getElementById('worker-count-label').textContent = `${groups.length} 个 Group`;
+      actionBtn.innerHTML = `${PLUS_ICON}新建 Group`;
+      if (!groups.length) {
+        grid.innerHTML = '';
+        empty.classList.remove('hidden');
+        empty.querySelector('.empty-title').textContent = '暂无 Group';
+        empty.querySelector('.empty-desc').textContent = '创建 Group 后，可以将多个 Worker 编组协同工作。';
+        return;
+      }
+      empty.classList.add('hidden');
+      grid.innerHTML = groups.map(groupCardHtml).join('');
+      return;
+    }
+
+    const workers = store.state.workerList;
+    document.getElementById('worker-count-label').textContent = `${workers.length} 个 Worker`;
+    actionBtn.innerHTML = `${PLUS_ICON}新建 Worker`;
+
+    if (!workers.length) {
+      grid.innerHTML = '';
+      empty.classList.remove('hidden');
+      empty.querySelector('.empty-title').textContent = '暂无 Worker';
+      empty.querySelector('.empty-desc').textContent = '创建 Worker 后，可以在这里集中管理 Worker。';
+      return;
+    }
+
+    empty.classList.add('hidden');
+    grid.innerHTML = workers.map(workerCardHtml).join('');
   }
 
   // ==================== 编辑 / 删除 Worker 与 Group ====================
@@ -311,6 +301,29 @@ VW.views.workers = (() => {
     document.getElementById('worker-empty-action').addEventListener('click', () => {
       if (store.state.ui.manageSeg === 'group') openGroupModal(null);
       else openWorkerModal(null);
+    });
+
+    // 卡片操作事件委托（C1）：整页一个监听器，按 data-act + 卡片 id 分发到最新实体
+    document.getElementById('worker-grid').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-act]');
+      if (!button) return;
+      const card = button.closest('[data-worker-id], [data-group-id]');
+      if (!card) return;
+      if (card.dataset.workerId) {
+        const worker = store.state.workerList.find((item) => item.id === card.dataset.workerId);
+        if (!worker) return;
+        if (button.dataset.act === 'start') VW.views.dashboard.openCreateTask(worker.id);
+        else if (button.dataset.act === 'mount') VW.views.capabilities.openMount(worker.id);
+        else if (button.dataset.act === 'share') VW.views.capabilities.openShare('worker', worker.id);
+        else if (button.dataset.act === 'edit') openWorkerModal(worker);
+        else if (button.dataset.act === 'remove') removeWorker(worker);
+        return;
+      }
+      const group = store.state.groups.find((item) => item.id === card.dataset.groupId);
+      if (!group) return;
+      if (button.dataset.act === 'start') VW.views.dashboard.openCreateTask(group.id);
+      else if (button.dataset.act === 'edit-group') openGroupModal(group);
+      else if (button.dataset.act === 'remove-group') removeGroup(group);
     });
 
     document.getElementById('worker-form').addEventListener('submit', submitWorker);

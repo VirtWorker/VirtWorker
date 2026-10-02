@@ -15,7 +15,7 @@ const TIMEOUT_MS = 10 * 1000;
 let wired = false;
 
 async function deliver(payload = {}) {
-  const automation = automationService.listAll().find((item) => item.id === payload.triggerRefId);
+  const automation = automationService.findById(payload.triggerRefId); // 免全集合克隆（B1）
   const url = automation?.notify?.webhookUrl;
   if (!url) return;
   const task = taskService.getTask(payload.taskId);

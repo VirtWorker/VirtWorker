@@ -104,14 +104,20 @@ VW.views.capabilities = (() => {
     });
   }
 
+  /** 按 section 门控渲染（C1）：只重建当前可见小节，隐藏小节在切换时再渲染——
+   *  此前 refresh/worker 事件风暴下五块 DOM 全量重建（含隐藏小节） */
+  function renderSection(name) {
+    if (name === 'skill') renderSkills();
+    else if (name === 'connector') renderConnectors();
+    else if (name === 'knowledge') VW.views.capabilitiesKnowledge.render();
+    else if (name === 'flow') VW.views.capabilitiesFlows.render();
+    else if (name === 'share') VW.views.capabilitiesShares.render();
+  }
+
   function render() {
     renderCounts();
     renderSections();
-    renderSkills();
-    renderConnectors();
-    VW.views.capabilitiesKnowledge.render();
-    VW.views.capabilitiesFlows.render();
-    VW.views.capabilitiesShares.render();
+    renderSection(state.section);
   }
 
   // ==================== Skills ====================
@@ -410,6 +416,7 @@ VW.views.capabilities = (() => {
       card.addEventListener('click', () => {
         state.section = card.dataset.section;
         renderSections();
+        renderSection(state.section); // 门控渲染后，切入的小节必须在此刻刷新内容
       });
     });
   }
@@ -433,15 +440,17 @@ VW.views.capabilities = (() => {
     VW.views.capabilitiesFlows.bind();
     VW.views.capabilitiesShares.bind();
 
+    // 订阅门控（C1）：只有当前在能力页时才重渲染对应小节；
+    // 不在页面时跳过（切回页面由 switchPage/refresh 重新拉取），worker 事件风暴不再触发隐藏小节重建
     store.on('shares', () => {
+      if (store.state.ui.page !== 'capabilities') return;
       renderCounts();
-      VW.views.capabilitiesShares.render();
+      if (state.section === 'share') VW.views.capabilitiesShares.render();
     });
     store.on(['workers', 'groups'], () => {
+      if (store.state.ui.page !== 'capabilities') return;
       renderCounts();
-      renderConnectors();
-      VW.views.capabilitiesKnowledge.render();
-      VW.views.capabilitiesFlows.render();
+      renderSection(state.section);
     });
     // 懒加载：进入能力页才拉取视图数据（启动数据由 bootstrap 提供 flows/shares 等全局切片），
     // 避免与 bootstrap 并发重复请求、消除首屏 7 个 IPC 竞争。

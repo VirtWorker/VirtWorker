@@ -144,7 +144,8 @@ function createConnection(params = {}) {
   if (!platform.available) throw fail.validation(`${platform.label}适配器将在后续版本接入，当前请使用模拟 IM`);
 
   const name = requiredText(params.name, { label: '连接名称', max: 40 });
-  assertUniqueName(allConnections(), name, { label: '连接' });
+  // 免克隆唯一性校验（B1）
+  assertUniqueName((candidate) => db.exists('chatconnections', (c) => c.name === candidate), name, { label: '连接' });
 
   let credential = null;
   if (platform.requiresCredential) {
@@ -177,7 +178,10 @@ function updateConnection(id, patch = {}) {
 
   if (patch.name !== undefined) {
     const name = requiredText(patch.name, { label: '连接名称', max: 40 });
-    assertUniqueName(allConnections(), name, { label: '连接', exceptId: id });
+    assertUniqueName((candidate) => db.exists('chatconnections', (c) => c.name === candidate && c.id !== id), name, {
+      label: '连接',
+      exceptId: id
+    });
     next.name = name;
   }
   // 凭据轮换：仅在提供非空新凭据时更换（换 Token 不必删连接重建，避免丢失全部聊天绑定）
@@ -236,7 +240,9 @@ function normalizeChat({ chatId, chatName, chatType }) {
 }
 
 function assertChatFree(connectionId, chatId, exceptBindingId = null) {
-  const clash = allBindings().find(
+  // 免克隆冲突检查（B1）：命中即短路，不克隆全量绑定
+  const clash = db.exists(
+    'chatbindings',
     (item) => item.connectionId === connectionId && item.chatId === chatId && item.id !== exceptBindingId
   );
   if (clash) throw fail.conflict('该聊天已开通 @Worker，一个聊天只能绑定一个 Worker');
@@ -344,9 +350,11 @@ function listRequests(filter = {}) {
 
 /** 收到未绑定聊天的消息 → 记录接入申请（同一聊天挂起中的申请只保留一条并刷新信息） */
 function upsertPendingRequest({ connectionId, chat, sender, text }) {
-  const existing = allRequests().find(
+  // 免克隆查找（B1）：每条入站消息都走这里，query 只克隆命中的挂起申请
+  const existing = db.query(
+    'chatrequests',
     (item) => item.connectionId === connectionId && item.chatId === chat.chatId && item.status === REQUEST_STATUS.pending
-  );
+  )[0];
   if (existing) {
     const next = { ...existing, chatName: chat.chatName, sender, message: text, updatedAt: nowIso() };
     db.update('chatrequests', existing.id, next);
@@ -470,7 +478,9 @@ function ingest(params = {}) {
   if (text.length > MAX_TEXT) throw fail.validation(`消息内容最多 ${MAX_TEXT} 字`);
   const sender = String(params.sender ?? '').trim().slice(0, 40) || '同事';
 
-  const binding = allBindings().find((item) => item.connectionId === connection.id && item.chatId === chat.chatId);
+  // 免克隆查找（B1）：每条入站消息都按连接+聊天定位绑定，query 只克隆命中项
+  const binding = db
+    .query('chatbindings', (item) => item.connectionId === connection.id && item.chatId === chat.chatId)[0];
   if (!binding) {
     const request = upsertPendingRequest({ connectionId: connection.id, chat, sender, text });
     return { kind: 'request_created', requestId: request.id, request };

@@ -527,3 +527,75 @@ describe('IPC 契约：preload 白名单与主进程注册互为镜像（防三�
     expect(orphans).toEqual([]);
   });
 });
+
+describe('IPC→runtime 全链路 smoke（D1）：task:create 经运行时派发到 succeeded', () => {
+  let tempDir;
+  let runtime;
+  const observed = []; // 经事件总线观察到的任务事件序列（渲染层 app:event 的上游来源）
+
+  beforeAll(() => {
+    tempDir = initTempDb();
+    ipc.register();
+    const executor = require('../main/runtime/executor');
+    const bus = require('../main/runtime/event-bus');
+    runtime = require('../main/runtime/task-runtime');
+    // 最小快速执行器：两步、无延时，让 IPC 语境下的派发路径在毫秒级收敛
+    executor.register({
+      name: 'smoke-fast',
+      buildSteps: () => [
+        { step: 1, title: '步骤一', status: 'pending', startedAt: null, finishedAt: null, log: '', citations: [] },
+        { step: 2, title: '步骤二', status: 'pending', startedAt: null, finishedAt: null, log: '', citations: [] }
+      ],
+      buildFlowSteps: (task, plan) => [],
+      stepDelay: () => 1,
+      runStep: (task, step) => ({ log: `完成 ${step.title}`, citations: [] }),
+      maybeAction: () => null,
+      buildResult: () => ({ summary: 'smoke-done', text: '', artifacts: [], capabilities: {} })
+    }, { activate: true });
+    bus.on('task:created', (p) => observed.push({ type: 'task:created', id: p.id, status: p.status }));
+    bus.on('task:updated', (p) => observed.push({ type: 'task:updated', id: p.id, status: p.status }));
+    runtime.start(); // 生产装配中由 main.js 调用；此前 IPC 契约测试从未覆盖派发链路
+  });
+
+  afterAll(() => {
+    runtime.shutdown();
+    db.flush();
+    cleanupTempDb(tempDir);
+  });
+
+  /** 轮询等待任务进入目标状态（运行时异步推进） */
+  async function waitForStatus(taskId, status, timeoutMs = 4000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const task = db.find('tasks', taskId);
+      if (task && task.status === status) return task;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`等待任务 ${taskId} 进入 ${status} 超时，当前：${db.find('tasks', taskId)?.status}`);
+  }
+
+  test('IPC 创建任务 → 派发步进 → 成功收口，事件序列与时间线完整', async () => {
+    const workerRes = await invoke('worker:create', { name: '全链路执行者' });
+    expect(workerRes.ok).toBe(true);
+
+    const created = await invoke('task:create', { goal: '全链路冒烟目标', assigneeId: workerRes.data.id });
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const finished = await waitForStatus(taskId, 'succeeded');
+    expect(finished.steps.every((step) => step.status === 'done')).toBe(true);
+
+    // 详情接口：结果与时间线完整（运行时各回调都有落库）
+    const detail = await invoke('task:detail', { id: taskId });
+    expect(detail.ok).toBe(true);
+    expect(detail.data.task.result.summary).toBe('smoke-done');
+    const eventTypes = detail.data.task.events.map((event) => event.type);
+    expect(eventTypes).toEqual(expect.arrayContaining(['created', 'status_changed', 'step_updated', 'result_ready']));
+
+    // 事件序列：created(queued) → running → succeeded，渲染层看板靠它增量刷新
+    const mine = observed.filter((event) => event.id === taskId);
+    expect(mine[0]).toMatchObject({ type: 'task:created', status: 'queued' });
+    expect(mine.some((event) => event.type === 'task:updated' && event.status === 'running')).toBe(true);
+    expect(mine[mine.length - 1]).toMatchObject({ type: 'task:updated', status: 'succeeded' });
+  });
+});

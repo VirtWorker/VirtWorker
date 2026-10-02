@@ -66,6 +66,32 @@ let eventsLogLines = 0;
 let baseDir = '';
 const cache = new Map();
 let settings = {};
+/** 设置版本号（B1）：setSettings 自增，供执行器等模块按版本缓存派生配置（如解密结果），
+ *  免去热路径每次 getSettings 深拷贝 + DPAPI 解密 */
+let settingsVersion = 0;
+/**
+ * id → 条目 索引（B1）：每集合一张，与 cache 在同一批写函数内同步维护，
+ * find 由 O(N) 线性扫描降为 O(1)。任务执行热路径（pump 每步 3+ 次 getTask）
+ * 与自动化/绑定的按 id 查找不再随集合规模退化。
+ * 纪律：cache.set 与条目替换只允许发生在本文件的写函数内，且必须同步维护索引；
+ * init 结束时全量重建一次（覆盖加载、回放与迁移的全部装载路径）。
+ */
+const indexes = new Map();
+
+function indexFor(name) {
+  let index = indexes.get(name);
+  if (!index) {
+    index = new Map();
+    indexes.set(name, index);
+  }
+  return index;
+}
+
+function rebuildIndex(name) {
+  const index = indexFor(name);
+  index.clear();
+  for (const item of cache.get(name) || []) index.set(item.id, item);
+}
 /** 待落盘的集合：name → items 快照 */
 const dirty = new Map();
 let flushTimer = null;
@@ -435,6 +461,8 @@ function init(dir) {
     }
   }
   settings = loadSettings();
+  // 全量重建 id 索引：覆盖 loadItems、追加日志回放与 v1 迁移合并的全部装载路径
+  COLLECTIONS.forEach(rebuildIndex);
   // 上次会话遗留的日志过大时启动即压缩一次，避免运行初期反复触发压缩
   if (!readOnlyReason && eventsLogLines >= EVENTS_LOG_COMPACT_LINES) {
     try {
@@ -454,14 +482,16 @@ function all(name) {
   return clone(cache.get(name) || []);
 }
 
+/** id 索引查找（B1）：O(1) 定位 + 单条克隆 */
 function find(name, id) {
-  const found = (cache.get(name) || []).find((item) => item.id === id);
+  const found = indexFor(name).get(id);
   return found ? clone(found) : null;
 }
 
 function insert(name, item) {
   const items = [...(cache.get(name) || []), item];
   cache.set(name, items);
+  indexFor(name).set(item.id, item);
   persist(name, items);
   return clone(item);
 }
@@ -472,6 +502,7 @@ function append(name, item) {
   const items = cache.get(name) || [];
   items.push(item);
   cache.set(name, items);
+  indexFor(name).set(item.id, item);
   if (name === 'taskevents') {
     if (!readOnlyReason) appendEventsLog(item);
     return item;
@@ -485,6 +516,8 @@ function insertMany(name, newItems) {
   if (!Array.isArray(newItems) || !newItems.length) return [];
   const items = [...(cache.get(name) || []), ...newItems];
   cache.set(name, items);
+  const index = indexFor(name);
+  for (const item of newItems) index.set(item.id, item);
   persist(name, items);
   return newItems.map((item) => clone(item));
 }
@@ -532,6 +565,12 @@ function countWhere(name, condition) {
   return (cache.get(name) || []).filter(test).length;
 }
 
+/** 免克隆存在性检查（B1）：命中即短路返回，替代「all() 全量深拷贝后 some/find」样板 */
+function exists(name, condition) {
+  const test = conditionOf(condition);
+  return (cache.get(name) || []).some(test);
+}
+
 /**
  * 免克隆映射（PERF-6）：对集合缓存原位 map，不逐条深拷贝——只用于提取标量（如全部 id）。
  * 纪律：回调绝不能返回或保留条目/其内部引用，否则外部将绕过克隆纪律直接持有可变缓存条目。
@@ -552,6 +591,8 @@ function keepLast(name, condition, keep) {
   if (matching.length <= keep) return 0;
   const removeSet = new Set(matching.slice(0, matching.length - keep));
   const kept = items.filter((_, index) => !removeSet.has(index));
+  const index = indexFor(name);
+  for (const position of removeSet) index.delete(items[position].id);
   cache.set(name, kept);
   persist(name, kept);
   return removeSet.size;
@@ -566,6 +607,7 @@ function update(name, id, patch) {
   });
   if (!updated) throw fail.notFound('记录不存在');
   cache.set(name, items);
+  indexFor(name).set(id, updated);
   persist(name, items);
   return clone(updated);
 }
@@ -578,14 +620,15 @@ function update(name, id, patch) {
  * 调用方此后不得改写草稿（读取/广播/序列化不受影响）。
  */
 function writeBack(name, id, patch) {
-  let updated = false;
+  let updated = null;
   const items = (cache.get(name) || []).map((item) => {
     if (item.id !== id) return item;
-    updated = true;
-    return { ...item, ...patch };
+    updated = { ...item, ...patch };
+    return updated;
   });
   if (!updated) throw fail.notFound('记录不存在');
   cache.set(name, items);
+  indexFor(name).set(id, updated);
   persist(name, items);
 }
 
@@ -599,11 +642,13 @@ function updateWhere(name, condition, updater) {
   const test = conditionOf(condition);
   const items = cache.get(name) || [];
   const updatedItems = [];
+  const index = indexFor(name);
   const next = items.map((item) => {
     if (!test(item)) return item;
     const copy = clone(item);
     updater(copy);
     updatedItems.push(clone(copy));
+    index.set(copy.id, copy);
     return copy;
   });
   if (updatedItems.length) {
@@ -616,6 +661,7 @@ function updateWhere(name, condition, updater) {
 function remove(name, id) {
   const items = (cache.get(name) || []).filter((item) => item.id !== id);
   cache.set(name, items);
+  indexFor(name).delete(id);
   persist(name, items);
   return { id };
 }
@@ -627,6 +673,10 @@ function removeWhere(name, condition) {
   const kept = items.filter((item) => !test(item));
   const removed = items.length - kept.length;
   if (removed) {
+    const index = indexFor(name);
+    for (const item of items) {
+      if (test(item)) index.delete(item.id);
+    }
     cache.set(name, kept);
     persist(name, kept);
   }
@@ -637,8 +687,14 @@ function getSettings() {
   return clone(settings);
 }
 
+/** 当前设置版本号（只增不减；init 重载后继续累计，派生缓存以「版本不同即失效」判断） */
+function getSettingsVersion() {
+  return settingsVersion;
+}
+
 function setSettings(patch) {
   settings = { ...settings, ...patch };
+  settingsVersion += 1;
   persist('settings', settings);
   return clone(settings);
 }
@@ -794,6 +850,7 @@ module.exports = {
   where,
   countWhere,
   count,
+  exists,
   pluck,
   keepLast,
   update,
@@ -802,6 +859,7 @@ module.exports = {
   remove,
   removeWhere,
   getSettings,
+  getSettingsVersion,
   setSettings,
   flush,
   setNotify,

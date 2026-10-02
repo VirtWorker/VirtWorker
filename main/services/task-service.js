@@ -678,14 +678,16 @@ function purgePreview(days = 90, now = Date.now()) {
 
 /** 导出任务历史（含完整时间线）：与 list 共用筛选口径，供归档与外部报表。
  *  强制忽略分页参数（导出即全量口径），period 传空字符串表示导出全部历史。
- *  时间线一次性建 taskId 索引（BUG-18）：此前逐任务 db.where 全量遍历 taskevents 为 O(N×M)，
- *  数万任务×数十万事件可卡死主进程数分钟，索引化后降为 O(N+M)。 */
+ *  时间线一次建索引（BUG-18）：此前逐任务 db.where 全量遍历 taskevents 为 O(N×M)；
+ *  现改为 query 谓词过滤（B1）：一次线性扫描，且只克隆导出任务的时间线事件，
+ *  不再把全部任务的 event 深拷贝一遍。 */
 function exportTasks(filter = {}) {
   const { page, pageSize, ...rest } = filter;
   const { items, total } = list({ ...rest, limit: 0 });
   // tasks 集合不含时间线（v2 起拆分），导出时按 detail 口径并入
+  const taskIdSet = new Set(items.map((task) => task.id));
   const eventsById = new Map();
-  for (const event of db.all('taskevents')) {
+  for (const event of db.query('taskevents', (item) => taskIdSet.has(item.taskId))) {
     if (!eventsById.has(event.taskId)) eventsById.set(event.taskId, []);
     eventsById.get(event.taskId).push(event);
   }

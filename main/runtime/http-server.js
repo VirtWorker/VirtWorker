@@ -147,7 +147,7 @@ async function handle(req, res) {
 
     let automation = null;
     try {
-      automation = automationService.listAll().find((item) => item.id === match[1]) || null;
+      automation = automationService.findById(match[1]); // findById 免全集合克隆（B1）
     } catch (error) {
       console.error('[api] 读取自动任务失败:', error);
     }

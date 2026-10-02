@@ -683,6 +683,10 @@ describe('chat-service：出站回执与应答回流（F3）', () => {
     });
     taskService.requestAction(second.taskId, { type: 'selection', title: '口径二', options, defaultValue: 'amount' });
 
+    // 两个任务可能在同一毫秒内创建，createdAt 打平时「最新」排序不稳定：
+    // 显式回拨 first 的 createdAt，让 answerPendingAction 的"回复最新请求"口径可确定断言
+    db.update('tasks', first.taskId, { createdAt: new Date(Date.now() - 60 * 1000).toISOString() });
+
     // 第一次回复命中最新（second），第二次回复才轮到 first——与其余入口"回复最新请求"心智一致
     const answerLatest = chatService.answerPendingAction(binding.id, '按金额');
     expect(answerLatest.taskId).toBe(second.taskId);

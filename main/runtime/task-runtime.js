@@ -139,7 +139,10 @@ function scheduleDrain() {
 }
 
 function drainWaiting() {
-  while (waiting.size && contexts.size < capacity()) {
+  // 单次排空内缓存并发上限（B1）：capacity 每次都要读设置并询问执行器声明，
+  // 上限只在设置/执行器变更时变化，排空循环内不必逐轮重算
+  const cap = capacity();
+  while (waiting.size && contexts.size < cap) {
     const next = takeNextWaiting();
     if (!next) return;
     dispatch(next);
@@ -186,13 +189,10 @@ function safeFailTask(taskId, error) {
 
 /** 启动恢复：排队与执行中的任务统一走 dispatch 重新派发——
  *  并发上限与执行者在线检查和正常路径完全一致（不再绕过），
- *  执行进度从第一个未完成步骤继续，重启不丢任务 */
+ *  执行进度从第一个未完成步骤继续，重启不丢任务。
+ *  where 结构化匹配（B1）：只克隆 queued/running 任务，启动不再全量深拷贝任务集合 */
 function recover() {
-  db.all('tasks').forEach((task) => {
-    if (task.status === taskService.STATUS.queued || task.status === taskService.STATUS.running) {
-      dispatch(task.id);
-    }
-  });
+  db.where('tasks', { status: taskService.ACTIVE_STATUS }).forEach((task) => dispatch(task.id));
 }
 
 function createContext(overrides = {}) {

@@ -277,6 +277,12 @@ function listAll() {
   return db.all('automations');
 }
 
+/** 按 id 读取（B1 免全集合克隆）：找不到返回 null（getOrThrow 的无异常版），
+ *  供 http-server 每请求鉴权与 webhook 通知等热路径使用 */
+function findById(id) {
+  return db.find('automations', id);
+}
+
 function getOrThrow(id) {
   const automation = db.find('automations', id);
   if (!automation) throw fail.notFound('自动任务不存在');
@@ -362,7 +368,9 @@ function detail(id) {
 
 function create(params = {}) {
   const name = requiredText(params.name, { label: '自动任务名称', max: 40 });
-  assertUniqueName(listAll(), name, { label: '自动任务' });
+  assertUniqueName((candidate) => db.exists('automations', (a) => a.name === candidate), name, {
+    label: '自动任务'
+  });
 
   const executor = taskService.resolveAssignee(params.executorId);
   const trigger = normalizeTrigger(params.trigger);
@@ -395,7 +403,10 @@ function update(id, patch = {}) {
 
   if (patch.name !== undefined) {
     const name = requiredText(patch.name, { label: '自动任务名称', max: 40 });
-    assertUniqueName(listAll(), name, { label: '自动任务', exceptId: id });
+    assertUniqueName((candidate) => db.exists('automations', (a) => a.name === candidate && a.id !== id), name, {
+      label: '自动任务',
+      exceptId: id
+    });
     next.name = name;
   }
   if (patch.desc !== undefined) next.desc = optionalText(patch.desc, 100);
@@ -535,22 +546,22 @@ function advanceSchedule(id) {
   return decorate(next);
 }
 
-/** 计划内待触发的定时自动任务（已到期且启用） */
+/** 计划内待触发的定时自动任务（已到期且启用）。
+ *  where 结构化匹配（B1）：只克隆「启用中的定时型」，调度器 tick 的周期性读取不再全量深拷贝 */
 function dueSchedules(now = Date.now()) {
-  return listAll().filter(
-    (item) =>
-      item.enabled &&
-      item.trigger.type === 'schedule' &&
-      item.nextRunAt &&
-      new Date(item.nextRunAt).getTime() <= now
-  );
+  return db
+    .where('automations', { enabled: true, 'trigger.type': 'schedule' })
+    .filter(
+      (item) =>
+        item.nextRunAt && new Date(item.nextRunAt).getTime() <= now
+    );
 }
 
-/** 最早的定时触发时间，供调度器决定下一次唤醒 */
+/** 最早的定时触发时间，供调度器决定下一次唤醒（where 只克隆定时型条目，B1） */
 function earliestNextRun() {
-  const times = listAll()
-    .filter((item) => item.enabled && item.trigger.type === 'schedule' && item.nextRunAt)
-    .map((item) => new Date(item.nextRunAt).getTime())
+  const times = db
+    .where('automations', { enabled: true, 'trigger.type': 'schedule' })
+    .map((item) => (item.nextRunAt ? new Date(item.nextRunAt).getTime() : Number.NaN))
     .filter((time) => !Number.isNaN(time));
   return times.length ? Math.min(...times) : null;
 }
@@ -571,6 +582,7 @@ module.exports = {
   describeTrigger,
   list,
   listAll,
+  findById,
   stats,
   detail,
   create,
